@@ -15,8 +15,8 @@ Vibe Tanks is a 3D multiplayer artillery game (Pocket Tanks-style) with destruct
 ## Commands
 
 ```bash
-# Install all dependencies (root, server, client)
-npm install && cd server && npm install && cd ../client && npm install && cd ..
+# Install all dependencies (root + server + client via postinstall)
+npm install
 
 # Run both server and client concurrently
 npm run dev
