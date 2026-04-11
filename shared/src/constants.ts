@@ -1,0 +1,11 @@
+// ── Gameplay constants ──
+export const TICK_RATE = 60;
+export const GRAVITY = -9.81;
+export const TANK_MAX_HP = 100;
+export const TERRAIN_GRID_WIDTH = 64;
+export const TERRAIN_GRID_HEIGHT = 64;
+export const TERRAIN_CELL_SIZE = 1.0;
+export const MIN_PLAYERS_TO_START = 2;
+export const MAX_PLAYERS = 8;
+export const SPAWN_MIN_DISTANCE = 5;
+export const SERVER_PORT = 3001;

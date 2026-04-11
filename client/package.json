@@ -1,0 +1,18 @@
+{
+  "name": "vibe-tanks-client",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "three": "^0.164.1",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "vite": "^5.2.10",
+    "typescript": "^5.4.5",
+    "@types/three": "^0.164.0"
+  }
+}

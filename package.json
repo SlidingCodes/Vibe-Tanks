@@ -1,0 +1,15 @@
+{
+  "name": "vibe-tanks",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && npx ts-node src/index.ts",
+    "dev:client": "cd client && npx vite",
+    "build:client": "cd client && npx vite build",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  }
+}
