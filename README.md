@@ -281,6 +281,129 @@ At minimum sync:
 - sound
 - replay / match summary
 
+## 3-person parallel work plan
+
+Use one short shared setup phase, then split into 3 clear lanes.
+
+### Phase 0: lock shared contracts first
+
+All 3 people work together first.
+
+Define in `shared/`:
+- `PlayerId`, `RoomId`
+- `MatchPhase`
+- `TankState`
+- `ProjectileState`
+- `WeaponDefinition`
+- `TerrainPatch`
+- network events:
+  - `join_room`
+  - `room_snapshot`
+  - `aim_update`
+  - `fire_request`
+  - `shot_resolved`
+  - `terrain_patch`
+  - `turn_started`
+  - `player_spawned`
+
+Do this before feature work. It unlocks parallel work and reduces merge conflicts.
+
+### Person 1: server / game authority
+
+Own:
+- room lifecycle
+- turn system
+- pending spawn queue
+- server-side shell simulation
+- hit / damage / scoring
+- terrain heightmap truth
+
+Deliverables:
+- Node + TypeScript multiplayer server
+- fixed-tick match loop
+- authoritative `fire_request -> shot_resolved`
+- server crater application
+- join-in-progress spawn queue
+- snapshot + patch broadcast
+
+### Person 2: client / Three.js / terrain rendering
+
+Own:
+- Three.js scene bootstrap
+- camera system
+- tank rendering
+- terrain mesh generation from heightmap
+- terrain patch mesh updates
+- interpolation of server snapshots
+
+Deliverables:
+- playable client scene
+- aiming camera + projectile follow camera
+- tank placement on terrain
+- efficient dirty-region terrain mesh updates
+- spectator / waiting camera for late joiners
+
+### Person 3: weapons / UI / FX / tools
+
+Own:
+- weapon data definitions
+- HUD
+- weapon selection UX
+- power / aim UI
+- projectile and explosion FX
+- debug and tuning tools
+
+Deliverables:
+- shared weapon definitions
+- first 3-5 weapons
+- health / turn / weapon / power HUD
+- scoreboard
+- local debug panel for event logs and crater testing
+- placeholder visual FX wired to server events
+
+### Parallel order
+
+1. All 3 define shared types and event names.
+2. Split into the 3 lanes above.
+3. Integrate the first vertical slice.
+4. Expand content only after the slice is stable.
+
+### First integration target
+
+Hit this before adding many weapons:
+- 2 players in one room
+- 2 tanks on one map
+- 1 standard shell
+- destructible terrain
+- damage + next turn
+- late joiner waits, then spawns safely
+
+### Handoff boundaries
+
+Person 1 exports:
+- `room_snapshot`
+- `terrain_patch`
+- `shot_resolved`
+- `turn_started`
+- `player_spawned`
+
+Person 2 exports:
+- `applySnapshot(snapshot)`
+- `applyTerrainPatch(patch)`
+- `playShotResolved(event)`
+
+Person 3 exports:
+- `WeaponDefinition[]`
+- HUD inputs for aim, power, weapon select, and fire
+
+### Coordination rules
+
+- `main` should stay runnable.
+- Keep shared event names stable after Phase 0.
+- Let only one person own shared-contract edits at a time.
+- Server owns gameplay truth; client owns rendering.
+- Weapon definitions can be shared, but weapon resolution stays server-side.
+
 ## Biggest implementation risks
 
 - **Terrain sync drift** if clients can deform terrain locally without server confirmation.
