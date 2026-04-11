@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import { Vec3 } from '@shared/types/index';
 
 let camera: THREE.PerspectiveCamera;
-let followTarget: Vec3 | null = null;
+
+// Third-person offsets
+const OFFSET = new THREE.Vector3(0, 8, -12);
+const LOOK_OFFSET = new THREE.Vector3(0, 1, 0);
 
 export function createCamera(): THREE.PerspectiveCamera {
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
@@ -17,30 +19,23 @@ export function createCamera(): THREE.PerspectiveCamera {
   return camera;
 }
 
-export function focusOnTank(pos: Vec3): void {
-  followTarget = null;
-  // Side angle view of the tank
-  camera.position.set(pos.x - 8, pos.y + 10, pos.z + 12);
-  camera.lookAt(pos.x, pos.y, pos.z);
-}
+/** Follow a tank in third-person: behind and above, looking at it */
+export function followTank(
+  tankPos: THREE.Vector3,
+  bodyRotation: number,
+  dt: number,
+): void {
+  // Rotate the offset by the tank's body rotation
+  const rotated = OFFSET.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
+  const desired = tankPos.clone().add(rotated);
+  const lookTarget = tankPos.clone().add(LOOK_OFFSET);
 
-export function followProjectile(pos: Vec3): void {
-  followTarget = pos;
-}
-
-export function updateCamera(): void {
-  if (followTarget) {
-    // Smoothly follow projectile
-    const target = new THREE.Vector3(followTarget.x, followTarget.y, followTarget.z);
-    const offset = new THREE.Vector3(-5, 5, 8);
-    const desired = target.clone().add(offset);
-    camera.position.lerp(desired, 0.1);
-    camera.lookAt(target);
-  }
+  // Smooth follow
+  camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
+  camera.lookAt(lookTarget);
 }
 
 export function overviewCamera(terrainWidth: number, terrainHeight: number): void {
-  followTarget = null;
   camera.position.set(terrainWidth / 2, 35, terrainHeight + 15);
   camera.lookAt(terrainWidth / 2, 0, terrainHeight / 2);
 }

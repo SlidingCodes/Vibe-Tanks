@@ -1,34 +1,14 @@
-import { TankState, PlayerId, MatchPhase } from '@shared/types/index';
+import { TankState } from '@shared/types/index';
 
-const turnBanner = document.getElementById('turn-banner')!;
 const healthBar = document.getElementById('health-bar')!;
 const scoreboard = document.getElementById('scoreboard')!;
-const controls = document.getElementById('controls')!;
-const fireBtn = document.getElementById('fire-btn') as HTMLButtonElement;
+const cooldownFill = document.getElementById('cooldown-fill')!;
 const waitingOverlay = document.getElementById('waiting-overlay')!;
-const angleSlider = document.getElementById('angle-slider') as HTMLInputElement;
-const rotationSlider = document.getElementById('rotation-slider') as HTMLInputElement;
-const powerSlider = document.getElementById('power-slider') as HTMLInputElement;
-const angleVal = document.getElementById('angle-val')!;
-const rotationVal = document.getElementById('rotation-val')!;
-const powerVal = document.getElementById('power-val')!;
-
-// Sync slider display values
-angleSlider.addEventListener('input', () => { angleVal.textContent = `${angleSlider.value}°`; });
-rotationSlider.addEventListener('input', () => { rotationVal.textContent = `${rotationSlider.value}°`; });
-powerSlider.addEventListener('input', () => { powerVal.textContent = powerSlider.value; });
-
-export function setTurnBanner(playerId: PlayerId, isMyTurn: boolean): void {
-  turnBanner.textContent = isMyTurn ? 'YOUR TURN' : `${playerId.slice(0, 6)}... is aiming`;
-  turnBanner.style.color = isMyTurn ? '#ff4' : '#fff';
-}
 
 export function setHealth(tank: TankState | undefined): void {
-  if (!tank) {
-    healthBar.textContent = '';
-    return;
-  }
-  healthBar.textContent = `HP: ${tank.hp}/${tank.maxHp}`;
+  if (!tank) { healthBar.textContent = ''; return; }
+  const pct = Math.round((tank.hp / tank.maxHp) * 100);
+  healthBar.textContent = `HP: ${tank.hp}/${tank.maxHp} (${pct}%)`;
 }
 
 export function updateScoreboard(tanks: TankState[]): void {
@@ -42,12 +22,9 @@ export function updateScoreboard(tanks: TankState[]): void {
     .join('');
 }
 
-export function setControlsEnabled(enabled: boolean): void {
-  fireBtn.disabled = !enabled;
-  angleSlider.disabled = !enabled;
-  rotationSlider.disabled = !enabled;
-  powerSlider.disabled = !enabled;
-  controls.style.opacity = enabled ? '1' : '0.4';
+export function setCooldown(fraction: number): void {
+  cooldownFill.style.width = `${Math.min(1, Math.max(0, fraction)) * 100}%`;
+  cooldownFill.style.background = fraction >= 1 ? '#4f4' : '#fa0';
 }
 
 export function showWaiting(show: boolean): void {
@@ -55,19 +32,6 @@ export function showWaiting(show: boolean): void {
 }
 
 export function showGameOver(winnerId: string): void {
-  turnBanner.textContent = `GAME OVER - Winner: ${winnerId.slice(0, 6)}`;
-  turnBanner.style.color = '#ff4';
-  setControlsEnabled(false);
-}
-
-export function getAimValues(): { rotation: number; barrelPitch: number; power: number } {
-  return {
-    rotation: parseInt(rotationSlider.value),
-    barrelPitch: parseInt(angleSlider.value),
-    power: parseInt(powerSlider.value),
-  };
-}
-
-export function onFire(callback: () => void): void {
-  fireBtn.addEventListener('click', callback);
+  waitingOverlay.style.display = 'block';
+  waitingOverlay.textContent = `GAME OVER - Winner: ${winnerId.slice(0, 6)}`;
 }

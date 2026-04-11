@@ -9,13 +9,12 @@ const io = new Server<ClientEvents, ServerEvents>(httpServer, {
   cors: { origin: '*' },
 });
 
-// Single room for MVP
 const mainRoom = new Room('main', io);
 
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
-  socket.on('join_room', (data) => {
+  socket.on('join_room', (data: { playerName: string }) => {
     mainRoom.addPlayer(socket, data.playerName);
     console.log(`Player ${data.playerName} (${socket.id}) joined room`);
   });

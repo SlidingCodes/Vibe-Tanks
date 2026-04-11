@@ -9,6 +9,7 @@ export const WEAPONS: WeaponDefinition[] = [
     damage: 25,
     terrainDamage: 2.5,
     behavior: 'standard',
+    cooldown: 1.0,
   },
   {
     id: 'big_blast',
@@ -18,6 +19,7 @@ export const WEAPONS: WeaponDefinition[] = [
     damage: 40,
     terrainDamage: 5,
     behavior: 'standard',
+    cooldown: 2.5,
   },
   {
     id: 'splitter',
@@ -27,5 +29,6 @@ export const WEAPONS: WeaponDefinition[] = [
     damage: 15,
     terrainDamage: 1.5,
     behavior: 'split',
+    cooldown: 1.5,
   },
 ];

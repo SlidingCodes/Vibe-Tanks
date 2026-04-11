@@ -1,10 +1,11 @@
 import { Server, Socket } from 'socket.io';
 import {
-  PlayerId, MatchPhase, TankState, MatchSnapshot,
+  PlayerId, MatchPhase, TankState, MatchSnapshot, MovementInput,
   ClientEvents, ServerEvents,
 } from '../../../shared/src/types/index';
 import {
   TANK_MAX_HP, MIN_PLAYERS_TO_START, MAX_PLAYERS, SPAWN_MIN_DISTANCE,
+  TANK_SPEED, TANK_TURN_SPEED, TICK_RATE, SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { Heightmap } from '../terrain/Heightmap';
@@ -12,17 +13,21 @@ import { simulateShot } from '../game/Simulation';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
+interface PlayerState {
+  socket: Socket;
+  input: MovementInput;
+  lastFireTime: number;
+}
+
 export class Room {
   id: string;
   io: Server;
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
-  turnOrder: PlayerId[] = [];
-  currentTurnIndex: number = 0;
   heightmap: Heightmap;
-  sockets: Map<PlayerId, Socket> = new Map();
-  pendingSpawns: { socket: Socket; playerName: string }[] = [];
-  firing: boolean = false;
+  players: Map<PlayerId, PlayerState> = new Map();
+  private simInterval: ReturnType<typeof setInterval> | null = null;
+  private broadcastInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(id: string, io: Server) {
     this.id = id;
@@ -30,58 +35,41 @@ export class Room {
     this.heightmap = new Heightmap();
   }
 
-  get currentTurnPlayerId(): PlayerId | null {
-    if (this.turnOrder.length === 0) return null;
-    return this.turnOrder[this.currentTurnIndex % this.turnOrder.length];
-  }
-
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string): void {
-    if (this.sockets.size >= MAX_PLAYERS) return;
+    if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
 
-    // If match is in progress, queue for spawn between turns
-    if (this.phase === MatchPhase.InProgress) {
-      this.pendingSpawns.push({ socket, playerName });
-      this.sockets.set(playerId, socket);
-      this.bindEvents(socket);
-      // Send current state so they can spectate
-      socket.emit('room_snapshot', this.getSnapshot());
-      return;
-    }
+    this.players.set(playerId, {
+      socket,
+      input: { forward: false, backward: false, left: false, right: false },
+      lastFireTime: 0,
+    });
 
-    this.sockets.set(playerId, socket);
     this.spawnTank(playerId);
     this.bindEvents(socket);
+
+    // Send full snapshot to the new player
     socket.emit('room_snapshot', this.getSnapshot());
 
-    // Broadcast the new tank to others
+    // Broadcast new tank to others
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
 
-    // Auto-start when enough players
-    if (this.tanks.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
+    // Start the game loop when enough players
+    if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
       this.startMatch();
     }
   }
 
   removePlayer(playerId: PlayerId): void {
-    this.sockets.delete(playerId);
+    this.players.delete(playerId);
     this.tanks.delete(playerId);
-    this.turnOrder = this.turnOrder.filter((id) => id !== playerId);
-    this.pendingSpawns = this.pendingSpawns.filter((p) => p.socket.id !== playerId);
-
     this.io.to(this.id).emit('player_left', { playerId });
 
-    // Fix turn index
-    if (this.turnOrder.length > 0) {
-      this.currentTurnIndex = this.currentTurnIndex % this.turnOrder.length;
-    }
-
-    // Check if only one left
-    const alive = this.turnOrder.filter((id) => this.tanks.get(id)?.alive);
-    if (this.phase === MatchPhase.InProgress && alive.length <= 1) {
-      this.endMatch();
+    if (this.players.size === 0) {
+      this.stopLoop();
+      this.phase = MatchPhase.WaitingForPlayers;
     }
   }
 
@@ -91,8 +79,9 @@ export class Room {
     const tank: TankState = {
       playerId,
       position: pos,
-      rotation: 0,
-      barrelPitch: 45,
+      bodyRotation: 0,
+      turretRotation: 0,
+      barrelPitch: 0.2,
       hp: TANK_MAX_HP,
       maxHp: TANK_MAX_HP,
       alive: true,
@@ -100,9 +89,6 @@ export class Room {
       color: TANK_COLORS[colorIndex],
     };
     this.tanks.set(playerId, tank);
-    if (!this.turnOrder.includes(playerId)) {
-      this.turnOrder.push(playerId);
-    }
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -114,7 +100,6 @@ export class Room {
       const z = 4 + Math.random() * (h - 8);
       const y = this.heightmap.getHeight(x, z);
 
-      // Check distance from other tanks
       let tooClose = false;
       for (const tank of this.tanks.values()) {
         const dx = tank.position.x - x;
@@ -127,7 +112,6 @@ export class Room {
       if (!tooClose) return { x, y, z };
     }
 
-    // Fallback
     const x = w / 2;
     const z = h / 2;
     return { x, y: this.heightmap.getHeight(x, z), z };
@@ -136,55 +120,55 @@ export class Room {
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
     socket.join(this.id);
 
-    socket.on('fire_request', (data) => {
-      if (this.phase !== MatchPhase.InProgress) return;
-      if (this.firing) return;
-      if (socket.id !== this.currentTurnPlayerId) return;
+    socket.on('movement_input', (data: MovementInput) => {
+      const player = this.players.get(socket.id);
+      if (player) player.input = data;
+    });
 
+    socket.on('aim_update', (data: { turretRotation: number; barrelPitch: number }) => {
       const tank = this.tanks.get(socket.id);
-      if (!tank || !tank.alive) return;
+      if (tank && tank.alive) {
+        tank.turretRotation = data.turretRotation;
+        tank.barrelPitch = data.barrelPitch;
+      }
+    });
+
+    socket.on('fire_request', (data: { weaponId: string }) => {
+      if (this.phase !== MatchPhase.InProgress) return;
+      const tank = this.tanks.get(socket.id);
+      const player = this.players.get(socket.id);
+      if (!tank || !tank.alive || !player) return;
 
       const weapon = WEAPONS.find((w) => w.id === data.weaponId) ?? WEAPONS[0];
-
-      this.firing = true;
+      const now = Date.now() / 1000;
+      if (now - player.lastFireTime < weapon.cooldown) return;
+      player.lastFireTime = now;
 
       const result = simulateShot(
         tank,
         weapon,
-        data.rotation,
-        data.barrelPitch,
-        data.power,
         this.heightmap,
         Array.from(this.tanks.values()),
       );
 
-      // Award score for damage dealt
+      // Award score
       for (const dmg of result.damageDealt) {
         if (dmg.playerId !== socket.id) {
           tank.score += dmg.damage;
-          if (dmg.killed) tank.score += 50; // kill bonus
+          if (dmg.killed) tank.score += 50;
         }
       }
 
-      // Broadcast the shot result
       this.io.to(this.id).emit('shot_resolved', result);
       if (result.terrainPatch) {
         this.io.to(this.id).emit('terrain_patch', result.terrainPatch);
       }
 
-      // After a delay for animation, resolve pending spawns and advance turn
-      setTimeout(() => {
-        this.firing = false;
-        this.resolvePendingSpawns();
-        this.advanceTurn();
-      }, 1500);
-    });
-
-    socket.on('aim_update', (data) => {
-      const tank = this.tanks.get(socket.id);
-      if (tank) {
-        tank.rotation = data.rotation;
-        tank.barrelPitch = data.barrelPitch;
+      // Re-ground all tanks after terrain change
+      for (const t of this.tanks.values()) {
+        if (t.alive) {
+          t.position.y = this.heightmap.getHeight(t.position.x, t.position.z);
+        }
       }
     });
 
@@ -195,70 +179,71 @@ export class Room {
 
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
-    this.currentTurnIndex = 0;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.emitTurnStarted();
+    this.startLoop();
   }
 
-  private advanceTurn(): void {
-    // Remove dead players from turn order
-    this.turnOrder = this.turnOrder.filter((id) => {
-      const t = this.tanks.get(id);
-      return t && t.alive;
-    });
+  private startLoop(): void {
+    if (this.simInterval) return;
 
-    if (this.turnOrder.length <= 1) {
-      this.endMatch();
-      return;
-    }
+    const simDt = 1 / SIM_TICK_RATE;
 
-    this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
+    // Physics / movement tick
+    this.simInterval = setInterval(() => {
+      this.tickMovement(simDt);
+    }, simDt * 1000);
 
-    // Re-ground tanks after terrain changes
-    for (const tank of this.tanks.values()) {
-      if (tank.alive) {
-        tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
+    // Broadcast state at lower rate
+    this.broadcastInterval = setInterval(() => {
+      const tanks = Array.from(this.tanks.values());
+      this.io.to(this.id).emit('state_update', tanks);
+    }, (1 / TICK_RATE) * 1000);
+  }
+
+  private stopLoop(): void {
+    if (this.simInterval) { clearInterval(this.simInterval); this.simInterval = null; }
+    if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
+  }
+
+  private tickMovement(dt: number): void {
+    const mapW = this.heightmap.width * this.heightmap.cellSize;
+    const mapH = this.heightmap.height * this.heightmap.cellSize;
+
+    for (const [pid, player] of this.players) {
+      const tank = this.tanks.get(pid);
+      if (!tank || !tank.alive) continue;
+
+      const input = player.input;
+
+      // Turn tank body
+      if (input.left) tank.bodyRotation += TANK_TURN_SPEED * dt;
+      if (input.right) tank.bodyRotation -= TANK_TURN_SPEED * dt;
+
+      // Move forward/backward along body facing direction
+      let moveDir = 0;
+      if (input.forward) moveDir += 1;
+      if (input.backward) moveDir -= 1;
+
+      if (moveDir !== 0) {
+        const speed = TANK_SPEED * moveDir * dt;
+        const nx = tank.position.x + Math.sin(tank.bodyRotation) * speed;
+        const nz = tank.position.z + Math.cos(tank.bodyRotation) * speed;
+
+        // Clamp to map bounds
+        const cx = Math.max(1, Math.min(mapW - 1, nx));
+        const cz = Math.max(1, Math.min(mapH - 1, nz));
+
+        tank.position.x = cx;
+        tank.position.z = cz;
+        tank.position.y = this.heightmap.getHeight(cx, cz);
       }
     }
-
-    // Send updated snapshot + turn
-    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.emitTurnStarted();
-  }
-
-  private emitTurnStarted(): void {
-    const pid = this.currentTurnPlayerId;
-    if (pid) {
-      this.io.to(this.id).emit('turn_started', { playerId: pid });
-    }
-  }
-
-  private resolvePendingSpawns(): void {
-    while (this.pendingSpawns.length > 0) {
-      const { socket } = this.pendingSpawns.shift()!;
-      if (!this.sockets.has(socket.id)) continue; // already left
-      this.spawnTank(socket.id);
-      const tank = this.tanks.get(socket.id)!;
-      this.io.to(this.id).emit('player_spawned', tank);
-    }
-  }
-
-  private endMatch(): void {
-    this.phase = MatchPhase.GameOver;
-    const scores = Array.from(this.tanks.values()).map((t) => ({
-      playerId: t.playerId,
-      score: t.score,
-    }));
-    scores.sort((a, b) => b.score - a.score);
-    const winnerId = scores[0]?.playerId ?? '';
-    this.io.to(this.id).emit('game_over', { winnerId, scores });
   }
 
   getSnapshot(): MatchSnapshot {
     return {
       roomId: this.id,
       phase: this.phase,
-      currentTurnPlayerId: this.currentTurnPlayerId,
       tanks: Array.from(this.tanks.values()),
       terrain: this.heightmap.toConfig(),
     };

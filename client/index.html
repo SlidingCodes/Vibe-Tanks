@@ -13,60 +13,46 @@
       pointer-events: none; font-family: monospace; color: #fff;
     }
     #hud > * { pointer-events: auto; }
-    #turn-banner {
-      position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-      font-size: 24px; text-shadow: 0 0 8px #000;
+    #crosshair {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 28px; opacity: 0.7; pointer-events: none;
     }
-    #controls {
-      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 16px; align-items: end;
-    }
-    .control-group { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-    .control-group label { font-size: 12px; opacity: 0.7; }
-    .control-group input[type=range] { width: 120px; }
-    #fire-btn {
-      padding: 10px 24px; background: #e44; border: none; color: #fff;
-      font-size: 16px; font-family: monospace; cursor: pointer; border-radius: 4px;
-    }
-    #fire-btn:disabled { opacity: 0.4; cursor: default; }
     #health-bar {
       position: absolute; top: 20px; left: 20px;
-      font-size: 14px;
+      font-size: 14px; text-shadow: 0 0 6px #000;
     }
     #scoreboard {
       position: absolute; top: 20px; right: 20px;
-      font-size: 14px; text-align: right;
+      font-size: 14px; text-align: right; text-shadow: 0 0 6px #000;
+    }
+    #cooldown-bar {
+      position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+      width: 200px; height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px;
+      pointer-events: none;
+    }
+    #cooldown-fill {
+      height: 100%; width: 100%; background: #4f4; border-radius: 3px;
+      transition: width 0.05s linear;
+    }
+    #controls-hint {
+      position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%);
+      font-size: 12px; opacity: 0.5; pointer-events: none;
     }
     #waiting-overlay {
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       font-size: 32px; text-shadow: 0 0 12px #000; display: none;
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
   <div id="hud">
-    <div id="turn-banner"></div>
+    <div id="crosshair">+</div>
     <div id="health-bar"></div>
     <div id="scoreboard"></div>
-    <div id="controls">
-      <div class="control-group">
-        <label>Angle</label>
-        <input type="range" id="angle-slider" min="0" max="90" value="45" />
-        <span id="angle-val">45°</span>
-      </div>
-      <div class="control-group">
-        <label>Rotation</label>
-        <input type="range" id="rotation-slider" min="-180" max="180" value="0" />
-        <span id="rotation-val">0°</span>
-      </div>
-      <div class="control-group">
-        <label>Power</label>
-        <input type="range" id="power-slider" min="10" max="100" value="50" />
-        <span id="power-val">50</span>
-      </div>
-      <button id="fire-btn">FIRE</button>
-    </div>
-    <div id="waiting-overlay">Waiting for players...</div>
+    <div id="cooldown-bar"><div id="cooldown-fill"></div></div>
+    <div id="controls-hint">WASD move | Mouse aim | Click shoot</div>
+    <div id="waiting-overlay">Waiting for game to start...</div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

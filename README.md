@@ -1,14 +1,14 @@
 # Vibe Tanks
 
-Pointers for building a 3D multiplayer Pocket Tanks-style game with Three.js.
+Real-time 3D multiplayer tank game with destructible terrain, built with Three.js.
 
 ## Core pillars
 
-- **3D artillery gameplay**: simple controls, readable camera, fast turns.
-- **Multiplayer first**: server owns game state; clients render and predict lightly.
-- **Destructible terrain**: every shot can reshape the battlefield.
+- **Real-time tank combat**: WASD movement, mouse aiming, click-to-shoot.
+- **Third-person camera**: smooth follow behind the player's tank.
+- **Multiplayer first**: server owns game state; clients render and send inputs.
+- **Destructible terrain**: every shot reshapes the battlefield via heightmap craters.
 - **Weapon variety**: same input flow, different projectile and explosion behavior.
-- **Mid-round spawn**: new players can join an active match without breaking turn order.
 
 ## Recommended stack
 

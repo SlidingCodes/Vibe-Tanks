@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { connect, getSocket } from './net/socket';
 import { createTerrain, applyTerrainPatch } from './scene/terrain';
 import { createTankMesh, updateTankMesh, removeTankMesh, getAllTankMeshes } from './entities/tank';
-import { playShotAnimation, updateProjectileAnimation, isPlaying } from './entities/projectile';
-import { createCamera, focusOnTank, updateCamera, overviewCamera, getCamera } from './scene/camera';
+import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
+import { createCamera, followTank, overviewCamera, getCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
+import { getMovementInput, getAimTarget, consumeClick } from './ui/input';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 
 // ── Scene setup ──
@@ -28,8 +29,9 @@ window.addEventListener('resize', () => {
 
 // ── Game state ──
 let myId: PlayerId = '';
-let currentTurn: PlayerId | null = null;
 let snapshot: MatchSnapshot | null = null;
+let lastFireTime = 0;
+const FIRE_COOLDOWN = 1.0; // matches server weapon cooldown
 
 // ── Networking ──
 const socket = connect();
@@ -43,7 +45,6 @@ socket.on('connect', () => {
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
 
-  // Build terrain on first snapshot
   if (!scene.getObjectByName('__terrain_built')) {
     const t = createTerrain(snap.terrain, scene);
     t.name = '__terrain_built';
@@ -58,7 +59,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     updateTankMesh(tankState);
     existingIds.delete(tankState.playerId);
   }
-  // Remove tanks that left
   for (const id of existingIds) {
     removeTankMesh(id, scene);
   }
@@ -69,44 +69,34 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
-    hud.setControlsEnabled(false);
-    overviewCamera(snap.terrain.gridWidth * snap.terrain.cellSize, snap.terrain.gridHeight * snap.terrain.cellSize);
+    overviewCamera(
+      snap.terrain.gridWidth * snap.terrain.cellSize,
+      snap.terrain.gridHeight * snap.terrain.cellSize,
+    );
   } else {
     hud.showWaiting(false);
   }
 });
 
-socket.on('turn_started', ({ playerId }) => {
-  currentTurn = playerId;
-  const isMyTurn = playerId === myId;
-  hud.setTurnBanner(playerId, isMyTurn);
-  hud.setControlsEnabled(isMyTurn);
-
-  // Focus camera on the active tank
-  const tankMesh = getAllTankMeshes().get(playerId);
-  if (tankMesh) {
-    focusOnTank(tankMesh.state.position);
+socket.on('state_update', (tanks: TankState[]) => {
+  for (const tankState of tanks) {
+    // Don't overwrite local prediction for our own tank position/body rotation
+    // but do apply other players' state and our own turret/hp/score
+    const existing = getAllTankMeshes().get(tankState.playerId);
+    if (!existing) {
+      createTankMesh(tankState, scene);
+    }
+    updateTankMesh(tankState);
   }
+
+  // Update HUD
+  const myTank = tanks.find((t) => t.playerId === myId);
+  hud.setHealth(myTank);
+  hud.updateScoreboard(tanks);
 });
 
 socket.on('shot_resolved', (result) => {
-  hud.setControlsEnabled(false);
-  playShotAnimation(result, scene, () => {
-    // Animation done - update damage visuals
-    if (snapshot) {
-      for (const dmg of result.damageDealt) {
-        const tank = snapshot.tanks.find((t) => t.playerId === dmg.playerId);
-        if (tank) {
-          tank.hp -= dmg.damage;
-          if (dmg.killed) tank.alive = false;
-          updateTankMesh(tank);
-        }
-      }
-      hud.updateScoreboard(snapshot.tanks);
-      const myTank = snapshot.tanks.find((t) => t.playerId === myId);
-      hud.setHealth(myTank);
-    }
-  });
+  playShotAnimation(result, scene, () => {});
 });
 
 socket.on('terrain_patch', (patch) => {
@@ -114,7 +104,9 @@ socket.on('terrain_patch', (patch) => {
 });
 
 socket.on('player_spawned', (tank: TankState) => {
-  createTankMesh(tank, scene);
+  if (!getAllTankMeshes().has(tank.playerId)) {
+    createTankMesh(tank, scene);
+  }
 });
 
 socket.on('player_left', ({ playerId }) => {
@@ -125,43 +117,65 @@ socket.on('game_over', ({ winnerId }) => {
   hud.showGameOver(winnerId);
 });
 
-// ── Controls ──
-hud.onFire(() => {
-  if (currentTurn !== myId) return;
-  if (isPlaying()) return;
-
-  const aim = hud.getAimValues();
-  socket.emit('fire_request', {
-    rotation: aim.rotation,
-    barrelPitch: aim.barrelPitch,
-    power: aim.power,
-    weaponId: 'standard',
-  });
-  hud.setControlsEnabled(false);
-});
-
-// Update aim display on slider changes
-const sendAimUpdate = () => {
-  if (currentTurn !== myId) return;
-  const aim = hud.getAimValues();
-  socket.emit('aim_update', aim);
-
-  // Update my tank's barrel visually
-  const myTankMesh = getAllTankMeshes().get(myId);
-  if (myTankMesh) {
-    myTankMesh.state.rotation = aim.rotation;
-    myTankMesh.state.barrelPitch = aim.barrelPitch;
-    updateTankMesh(myTankMesh.state);
-  }
-};
-document.getElementById('angle-slider')!.addEventListener('input', sendAimUpdate);
-document.getElementById('rotation-slider')!.addEventListener('input', sendAimUpdate);
+// ── Clock ──
+const clock = new THREE.Clock();
+let prevInput = { forward: false, backward: false, left: false, right: false };
 
 // ── Render loop ──
 function animate(): void {
   requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const now = clock.getElapsedTime();
+
+  const myTankMesh = getAllTankMeshes().get(myId);
+
+  if (myTankMesh && myTankMesh.state.alive) {
+    // ── Send movement input ──
+    const input = getMovementInput();
+    if (input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
+        input.left !== prevInput.left || input.right !== prevInput.right) {
+      socket.emit('movement_input', input);
+      prevInput = { ...input };
+    }
+
+    // ── Mouse aiming ──
+    const aimTarget = getAimTarget(camera, myTankMesh.state.position.y);
+    if (aimTarget) {
+      const tankPos = myTankMesh.group.position;
+      const dx = aimTarget.x - tankPos.x;
+      const dz = aimTarget.z - tankPos.z;
+      const turretRot = Math.atan2(dx, dz);
+
+      // Calculate a pitch based on distance (further = more pitch, capped)
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const barrelPitch = Math.min(Math.PI / 4, Math.max(0.05, dist * 0.02));
+
+      socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
+
+      // Update local visual immediately
+      myTankMesh.state.turretRotation = turretRot;
+      myTankMesh.state.barrelPitch = barrelPitch;
+      updateTankMesh(myTankMesh.state);
+    }
+
+    // ── Click to fire ──
+    if (consumeClick()) {
+      const timeSinceFire = now - lastFireTime;
+      if (timeSinceFire >= FIRE_COOLDOWN) {
+        socket.emit('fire_request', { weaponId: 'standard' });
+        lastFireTime = now;
+      }
+    }
+
+    // ── Cooldown bar ──
+    const cooldownProgress = Math.min(1, (now - lastFireTime) / FIRE_COOLDOWN);
+    hud.setCooldown(cooldownProgress);
+
+    // ── Third-person camera ──
+    followTank(myTankMesh.group.position, myTankMesh.state.bodyRotation, dt);
+  }
+
   updateProjectileAnimation(scene);
-  updateCamera();
   renderer.render(scene, camera);
 }
 

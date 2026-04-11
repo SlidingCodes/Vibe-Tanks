@@ -16,12 +16,21 @@ export interface Vec3 {
   z: number;
 }
 
+// ── Movement input (client → server) ──
+export interface MovementInput {
+  forward: boolean;
+  backward: boolean;
+  left: boolean;
+  right: boolean;
+}
+
 // ── Tank ──
 export interface TankState {
   playerId: PlayerId;
   position: Vec3;
-  rotation: number;       // turret y-rotation in degrees
-  barrelPitch: number;    // barrel pitch angle in degrees (0-90)
+  bodyRotation: number;   // tank body Y-rotation in radians
+  turretRotation: number; // turret Y-rotation in radians (world space)
+  barrelPitch: number;    // barrel pitch in radians (0 = flat, positive = up)
   hp: number;
   maxHp: number;
   alive: boolean;
@@ -40,6 +49,7 @@ export interface WeaponDefinition {
   damage: number;
   terrainDamage: number;
   behavior: WeaponBehavior;
+  cooldown: number; // seconds between shots
 }
 
 // ── Projectile ──
@@ -70,7 +80,6 @@ export interface TerrainConfig {
 export interface MatchSnapshot {
   roomId: RoomId;
   phase: MatchPhase;
-  currentTurnPlayerId: PlayerId | null;
   tanks: TankState[];
   terrain: TerrainConfig;
 }
@@ -79,7 +88,7 @@ export interface MatchSnapshot {
 export interface ShotResult {
   shooterId: PlayerId;
   weaponId: string;
-  trajectory: Vec3[];          // sampled positions for client replay
+  trajectory: Vec3[];
   impactPoint: Vec3;
   terrainPatch: TerrainPatch | null;
   damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
@@ -88,14 +97,15 @@ export interface ShotResult {
 // ── Network events: client → server ──
 export interface ClientEvents {
   join_room: (data: { playerName: string }) => void;
-  aim_update: (data: { rotation: number; barrelPitch: number; power: number }) => void;
-  fire_request: (data: { rotation: number; barrelPitch: number; power: number; weaponId: string }) => void;
+  movement_input: (data: MovementInput) => void;
+  aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
+  fire_request: (data: { weaponId: string }) => void;
 }
 
 // ── Network events: server → client ──
 export interface ServerEvents {
   room_snapshot: (snapshot: MatchSnapshot) => void;
-  turn_started: (data: { playerId: PlayerId }) => void;
+  state_update: (tanks: TankState[]) => void;
   shot_resolved: (result: ShotResult) => void;
   terrain_patch: (patch: TerrainPatch) => void;
   player_spawned: (tank: TankState) => void;

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Vibe Tanks is a 3D multiplayer artillery game (Pocket Tanks-style) with destructible terrain, weapon variety, and mid-round player spawning.
+Vibe Tanks is a 3D real-time multiplayer tank game with destructible terrain, WASD movement, mouse aiming, and click-to-shoot combat.
 
 ## Tech stack
 
@@ -41,53 +41,49 @@ cd client && npx tsc --noEmit
 
 ```
 client/src/
-  main.ts              App entry point, render loop, event wiring
+  main.ts              App entry point, render loop, input wiring
   scene/terrain.ts     Three.js heightmap mesh, dirty-region patch updates
-  scene/camera.ts      Perspective camera, tank focus, projectile follow
+  scene/camera.ts      Third-person camera follow with smoothed lerp
   scene/lights.ts      Ambient + directional + hemisphere lights
-  entities/tank.ts     Tank mesh (body + turret + barrel), per-state updates
+  entities/tank.ts     Tank mesh (body + turretGroup + barrel), per-state updates
   entities/projectile.ts  Shot trajectory animation, explosion FX
   net/socket.ts        Socket.IO client connection
-  ui/hud.ts            Turn banner, HP, scoreboard, aim/power sliders, fire button
+  ui/hud.ts            HP bar, scoreboard, cooldown bar
+  ui/input.ts          WASD keyboard input, mouse NDC tracking, ground-plane raycast aiming
 server/src/
   index.ts             HTTP + Socket.IO server bootstrap, single room
-  rooms/Room.ts        Match lifecycle: join, turn loop, spawn queue, scoring
+  rooms/Room.ts        Real-time game loop: movement tick (60hz), state broadcast (20hz), free-fire with cooldown
   game/Simulation.ts   Euler-integrated shell flight, terrain/tank collision, splash damage
   terrain/Heightmap.ts 2D height grid: generation, crater application, patch export
 shared/src/
   types/index.ts       All shared interfaces and network event contracts
-  weapons.ts           Weapon definitions (standard, big_blast, splitter)
-  constants.ts         Gameplay tuning values (gravity, grid size, HP, tick rate)
+  weapons.ts           Weapon definitions with cooldown values (standard, big_blast, splitter)
+  constants.ts         Gameplay tuning values (gravity, grid size, HP, speed, tick rates)
 ```
 
 ## Architecture
 
-- **Server authoritative**: server owns all game state. Clients send inputs (aim angle, turret rotation, shot power, weapon, fire) and render results from server events.
-- **Custom simulation**: shell trajectory uses Euler integration with fixed dt (1/60). No physics engine for gameplay -- avoids terrain/projectile desync.
-- **Heightmap terrain**: 64x64 float grid on server. Craters use smoothstep falloff. Only changed patches are sent to clients. Client rebuilds only dirty vertex regions.
-- **Data-driven weapons**: `WeaponDefinition` configs in `shared/src/weapons.ts`. Common projectile flow: spawn -> tick -> collision -> explosion resolver.
-- **Turn system**: server locks inputs during shot simulation, resolves pending spawns between turns, re-grounds tanks after terrain changes.
-- **Mid-round spawning**: late joiners enter a pending queue, get a full snapshot for spectating, then spawn at next turn boundary.
+- **Real-time, server authoritative**: server runs a 60hz physics loop for tank movement and a 20hz broadcast loop for state updates. Clients send movement input and aim, server moves tanks and resolves shots.
+- **Controls**: WASD for tank movement (forward/back/turn), mouse position raycasted to ground plane for turret aiming, left-click to fire with per-weapon cooldown.
+- **Third-person camera**: smoothed lerp follow behind the player's tank, offset rotates with tank body rotation.
+- **Custom simulation**: shell trajectory uses Euler integration (dt=1/60). No physics engine -- avoids terrain/projectile desync.
+- **Heightmap terrain**: 64x64 float grid on server. Craters use smoothstep falloff. Only changed patches are sent to clients.
+- **Data-driven weapons**: `WeaponDefinition` configs in `shared/src/weapons.ts` with cooldown values. Common projectile flow: spawn -> tick -> collision -> explosion resolver.
+- **Tank mesh hierarchy**: group (body rotation) > turretGroup (independent Y rotation for aiming) > barrel (X rotation for pitch). Turret rotation is world-space on server, converted to local-space on client by subtracting body rotation.
 
 ## Network flow
 
-1. Client emits `join_room` -> server adds player (or queues if match in progress)
-2. Server broadcasts `room_snapshot` with full terrain + tank state
-3. On active player's turn, client emits `fire_request` with aim params
-4. Server runs `simulateShot()`, emits `shot_resolved` + `terrain_patch`
-5. After animation delay, server resolves pending spawns and emits `turn_started`
+1. Client emits `join_room` -> server spawns tank, sends `room_snapshot`
+2. Server starts game loop at 60hz (movement) + 20hz (state broadcast)
+3. Client sends `movement_input` on WASD key change, `aim_update` every frame
+4. Client left-clicks -> `fire_request` -> server checks cooldown, runs `simulateShot()`, emits `shot_resolved` + `terrain_patch`
+5. Server re-grounds all tanks after terrain deformation
 
 ## Key implementation details
 
-- Vite proxies `/socket.io` to the server (port 3001) so client runs on port 3000 with no CORS issues in dev
-- Terrain mesh uses `THREE.PlaneGeometry` rotated to XZ, vertices updated in-place for patches
-- Tank barrel pivot is at the turret center; barrel geometry is pre-translated so rotation works as pitch
-- Shot trajectory is sampled every 4th tick for network efficiency; client interpolates between samples
-- Explosion visual is a brief expanding sphere with opacity fadeout (20 frames)
-
-## MVP milestone status
-
-- **Milestone 1** (done): 1 room, 2 players, 1 tank each, 1 weapon, heightmap terrain, turn system
-- **Milestone 2** (done): server-authoritative firing, crater deformation, damage/death, spectator state
-- **Milestone 3** (partial): join-in-progress spawn queue works; multiple weapons defined but UI doesn't expose weapon selection yet; no rematch flow
-- **Milestone 4**: not started (polish FX, terrain materials, sound, replay)
+- Vite proxies `/socket.io` to the server (port 3001) for seamless dev
+- Movement input is sent only on key state change (not every frame) to reduce bandwidth
+- Aim uses ground-plane raycast: mouse NDC -> THREE.Raycaster -> intersect horizontal plane at tank Y -> atan2 for turret rotation
+- Barrel pitch is auto-calculated from aim distance (further target = higher pitch, capped at PI/4)
+- Match auto-starts with MIN_PLAYERS_TO_START=1 (no waiting for opponents needed)
+- Tank body rotation uses A/D keys; turret rotates independently via mouse
