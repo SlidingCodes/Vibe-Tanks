@@ -16,7 +16,8 @@ Pointers for building a 3D multiplayer Pocket Tanks-style game with Three.js.
 - **Three.js** for rendering.
 - **TypeScript** for shared types between client and server.
 - **Vite** for fast client setup.
-- **cannon-es** or **rapier** if you want help with collision/rigid bodies.
+- **Rapier3D** for collision / rigid-body support where needed.
+- Prefer **custom gameplay simulation** for shell flight, explosion resolution, and terrain edits.
 
 ### Server
 - **Node.js + TypeScript**.
@@ -27,6 +28,40 @@ Pointers for building a 3D multiplayer Pocket Tanks-style game with Three.js.
   - projectile simulation result
   - terrain edits
   - damage / scoring
+
+## Engine recommendation
+
+Use **Rapier3D** over `cannon-es` if efficiency is the priority.
+
+### Recommended split
+
+- **Three.js** renders the world.
+- **Rapier3D** handles selective physics: tank collision, grounding, optional debris, pickups.
+- **Custom server simulation** handles the gameplay-critical path:
+  - shell trajectory
+  - hit detection
+  - explosion resolution
+  - terrain deformation
+  - turn progression
+
+### Why this split is better
+
+A full physics-engine-driven approach sounds attractive, but destructible terrain plus multiplayer sync changes the tradeoff.
+
+- Rebuilding terrain colliders often can get expensive.
+- Terrain replication is easier when the server owns a heightmap, not a physics engine scene.
+- Ballistic artillery logic is simple enough to simulate deterministically in fixed ticks.
+- This keeps the game fair and avoids terrain / projectile desync.
+
+### MVP rule
+
+If you need to cut scope even harder, you can skip a physics engine entirely in the first playable version and do:
+
+- manual shell ballistics
+- terrain height sampling for tank grounding
+- manual hit / blast checks
+
+Then add Rapier3D later for better collision support.
 
 ## High-level architecture
 
