@@ -27,6 +27,7 @@ export interface MovementInput {
 // ── Tank ──
 export interface TankState {
   playerId: PlayerId;
+  playerName: string;
   position: Vec3;
   bodyRotation: number;   // tank body Y-rotation (yaw) in radians
   bodyPitch: number;      // tank body X-rotation (pitch) in radians
@@ -120,7 +121,8 @@ export interface ShotResult {
 
 // ── Network events: client → server ──
 export interface ClientEvents {
-  join_room: (data: { playerName: string }) => void;
+  join_room: (data: { playerName: string; color?: string }) => void;
+  respawn_request: () => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string }) => void;

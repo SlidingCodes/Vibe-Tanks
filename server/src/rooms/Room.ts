@@ -13,6 +13,8 @@ import { Heightmap } from '../terrain/Heightmap';
 import { simulateShot } from '../game/Simulation';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
+const SPAWN_PROTECTION_SECONDS = 3;
+const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 
 interface PlayerState {
   socket: Socket;
@@ -20,6 +22,10 @@ interface PlayerState {
   lastFireTime: number;
   velX: number;
   velZ: number;
+  /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
+  spawnProtectionUntil: number;
+  /** Epoch seconds after which a respawn_request is honoured. */
+  respawnAllowedAt: number;
 }
 
 export class Room {
@@ -38,7 +44,7 @@ export class Room {
     this.heightmap = new Heightmap();
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
     if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
@@ -49,9 +55,11 @@ export class Room {
       lastFireTime: 0,
       velX: 0,
       velZ: 0,
+      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      respawnAllowedAt: 0,
     });
 
-    this.spawnTank(playerId);
+    this.spawnTank(playerId, playerName, color);
     this.bindEvents(socket);
 
     // Send full snapshot to the new player
@@ -78,11 +86,14 @@ export class Room {
     }
   }
 
-  private spawnTank(playerId: PlayerId): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
     const pos = this.findSpawnPosition();
-    const colorIndex = this.tanks.size % TANK_COLORS.length;
+    const fallback = TANK_COLORS[this.tanks.size % TANK_COLORS.length];
+    const safeColor = isValidHex(color) ? color! : fallback;
+    const safeName = sanitizeName(playerName);
     const tank: TankState = {
       playerId,
+      playerName: safeName,
       position: pos,
       bodyRotation: 0,
       bodyPitch: 0,
@@ -93,7 +104,7 @@ export class Room {
       maxHp: TANK_MAX_HP,
       alive: true,
       score: 0,
-      color: TANK_COLORS[colorIndex],
+      color: safeColor,
     };
     this.tanks.set(playerId, tank);
   }
@@ -175,11 +186,19 @@ export class Room {
         }
       }
       setTimeout(() => {
+        const nowSec = Date.now() / 1000;
         for (const dmg of result.damageDealt) {
           const victim = this.tanks.get(dmg.playerId);
+          const victimPlayer = this.players.get(dmg.playerId);
           if (!victim || !victim.alive) continue;
+          if (victimPlayer && nowSec < victimPlayer.spawnProtectionUntil) continue; // invuln window
           victim.hp = Math.max(0, victim.hp - dmg.damage);
-          if (victim.hp <= 0) victim.alive = false;
+          if (victim.hp <= 0) {
+            victim.alive = false;
+            if (victimPlayer) {
+              victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+            }
+          }
           if (dmg.playerId !== socket.id) {
             tank.score += dmg.damage;
             if (dmg.killed) tank.score += 50;
@@ -188,9 +207,36 @@ export class Room {
       }, lastImpactSeconds * 1000);
     });
 
+    socket.on('respawn_request', () => {
+      const player = this.players.get(socket.id);
+      const tank = this.tanks.get(socket.id);
+      if (!player || !tank) return;
+      if (tank.alive) return; // already alive
+      if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
+      this.respawnTank(socket.id);
+    });
+
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  private respawnTank(playerId: PlayerId): void {
+    const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+    if (!tank || !player) return;
+    const pos = this.findSpawnPosition();
+    tank.position = pos;
+    tank.hp = TANK_MAX_HP;
+    tank.alive = true;
+    tank.bodyRotation = 0;
+    tank.bodyPitch = 0;
+    tank.bodyRoll = 0;
+    tank.turretRotation = 0;
+    tank.barrelPitch = 0.2;
+    player.velX = 0;
+    player.velZ = 0;
+    player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
   }
 
   private startMatch(): void {
@@ -244,4 +290,13 @@ export class Room {
       terrain: this.heightmap.toConfig(),
     };
   }
+}
+
+function isValidHex(c?: string): boolean {
+  return typeof c === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c);
+}
+
+function sanitizeName(raw: string): string {
+  const trimmed = (raw ?? '').trim().slice(0, 16);
+  return trimmed.length > 0 ? trimmed : 'Player';
 }

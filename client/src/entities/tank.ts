@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { TankState } from '@shared/types/index';
 
 const TILT_SMOOTH = 0.25;
@@ -16,6 +17,7 @@ export interface TankMesh {
   barrel: THREE.Mesh;
   leftTread: THREE.Mesh;
   rightTread: THREE.Mesh;
+  nameLabel: CSS2DObject | null;  // floating label for remote tanks
   state: TankState;
   // Interpolation state for remote tanks
   prevPosition: THREE.Vector3;
@@ -24,7 +26,11 @@ export interface TankMesh {
   targetBodyRotation: number;
   interpTime: number;
   interpDuration: number;
+  /** Seconds remaining on the respawn fade-in; 0 means no animation active. */
+  respawnAnim: number;
 }
+
+const RESPAWN_ANIM_DURATION = 0.6; // seconds to fade the tank back in
 
 const tankMeshes: Map<string, TankMesh> = new Map();
 
@@ -33,7 +39,7 @@ const SERVER_BROADCAST_INTERVAL = 1 / 20;
 
 const TREAD_HALF_WIDTH = 0.7; // distance from tank center to each tread
 
-export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
+export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerId?: string): TankMesh {
   const group = new THREE.Group();
   // YXZ: yaw first, then pitch, then roll (all in tank local frame).
   group.rotation.order = 'YXZ';
@@ -85,9 +91,23 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
   group.position.copy(pos);
   scene.add(group);
 
+  // Name label above the tank (only for other players — our own name would
+  // just block our view).
+  let nameLabel: CSS2DObject | null = null;
+  if (tank.playerId !== localPlayerId) {
+    const div = document.createElement('div');
+    div.className = 'tank-name-label';
+    div.textContent = tank.playerName;
+    div.style.color = tank.color;
+    nameLabel = new CSS2DObject(div);
+    nameLabel.position.set(0, 2.0, 0);
+    group.add(nameLabel);
+  }
+
   const tm: TankMesh = {
     group, body, turretGroup, turret, barrel,
     leftTread, rightTread,
+    nameLabel,
     state: tank,
     prevPosition: pos.clone(),
     targetPosition: pos.clone(),
@@ -95,6 +115,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
     targetBodyRotation: tank.bodyRotation,
     interpTime: 0,
     interpDuration: SERVER_BROADCAST_INTERVAL,
+    respawnAnim: 0,
   };
   tankMeshes.set(tank.playerId, tm);
   return tm;
@@ -105,16 +126,48 @@ export function onServerStateReceived(tank: TankState): void {
   const tm = tankMeshes.get(tank.playerId);
   if (!tm) return;
 
-  // Snapshot current visual position as "prev" and set new target
-  tm.prevPosition.copy(tm.group.position);
-  tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
-  tm.prevBodyRotation = tm.group.rotation.y;
-  tm.targetBodyRotation = tank.bodyRotation;
+  // Detect respawn (dead → alive): snap to new position instead of
+  // sliding across the map from the death location.
+  const justRespawned = !tm.state.alive && tank.alive;
+  if (justRespawned) {
+    tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
+    tm.prevPosition.set(tank.position.x, tank.position.y, tank.position.z);
+    tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
+    tm.prevBodyRotation = tank.bodyRotation;
+    tm.targetBodyRotation = tank.bodyRotation;
+    tm.group.rotation.y = tank.bodyRotation;
+    tm.respawnAnim = RESPAWN_ANIM_DURATION;
+  } else {
+    tm.prevPosition.copy(tm.group.position);
+    tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
+    tm.prevBodyRotation = tm.group.rotation.y;
+    tm.targetBodyRotation = tank.bodyRotation;
+  }
   tm.interpTime = 0;
   tm.interpDuration = SERVER_BROADCAST_INTERVAL;
 
   // Update non-interpolated state
   tm.state = tank;
+}
+
+/** Trigger the fade-in animation on the local tank after a respawn. */
+export function triggerRespawnAnim(playerId: string): void {
+  const tm = tankMeshes.get(playerId);
+  if (tm) tm.respawnAnim = RESPAWN_ANIM_DURATION;
+}
+
+/** Advance the respawn fade-in for every active tank mesh. */
+export function tickTankEffects(dt: number): void {
+  for (const tm of tankMeshes.values()) {
+    if (tm.respawnAnim > 0) {
+      tm.respawnAnim = Math.max(0, tm.respawnAnim - dt);
+      const t = 1 - tm.respawnAnim / RESPAWN_ANIM_DURATION; // 0 → 1 over duration
+      const s = 0.25 + 0.75 * t;                            // grow from 25% → 100%
+      tm.group.scale.setScalar(s);
+    } else if (tm.group.scale.x !== 1) {
+      tm.group.scale.setScalar(1);
+    }
+  }
 }
 
 /** Interpolate remote tanks each frame */
@@ -180,6 +233,10 @@ export function updateTankMesh(tank: TankState): void {
 export function removeTankMesh(playerId: string, scene: THREE.Scene): void {
   const tm = tankMeshes.get(playerId);
   if (tm) {
+    if (tm.nameLabel) {
+      tm.group.remove(tm.nameLabel);
+      tm.nameLabel.element.remove();
+    }
     scene.remove(tm.group);
     tankMeshes.delete(playerId);
   }

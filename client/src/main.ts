@@ -1,10 +1,12 @@
 import * as THREE from 'three';
+import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { createTerrain, applyTerrainPatch, getTerrainHeight } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
+  tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
 import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
@@ -12,6 +14,7 @@ import { connect } from './net/socket';
 import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
+import { showLogin } from './ui/login';
 import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot } from './ui/input';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -24,6 +27,14 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 document.body.prepend(renderer.domElement);
 
+// CSS2D renderer overlays DOM elements (name labels) onto the 3D scene.
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(window.innerWidth, window.innerHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.prepend(labelRenderer.domElement);
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
@@ -33,6 +44,7 @@ createLights(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ── Game state ──
@@ -44,6 +56,8 @@ let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 // Client-side predicted state for local tank
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
+// Tracks the alive→dead transition so the death screen only fades in once.
+let wasDead = false;
 
 function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
@@ -52,11 +66,13 @@ function getSelectedWeapon() {
 hud.setWeapons(WEAPONS, selectedWeaponId);
 
 // ── Networking ──
+// Block until the player has picked a name + color from the login overlay.
+const login = await showLogin();
 const socket = connect();
 
 socket.on('connect', () => {
   myId = socket.id!;
-  socket.emit('join_room', { playerName: `Player_${myId.slice(0, 4)}` });
+  socket.emit('join_room', { playerName: login.name, color: login.color });
   hud.showWaiting(true);
 });
 
@@ -72,7 +88,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   const existingIds = new Set(getAllTankMeshes().keys());
   for (const tankState of snap.tanks) {
     if (!existingIds.has(tankState.playerId)) {
-      createTankMesh(tankState, scene);
+      createTankMesh(tankState, scene, myId);
     }
     updateTankMesh(tankState);
     existingIds.delete(tankState.playerId);
@@ -105,33 +121,42 @@ socket.on('state_update', (tanks: TankState[]) => {
   for (const tankState of tanks) {
     const existing = getAllTankMeshes().get(tankState.playerId);
     if (!existing) {
-      createTankMesh(tankState, scene);
+      createTankMesh(tankState, scene, myId);
     }
 
     if (tankState.playerId === myId) {
       // Server reconciliation: gently correct predicted state toward server
       if (predictedState) {
-        // Adopt server's authoritative hp, score, alive status
+        // Respawn: snap hard instead of blending from the death position.
+        const justRespawned = !predictedState.alive && tankState.alive;
+
         predictedState.hp = tankState.hp;
         predictedState.maxHp = tankState.maxHp;
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
 
-        // Blend position toward server (soft correction)
-        const RECONCILE_RATE = 0.15;
-        predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
-        predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
-        // Y follows terrain at corrected XZ
-        predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-
-        // Blend body rotation
-        let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
-        while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-        while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-        predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
-        // pitch/roll are recomputed every frame from the local heightmap by
-        // stepTankPhysics — overwriting with the server value would cause
-        // visible jolts at each 20Hz state_update.
+        if (justRespawned) {
+          predictedState.position.x = tankState.position.x;
+          predictedState.position.y = tankState.position.y;
+          predictedState.position.z = tankState.position.z;
+          predictedState.bodyRotation = tankState.bodyRotation;
+          predictedState.turretRotation = tankState.turretRotation;
+          predictedState.barrelPitch = tankState.barrelPitch;
+          predictedVel.x = 0;
+          predictedVel.z = 0;
+          triggerRespawnAnim(myId);
+        } else {
+          // Blend position toward server (soft correction)
+          const RECONCILE_RATE = 0.15;
+          predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
+          predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
+          predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
+          let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
+          while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+          while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+          predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+          // pitch/roll are recomputed every frame from the local heightmap.
+        }
       }
     } else {
       // Remote tank: feed into interpolation system
@@ -143,6 +168,19 @@ socket.on('state_update', (tanks: TankState[]) => {
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
+
+  // Toggle the Dark-Souls-style death screen based on the alive flag edge.
+  if (myTank) {
+    if (!myTank.alive && !wasDead) {
+      hud.showDeathScreen(() => {
+        socket.emit('respawn_request');
+      });
+      wasDead = true;
+    } else if (myTank.alive && wasDead) {
+      hud.hideDeathScreen();
+      wasDead = false;
+    }
+  }
 });
 
 socket.on('shot_resolved', (result) => {
@@ -153,7 +191,7 @@ socket.on('shot_resolved', (result) => {
 
 socket.on('player_spawned', (tank: TankState) => {
   if (!getAllTankMeshes().has(tank.playerId)) {
-    createTankMesh(tank, scene);
+    createTankMesh(tank, scene, myId);
   }
 });
 
@@ -278,9 +316,11 @@ function animate(): void {
 
   // Interpolate remote tanks smoothly
   interpolateRemoteTanks(dt, myId);
+  tickTankEffects(dt);
 
   updateProjectileAnimation(scene, dt);
   renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
 }
 
 animate();
