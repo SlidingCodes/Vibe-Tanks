@@ -22,7 +22,7 @@
       font-size: 14px; text-shadow: 0 0 6px #000;
     }
     #scoreboard {
-      position: absolute; top: 56px; right: 20px;
+      position: absolute; top: 40px; right: 6px;
       font-size: 14px; text-align: right; text-shadow: 0 0 6px #000;
     }
     #cooldown-bar {
@@ -123,20 +123,20 @@
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
     #fullscreen-btn {
-      position: fixed; top: 12px; right: 20px; width: 32px; height: 32px;
+      position: fixed; top: 0; right: 0; width: 32px; height: 32px;
       background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.35);
-      border-radius: 4px; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
+      border-radius: 0; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
       z-index: 30; font-family: sans-serif;
     }
     #fullscreen-btn:hover { background: rgba(0,0,0,0.75); }
     #minimap {
-      position: fixed; bottom: 20px; right: 20px;
-      width: 180px; height: 180px; border-radius: 50%;
+      position: fixed; bottom: 0; right: 0;
+      width: 180px; height: 180px; border-radius: 0;
       pointer-events: none; z-index: 5;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      box-shadow: 0 0 12px rgba(0,0,0,0.5);
     }
     body.mobile #minimap {
-      width: 120px; height: 120px; bottom: auto; top: 60px; right: 12px;
+      width: 120px; height: 120px; bottom: auto; top: 32px; right: 0;
     }
     /* Mobile overlay controls — hidden by default, shown when body has .mobile */
     #mobile-controls { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 4; }

@@ -97,15 +97,15 @@ function injectStyles(): void {
   const style = document.createElement('style');
   style.textContent = `
     #settings-btn {
-      position: fixed; top: 12px; right: 60px; width: 32px; height: 32px;
+      position: fixed; top: 0; right: 32px; width: 32px; height: 32px;
       background: rgba(0,0,0,0.55); color: #fff;
-      border: 1px solid rgba(255,255,255,0.35); border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.35); border-radius: 0;
       font-size: 18px; line-height: 1; cursor: pointer; padding: 0;
       z-index: 30; font-family: sans-serif;
     }
     #settings-btn:hover { background: rgba(0,0,0,0.75); }
     #settings-panel {
-      position: fixed; top: 52px; right: 20px;
+      position: fixed; top: 34px; right: 0;
       min-width: 180px; padding: 12px 14px;
       background: rgba(15,15,20,0.92); color: #fff;
       border: 1px solid rgba(255,255,255,0.2); border-radius: 6px;

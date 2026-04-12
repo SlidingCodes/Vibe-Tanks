@@ -183,12 +183,6 @@ export function updateMinimap(
   ctx.save();
   ctx.clearRect(0, 0, size, size);
 
-  // Circular clip.
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
-  ctx.closePath();
-  ctx.clip();
-
   ctx.fillStyle = '#2a2a2a';
   ctx.fillRect(0, 0, size, size);
 
@@ -249,7 +243,7 @@ export function updateMinimap(
       const pos = tankPositions?.get(t.playerId) ?? { x: t.position.x, z: t.position.z };
       const dx = (pos.x - myPos.x) * pxPerUnitVisible;
       const dy = (pos.z - myPos.z) * pxPerUnitVisible;
-      if (Math.hypot(dx, dy) > size / 2) continue;
+      if (Math.abs(dx) > size / 2 || Math.abs(dy) > size / 2) continue;
       ctx.fillStyle = t.color || '#f33';
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 1.5;
@@ -277,7 +271,5 @@ export function updateMinimap(
 
   ctx.strokeStyle = 'rgba(255,255,255,0.6)';
   ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.strokeRect(1, 1, size - 2, size - 2);
 }
