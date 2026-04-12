@@ -1,5 +1,32 @@
 import * as THREE from 'three';
 import { TankState } from '@shared/types/index';
+import { getTerrainHeight } from '../scene/terrain';
+
+// Distance from tank center used to sample slope (half the tank footprint).
+const TILT_SAMPLE_DIST = 0.8;
+const TILT_SMOOTH = 0.25; // 0..1 lerp factor per frame toward target tilt
+
+/** Compute pitch/roll from terrain slope around the tank and smoothly apply. */
+function applyTerrainTilt(group: THREE.Object3D, yaw: number): void {
+  const x = group.position.x;
+  const z = group.position.z;
+  const d = TILT_SAMPLE_DIST;
+  const fwdX = Math.sin(yaw), fwdZ = Math.cos(yaw);
+  const rgtX = Math.cos(yaw), rgtZ = -Math.sin(yaw);
+
+  const hF = getTerrainHeight(x + fwdX * d, z + fwdZ * d);
+  const hB = getTerrainHeight(x - fwdX * d, z - fwdZ * d);
+  const hR = getTerrainHeight(x + rgtX * d, z + rgtZ * d);
+  const hL = getTerrainHeight(x - rgtX * d, z - rgtZ * d);
+
+  // Pitch around local X: nose up when front higher than back.
+  const targetPitch = Math.atan2(hF - hB, 2 * d);
+  // Roll around local Z: when right side is higher, tank rolls toward the left.
+  const targetRoll = Math.atan2(hR - hL, 2 * d);
+
+  group.rotation.x += (targetPitch - group.rotation.x) * TILT_SMOOTH;
+  group.rotation.z += (targetRoll - group.rotation.z) * TILT_SMOOTH;
+}
 
 export interface TankMesh {
   group: THREE.Group;
@@ -24,6 +51,8 @@ const SERVER_BROADCAST_INTERVAL = 1 / 20;
 
 export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
   const group = new THREE.Group();
+  // YXZ: yaw first, then pitch, then roll (all in tank local frame).
+  group.rotation.order = 'YXZ';
 
   // Body
   const bodyGeo = new THREE.BoxGeometry(1.2, 0.6, 1.6);
@@ -104,6 +133,8 @@ export function interpolateRemoteTanks(dt: number, localPlayerId: string): void 
     // Lerp body rotation (handle angle wrapping)
     tm.group.rotation.y = lerpAngle(tm.prevBodyRotation, tm.targetBodyRotation, t);
 
+    applyTerrainTilt(tm.group, tm.group.rotation.y);
+
     // Turret and barrel apply directly (aim is updated every frame anyway)
     tm.turretGroup.rotation.y = tm.state.turretRotation - tm.group.rotation.y;
     tm.barrel.rotation.x = -tm.state.barrelPitch;
@@ -120,6 +151,7 @@ export function updateLocalTankMesh(tank: TankState): void {
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
+  applyTerrainTilt(tm.group, tank.bodyRotation);
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
   tm.barrel.rotation.x = -tank.barrelPitch;
   tm.group.visible = tank.alive;
@@ -133,6 +165,7 @@ export function updateTankMesh(tank: TankState): void {
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
+  applyTerrainTilt(tm.group, tank.bodyRotation);
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
   tm.barrel.rotation.x = -tank.barrelPitch;
   tm.group.visible = tank.alive;
