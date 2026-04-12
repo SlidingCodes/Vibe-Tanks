@@ -40,6 +40,9 @@ export class Room {
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
   private matchResetAt: number = 0; // epoch seconds
+  /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
+   *  so patches from the old terrain don't land on the regenerated map. */
+  private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
   constructor(id: string, io: Server) {
     this.id = id;
@@ -55,6 +58,8 @@ export class Room {
   }
 
   private resetMatch(): void {
+    for (const t of this.pendingShotTimeouts) clearTimeout(t);
+    this.pendingShotTimeouts.clear();
     this.heightmap.regenerate();
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
@@ -227,10 +232,15 @@ export class Room {
         lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
         const patch = step.terrainPatch;
         if (patch) {
-          setTimeout(() => this.heightmap.applyPatch(patch), flightSeconds * 1000);
+          const t = setTimeout(() => {
+            this.pendingShotTimeouts.delete(t);
+            this.heightmap.applyPatch(patch);
+          }, flightSeconds * 1000);
+          this.pendingShotTimeouts.add(t);
         }
       }
-      setTimeout(() => {
+      const dmgTimeout = setTimeout(() => {
+        this.pendingShotTimeouts.delete(dmgTimeout);
         const nowSec = Date.now() / 1000;
         for (const dmg of result.damageDealt) {
           const victim = this.tanks.get(dmg.playerId);
@@ -263,6 +273,7 @@ export class Room {
           }
         }
       }, lastImpactSeconds * 1000);
+      this.pendingShotTimeouts.add(dmgTimeout);
     });
 
     socket.on('respawn_request', () => {

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6aa84f"/>
+      <stop offset="1" stop-color="#38761d"/>
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" rx="32" fill="url(#bg)"/>
+  <!-- tank body -->
+  <rect x="30" y="92" width="120" height="36" rx="6" fill="#2b3a22"/>
+  <!-- treads -->
+  <rect x="26" y="128" width="128" height="18" rx="9" fill="#1a1a1a"/>
+  <circle cx="44"  cy="137" r="7" fill="#444"/>
+  <circle cx="72"  cy="137" r="7" fill="#444"/>
+  <circle cx="108" cy="137" r="7" fill="#444"/>
+  <circle cx="136" cy="137" r="7" fill="#444"/>
+  <!-- turret -->
+  <rect x="66" y="68" width="56" height="30" rx="6" fill="#3c5a2a"/>
+  <!-- barrel -->
+  <rect x="118" y="78" width="52" height="10" rx="3" fill="#1a1a1a"/>
+  <!-- muzzle flash dot -->
+  <circle cx="170" cy="83" r="6" fill="#ffcc33"/>
+</svg>
