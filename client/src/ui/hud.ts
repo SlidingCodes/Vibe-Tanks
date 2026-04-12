@@ -75,13 +75,24 @@ function getWeaponRoleLabel(weapon: WeaponDefinition): string {
   }
 }
 
-export function setWeapons(weapons: WeaponDefinition[], selectedWeaponId: string): void {
-  weaponHud.innerHTML = weapons
-    .map((weapon, index) => {
-      const selectedClass = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-      return `<div class="${selectedClass}">[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}</div>`;
-    })
-    .join('');
+export function setWeapons(
+  weapons: WeaponDefinition[],
+  selectedWeaponId: string,
+  onSelect?: (slot: number) => void,
+): void {
+  weaponHud.innerHTML = '';
+  weapons.forEach((weapon, index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
+    chip.textContent = `[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
+    if (onSelect) {
+      chip.addEventListener('click', () => onSelect(index));
+      // Mobile: touch-action keeps a tap instant instead of waiting for click.
+      chip.addEventListener('touchstart', (e) => { e.preventDefault(); onSelect(index); }, { passive: false });
+    }
+    weaponHud.appendChild(chip);
+  });
 }
 
 export function showWaiting(show: boolean): void {

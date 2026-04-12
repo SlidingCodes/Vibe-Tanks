@@ -7,6 +7,9 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, '../shared/src'),
     },
   },
+  build: {
+    target: 'es2022',
+  },
   server: {
     host: true,
     port: 3000,

@@ -15,7 +15,9 @@ import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
-import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot } from './ui/input';
+import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot, setVirtualWeaponSlot } from './ui/input';
+import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
+import { setupFullscreenButton } from './ui/fullscreen';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -63,7 +65,19 @@ function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
 }
 
-hud.setWeapons(WEAPONS, selectedWeaponId);
+// Tapping a chip sets the same pending-slot the digit keys do, so the
+// animate-loop handler picks it up uniformly.
+const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
+hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
+
+// Fullscreen button is always available (desktop + mobile).
+setupFullscreenButton();
+
+// Activate touch controls on touch devices or when forced via ?mobile=1.
+if (isMobileDevice()) {
+  document.body.classList.add('mobile');
+  setupMobileControls();
+}
 
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
@@ -227,7 +241,7 @@ function animate(): void {
     const weapon = WEAPONS[requestedWeaponSlot];
     if (weapon) {
       selectedWeaponId = weapon.id;
-      hud.setWeapons(WEAPONS, selectedWeaponId);
+      hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
     }
   }
 
