@@ -4,7 +4,7 @@ import { ClientEvents, ServerEvents } from '@shared/types/index';
 let socket: Socket<ServerEvents, ClientEvents>;
 
 export function connect(): Socket<ServerEvents, ClientEvents> {
-  socket = io('http://localhost:3001');
+  socket = io();
   return socket;
 }
 

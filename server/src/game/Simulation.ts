@@ -1,5 +1,6 @@
 import { Vec3, ShotResult, WeaponDefinition, TankState } from '../../../shared/src/types/index';
 import { GRAVITY } from '../../../shared/src/constants';
+import { computeMuzzle } from '../../../shared/src/muzzle';
 import { Heightmap } from '../terrain/Heightmap';
 
 const SIM_DT = 1 / 60;
@@ -12,21 +13,20 @@ export function simulateShot(
   heightmap: Heightmap,
   allTanks: TankState[],
 ): ShotResult {
-  // Fire direction from turret rotation + barrel pitch
-  const rotRad = shooter.turretRotation;
-  const pitchRad = shooter.barrelPitch;
-
+  // Muzzle tip + barrel direction follow the full tank orientation
+  // (body yaw/pitch/roll + turret yaw + barrel pitch).
+  const muzzle = computeMuzzle(shooter);
   const speed = weapon.projectileSpeed;
-  const vx = Math.sin(rotRad) * Math.cos(pitchRad) * speed;
-  const vy = Math.sin(pitchRad) * speed;
-  const vz = Math.cos(rotRad) * Math.cos(pitchRad) * speed;
+  const vx = muzzle.direction.x * speed;
+  const vy = muzzle.direction.y * speed;
+  const vz = muzzle.direction.z * speed;
 
-  // Start from slightly above the tank
-  const pos: Vec3 = {
-    x: shooter.position.x + Math.sin(rotRad) * 1.2,
-    y: shooter.position.y + 1.5,
-    z: shooter.position.z + Math.cos(rotRad) * 1.2,
-  };
+  // If terrain pokes above the muzzle (e.g. shooting out of a crater), lift
+  // the spawn just above ground so the shell doesn't explode on frame 1.
+  let muzzleY = muzzle.origin.y;
+  const groundAtMuzzle = heightmap.getHeight(muzzle.origin.x, muzzle.origin.z);
+  if (muzzleY <= groundAtMuzzle + 0.2) muzzleY = groundAtMuzzle + 0.2;
+  const pos: Vec3 = { x: muzzle.origin.x, y: muzzleY, z: muzzle.origin.z };
   const vel: Vec3 = { x: vx, y: vy, z: vz };
 
   const trajectory: Vec3[] = [{ ...pos }];
@@ -62,10 +62,10 @@ export function simulateShot(
 
   let terrainPatch = null;
   if (hitTerrain) {
-    terrainPatch = heightmap.applyCrater(impactPoint, weapon.blastRadius, weapon.terrainDamage);
+    terrainPatch = heightmap.computeCraterPatch(impactPoint, weapon.blastRadius, weapon.terrainDamage);
   }
 
-  // Splash damage
+  // Splash damage (computed, not applied — caller commits at impact time).
   const damageDealt: ShotResult['damageDealt'] = [];
   for (const tank of allTanks) {
     if (!tank.alive) continue;
@@ -79,9 +79,7 @@ export function simulateShot(
       const falloff = 1 - t * t;
       const dmg = Math.round(weapon.damage * falloff);
       if (dmg > 0) {
-        tank.hp = Math.max(0, tank.hp - dmg);
-        const killed = tank.hp <= 0;
-        if (killed) tank.alive = false;
+        const killed = tank.hp - dmg <= 0;
         damageDealt.push({ playerId: tank.playerId, damage: dmg, killed });
       }
     }

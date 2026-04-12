@@ -28,7 +28,9 @@ export interface MovementInput {
 export interface TankState {
   playerId: PlayerId;
   position: Vec3;
-  bodyRotation: number;   // tank body Y-rotation in radians
+  bodyRotation: number;   // tank body Y-rotation (yaw) in radians
+  bodyPitch: number;      // tank body X-rotation (pitch) in radians
+  bodyRoll: number;       // tank body Z-rotation (roll) in radians
   turretRotation: number; // turret Y-rotation in radians (world space)
   barrelPitch: number;    // barrel pitch in radians (0 = flat, positive = up)
   hp: number;

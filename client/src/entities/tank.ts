@@ -1,31 +1,9 @@
 import * as THREE from 'three';
 import { TankState } from '@shared/types/index';
-import { getTerrainHeight } from '../scene/terrain';
 
-// Distance from tank center used to sample slope (half the tank footprint).
-const TILT_SAMPLE_DIST = 0.8;
-const TILT_SMOOTH = 0.25; // 0..1 lerp factor per frame toward target tilt
+const TILT_SMOOTH = 0.25;
 
-/** Compute pitch/roll from terrain slope around the tank and smoothly apply. */
-function applyTerrainTilt(group: THREE.Object3D, yaw: number): void {
-  const x = group.position.x;
-  const z = group.position.z;
-  const d = TILT_SAMPLE_DIST;
-  const fwdX = Math.sin(yaw), fwdZ = Math.cos(yaw);
-  const rgtX = Math.cos(yaw), rgtZ = -Math.sin(yaw);
-
-  const hF = getTerrainHeight(x + fwdX * d, z + fwdZ * d);
-  const hB = getTerrainHeight(x - fwdX * d, z - fwdZ * d);
-  const hR = getTerrainHeight(x + rgtX * d, z + rgtZ * d);
-  const hL = getTerrainHeight(x - rgtX * d, z - rgtZ * d);
-
-  // Pitch around local X: in three.js YXZ, positive rotation.x tilts the
-  // forward vector toward -Y (nose down), so invert to raise the nose when
-  // the front of the tank is on higher terrain.
-  const targetPitch = Math.atan2(hB - hF, 2 * d);
-  // Roll around local Z: positive rotation.z lifts the right side.
-  const targetRoll = Math.atan2(hR - hL, 2 * d);
-
+function smoothTilt(group: THREE.Object3D, targetPitch: number, targetRoll: number): void {
   group.rotation.x += (targetPitch - group.rotation.x) * TILT_SMOOTH;
   group.rotation.z += (targetRoll - group.rotation.z) * TILT_SMOOTH;
 }
@@ -153,7 +131,7 @@ export function interpolateRemoteTanks(dt: number, localPlayerId: string): void 
     // Lerp body rotation (handle angle wrapping)
     tm.group.rotation.y = lerpAngle(tm.prevBodyRotation, tm.targetBodyRotation, t);
 
-    applyTerrainTilt(tm.group, tm.group.rotation.y);
+    smoothTilt(tm.group, tm.state.bodyPitch, tm.state.bodyRoll);
 
     // Turret and barrel apply directly (aim is updated every frame anyway)
     tm.turretGroup.rotation.y = tm.state.turretRotation - tm.group.rotation.y;
@@ -171,7 +149,7 @@ export function updateLocalTankMesh(tank: TankState): void {
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
-  applyTerrainTilt(tm.group, tank.bodyRotation);
+  smoothTilt(tm.group, tank.bodyPitch, tank.bodyRoll);
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
   tm.barrel.rotation.x = -tank.barrelPitch;
   tm.group.visible = tank.alive;
@@ -185,7 +163,8 @@ export function updateTankMesh(tank: TankState): void {
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
-  applyTerrainTilt(tm.group, tank.bodyRotation);
+  tm.group.rotation.x = tank.bodyPitch;
+  tm.group.rotation.z = tank.bodyRoll;
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
   tm.barrel.rotation.x = -tank.barrelPitch;
   tm.group.visible = tank.alive;

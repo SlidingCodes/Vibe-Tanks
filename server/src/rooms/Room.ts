@@ -5,9 +5,10 @@ import {
 } from '../../../shared/src/types/index';
 import {
   TANK_MAX_HP, MIN_PLAYERS_TO_START, MAX_PLAYERS, SPAWN_MIN_DISTANCE,
-  TANK_SPEED, TANK_TURN_SPEED, TICK_RATE, SIM_TICK_RATE,
+  TICK_RATE, SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
+import { stepTankPhysics } from '../../../shared/src/physics';
 import { Heightmap } from '../terrain/Heightmap';
 import { simulateShot } from '../game/Simulation';
 
@@ -17,6 +18,8 @@ interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
+  velX: number;
+  velZ: number;
 }
 
 export class Room {
@@ -44,6 +47,8 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
+      velX: 0,
+      velZ: 0,
     });
 
     this.spawnTank(playerId);
@@ -80,6 +85,8 @@ export class Room {
       playerId,
       position: pos,
       bodyRotation: 0,
+      bodyPitch: 0,
+      bodyRoll: 0,
       turretRotation: 0,
       barrelPitch: 0.2,
       hp: TANK_MAX_HP,
@@ -151,22 +158,24 @@ export class Room {
         Array.from(this.tanks.values()),
       );
 
-      // Award score
-      for (const dmg of result.damageDealt) {
-        if (dmg.playerId !== socket.id) {
-          tank.score += dmg.damage;
-          if (dmg.killed) tank.score += 50;
-        }
-      }
-
       this.io.to(this.id).emit('shot_resolved', result);
 
-      // Re-ground all tanks after terrain change
-      for (const t of this.tanks.values()) {
-        if (t.alive) {
-          t.position.y = this.heightmap.getHeight(t.position.x, t.position.z);
+      // Defer world mutations (crater + damage + score) to match the client's
+      // projectile flight animation so opponents don't drop before impact.
+      const flightSeconds = Math.max(0, (result.trajectory.length - 1) * (4 / 60));
+      setTimeout(() => {
+        if (result.terrainPatch) this.heightmap.applyPatch(result.terrainPatch);
+        for (const dmg of result.damageDealt) {
+          const victim = this.tanks.get(dmg.playerId);
+          if (!victim || !victim.alive) continue;
+          victim.hp = Math.max(0, victim.hp - dmg.damage);
+          if (victim.hp <= 0) victim.alive = false;
+          if (dmg.playerId !== socket.id) {
+            tank.score += dmg.damage;
+            if (dmg.killed) tank.score += 50;
+          }
         }
-      }
+      }, flightSeconds * 1000);
     });
 
     socket.on('disconnect', () => {
@@ -205,35 +214,15 @@ export class Room {
   private tickMovement(dt: number): void {
     const mapW = this.heightmap.width * this.heightmap.cellSize;
     const mapH = this.heightmap.height * this.heightmap.cellSize;
+    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-
-      const input = player.input;
-
-      // Turn tank body
-      if (input.left) tank.bodyRotation += TANK_TURN_SPEED * dt;
-      if (input.right) tank.bodyRotation -= TANK_TURN_SPEED * dt;
-
-      // Move forward/backward along body facing direction
-      let moveDir = 0;
-      if (input.forward) moveDir += 1;
-      if (input.backward) moveDir -= 1;
-
-      if (moveDir !== 0) {
-        const speed = TANK_SPEED * moveDir * dt;
-        const nx = tank.position.x + Math.sin(tank.bodyRotation) * speed;
-        const nz = tank.position.z + Math.cos(tank.bodyRotation) * speed;
-
-        // Clamp to map bounds
-        const cx = Math.max(1, Math.min(mapW - 1, nx));
-        const cz = Math.max(1, Math.min(mapH - 1, nz));
-
-        tank.position.x = cx;
-        tank.position.z = cz;
-        tank.position.y = this.heightmap.getHeight(cx, cz);
-      }
+      const vel = { x: player.velX, z: player.velZ };
+      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
+      player.velX = vel.x;
+      player.velZ = vel.z;
     }
   }
 
