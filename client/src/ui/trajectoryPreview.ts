@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import { GRAVITY } from '@shared/constants';
-import { WeaponDefinition, Vec3 } from '@shared/types/index';
+import { Vec3, WeaponDefinition } from '@shared/types/index';
 import { getTerrainHeight } from '../scene/terrain';
 
-const MAX_PARENT_DOTS = 60;
+const MAX_PARENT_DOTS = 80;
 const MAX_FRAGMENT_DOTS = 90;
-const SIM_DT = 1 / 60; // must match server Simulation.ts
-const TICKS_PER_DOT = 4; // match server trajectory sampling
+const SIM_DT = 1 / 60;
+const TICKS_PER_DOT = 4;
 const MAX_TICKS = 900;
 
 interface SegmentOptions {
@@ -65,6 +65,69 @@ function createVelocity(turretRotation: number, barrelPitch: number, speed: numb
     y: Math.sin(barrelPitch) * speed,
     z: Math.cos(turretRotation) * Math.cos(barrelPitch) * speed,
   };
+}
+
+function length(v: Vec3): number {
+  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+function normalize(v: Vec3): Vec3 {
+  const len = length(v) || 1;
+  return {
+    x: v.x / len,
+    y: v.y / len,
+    z: v.z / len,
+  };
+}
+
+function dot(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function scale(v: Vec3, amount: number): Vec3 {
+  return {
+    x: v.x * amount,
+    y: v.y * amount,
+    z: v.z * amount,
+  };
+}
+
+function subtract(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.x - b.x,
+    y: a.y - b.y,
+    z: a.z - b.z,
+  };
+}
+
+function add(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.x + b.x,
+    y: a.y + b.y,
+    z: a.z + b.z,
+  };
+}
+
+function getSurfaceNormal(x: number, z: number): Vec3 {
+  const step = 1;
+  const hx0 = getTerrainHeight(x - step, z);
+  const hx1 = getTerrainHeight(x + step, z);
+  const hz0 = getTerrainHeight(x, z - step);
+  const hz1 = getTerrainHeight(x, z + step);
+  return normalize({
+    x: hx0 - hx1,
+    y: 2 * step,
+    z: hz0 - hz1,
+  });
+}
+
+function reflectVelocity(velocity: Vec3, normal: Vec3, damping: number): Vec3 {
+  const factor = 2 * dot(velocity, normal);
+  const reflected = subtract(velocity, scale(normal, factor));
+  reflected.x *= damping;
+  reflected.y = Math.max(Math.abs(reflected.y) * damping, 2.5);
+  reflected.z *= damping;
+  return reflected;
 }
 
 function simulateSegment(startPos: Vec3, startVel: Vec3, options: SegmentOptions = {}): SegmentResult {
@@ -130,7 +193,7 @@ function simulateSegment(startPos: Vec3, startVel: Vec3, options: SegmentOptions
 }
 
 function makeFragmentVelocity(baseVelocity: Vec3, yawOffset: number, speedScale: number): Vec3 {
-  const baseSpeed = Math.sqrt(baseVelocity.x ** 2 + baseVelocity.y ** 2 + baseVelocity.z ** 2) * speedScale;
+  const baseSpeed = length(baseVelocity) * speedScale;
   const horizontal = Math.sqrt(baseVelocity.x ** 2 + baseVelocity.z ** 2);
   const baseYaw = Math.atan2(baseVelocity.x, baseVelocity.z);
   const basePitch = Math.atan2(baseVelocity.y, Math.max(horizontal, 0.0001));
@@ -142,6 +205,19 @@ function makeFragmentVelocity(baseVelocity: Vec3, yawOffset: number, speedScale:
     y: Math.sin(pitch) * baseSpeed,
     z: Math.cos(yaw) * Math.cos(pitch) * baseSpeed,
   };
+}
+
+function makeLinePoints(start: Vec3, end: Vec3, count = 18): Vec3[] {
+  const points: Vec3[] = [];
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 1 : i / (count - 1);
+    points.push({
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+      z: start.z + (end.z - start.z) * t,
+    });
+  }
+  return points;
 }
 
 function hideDots(dots: THREE.Mesh[]): void {
@@ -167,6 +243,7 @@ export function updateTrajectoryPreview(
   turretRotation: number,
   barrelPitch: number,
   weapon: WeaponDefinition,
+  aimTarget?: Vec3 | null,
 ): void {
   if (!initialized) init(scene);
 
@@ -217,6 +294,112 @@ export function updateTrajectoryPreview(
 
       placePoints(fragmentDots, fragmentPoints);
     }
+    return;
+  }
+
+  if (weapon.behavior === 'bounce') {
+    parentMat.color.setHex(0xffec7a);
+    fragmentMat.color.setHex(0xffa65c);
+    const first = simulateSegment(startPos, startVel);
+    placePoints(parentDots, first.points);
+
+    if (first.reason === 'impact') {
+      const normal = getSurfaceNormal(first.endPoint.x, first.endPoint.z);
+      const bouncedVelocity = reflectVelocity(first.endVelocity, normal, weapon.behaviorConfig?.bounceDamping ?? 0.72);
+      const second = simulateSegment(add(first.endPoint, scale(normal, 0.25)), bouncedVelocity);
+      placePoints(fragmentDots, second.points);
+      marker.position.set(first.endPoint.x, first.endPoint.y, first.endPoint.z);
+      marker.scale.setScalar(0.55);
+      markerMat.color.setHex(0xffd96a);
+      marker.visible = true;
+    }
+    return;
+  }
+
+  if (weapon.behavior === 'drill') {
+    parentMat.color.setHex(0x9c866c);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+
+    const horizontal = normalize({ x: segment.endVelocity.x, y: 0, z: segment.endVelocity.z });
+    const fallback = { x: Math.sin(turretRotation), y: 0, z: Math.cos(turretRotation) };
+    const direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+    const drillDistance = weapon.behaviorConfig?.drillDistance ?? 5;
+    const burstPoint = {
+      x: segment.endPoint.x + direction.x * drillDistance,
+      y: 0,
+      z: segment.endPoint.z + direction.z * drillDistance,
+    };
+    burstPoint.y = getTerrainHeight(burstPoint.x, burstPoint.z);
+
+    marker.position.set(burstPoint.x, burstPoint.y, burstPoint.z);
+    marker.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
+    markerMat.color.setHex(0xff7a29);
+    marker.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'mortar') {
+    parentMat.color.setHex(0xffcc7a);
+    const impact = aimTarget
+      ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
+      : simulateSegment(startPos, startVel).endPoint;
+    marker.position.set(impact.x, impact.y, impact.z);
+    marker.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
+    markerMat.color.setHex(0xffd04d);
+    marker.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'rail') {
+    parentMat.color.setHex(0xaff4ff);
+    const dir = normalize(startVel);
+    const end = aimTarget
+      ? { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z }
+      : {
+          x: startPos.x + dir.x * (weapon.behaviorConfig?.railRange ?? 50),
+          y: startPos.y + dir.y * (weapon.behaviorConfig?.railRange ?? 50),
+          z: startPos.z + dir.z * (weapon.behaviorConfig?.railRange ?? 50),
+        };
+    placePoints(parentDots, makeLinePoints(startPos, end, 22));
+    marker.position.set(end.x, end.y, end.z);
+    marker.scale.setScalar(0.45);
+    markerMat.color.setHex(0xcff8ff);
+    marker.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'seeker') {
+    parentMat.color.setHex(0x7de6ff);
+    const dir = normalize(startVel);
+    const end = {
+      x: startPos.x + dir.x * 10,
+      y: startPos.y + dir.y * 10,
+      z: startPos.z + dir.z * 10,
+    };
+    placePoints(parentDots, makeLinePoints(startPos, end, 14));
+    return;
+  }
+
+  if (weapon.behavior === 'napalm') {
+    parentMat.color.setHex(0xffb259);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    marker.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
+    markerMat.color.setHex(0xff6a00);
+    marker.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'mine') {
+    parentMat.color.setHex(0xbdf06a);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    marker.scale.setScalar(0.55);
+    markerMat.color.setHex(0xb8ff66);
+    marker.visible = true;
     return;
   }
 

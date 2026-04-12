@@ -34,17 +34,35 @@ function getWeaponRoleLabel(weapon: WeaponDefinition): string {
       return 'Airburst';
     case 'split':
       return 'Cluster';
+    case 'bounce':
+      return 'Bank Shot';
+    case 'drill':
+      return 'Burrow';
+    case 'napalm':
+      return 'Area Denial';
+    case 'seeker':
+      return 'Homing';
+    case 'rail':
+      return 'Beam';
+    case 'mortar':
+      return 'Barrage';
+    case 'mine':
+      return 'Trap';
     case 'standard':
     default:
       return 'Precision';
   }
 }
 
+function getWeaponSlotLabel(index: number): string {
+  return index === 9 ? '0' : String(index + 1);
+}
+
 export function setWeapons(weapons: WeaponDefinition[], selectedWeaponId: string): void {
   weaponHud.innerHTML = weapons
     .map((weapon, index) => {
       const selectedClass = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-      return `<div class="${selectedClass}">[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}</div>`;
+      return `<div class="${selectedClass}">[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}</div>`;
     })
     .join('');
 }

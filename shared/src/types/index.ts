@@ -28,9 +28,9 @@ export interface MovementInput {
 export interface TankState {
   playerId: PlayerId;
   position: Vec3;
-  bodyRotation: number;   // tank body Y-rotation in radians
-  turretRotation: number; // turret Y-rotation in radians (world space)
-  barrelPitch: number;    // barrel pitch in radians (0 = flat, positive = up)
+  bodyRotation: number;
+  turretRotation: number;
+  barrelPitch: number;
   hp: number;
   maxHp: number;
   alive: boolean;
@@ -39,9 +39,37 @@ export interface TankState {
 }
 
 // ── Weapons ──
-export type WeaponBehavior = 'standard' | 'split' | 'bounce' | 'drill' | 'airburst';
-export type ShotEventType = 'impact' | 'split';
-export type ShotVisualStyle = 'standard' | 'big_blast' | 'splitter_parent' | 'splitter_fragment';
+export type WeaponBehavior =
+  | 'standard'
+  | 'split'
+  | 'airburst'
+  | 'bounce'
+  | 'drill'
+  | 'napalm'
+  | 'seeker'
+  | 'rail'
+  | 'mortar'
+  | 'mine';
+
+export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
+
+export type ShotVisualStyle =
+  | 'standard'
+  | 'big_blast'
+  | 'splitter_parent'
+  | 'splitter_fragment'
+  | 'bouncer_parent'
+  | 'bouncer_bounce'
+  | 'drill_entry'
+  | 'drill_burst'
+  | 'napalm_shell'
+  | 'seeker'
+  | 'rail'
+  | 'mortar_shell'
+  | 'mine_deploy'
+  | 'mine_burst';
+
+export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
 export interface WeaponBehaviorConfig {
   airburstHeight?: number;
@@ -52,6 +80,36 @@ export interface WeaponBehaviorConfig {
   fragmentBlastRadius?: number;
   fragmentDamage?: number;
   fragmentTerrainDamage?: number;
+  bounceCount?: number;
+  bounceDamping?: number;
+  drillDelay?: number;
+  drillDistance?: number;
+  drillBlastRadius?: number;
+  drillDamage?: number;
+  drillTerrainDamage?: number;
+  burnRadius?: number;
+  burnDuration?: number;
+  burnTickDamage?: number;
+  burnTickInterval?: number;
+  seekerTurnRate?: number;
+  seekerLifetime?: number;
+  seekerTargetRadius?: number;
+  railRange?: number;
+  railRadius?: number;
+  railTerrainDamage?: number;
+  mortarShellCount?: number;
+  mortarSpread?: number;
+  mortarInterval?: number;
+  mortarSpawnHeight?: number;
+  mortarImpactRadius?: number;
+  mortarImpactDamage?: number;
+  mortarTerrainDamage?: number;
+  mineArmTime?: number;
+  mineLifetime?: number;
+  mineTriggerRadius?: number;
+  mineBlastRadius?: number;
+  mineDamage?: number;
+  mineTerrainDamage?: number;
 }
 
 export interface WeaponDefinition {
@@ -62,16 +120,8 @@ export interface WeaponDefinition {
   damage: number;
   terrainDamage: number;
   behavior: WeaponBehavior;
-  cooldown: number; // seconds between shots
+  cooldown: number;
   behaviorConfig?: WeaponBehaviorConfig;
-}
-
-// ── Projectile ──
-export interface ProjectileState {
-  weaponId: string;
-  position: Vec3;
-  velocity: Vec3;
-  active: boolean;
 }
 
 // ── Terrain ──
@@ -80,14 +130,41 @@ export interface TerrainPatch {
   startZ: number;
   width: number;
   height: number;
-  heights: number[];  // flattened row-major patch of changed heights
+  heights: number[];
 }
 
 export interface TerrainConfig {
   gridWidth: number;
   gridHeight: number;
   cellSize: number;
-  heights: number[];  // full flattened heightmap
+  heights: number[];
+}
+
+// ── Active combat state ──
+export interface ActiveProjectileState {
+  projectileId: string;
+  ownerId: PlayerId;
+  weaponId: string;
+  position: Vec3;
+  velocity: Vec3;
+  visualStyle: ShotVisualStyle;
+  targetId: PlayerId | null;
+}
+
+export interface HazardState {
+  hazardId: string;
+  ownerId: PlayerId;
+  type: HazardType;
+  position: Vec3;
+  radius: number;
+  armed: boolean;
+  timeRemaining: number;
+}
+
+export interface RoomStateUpdate {
+  tanks: TankState[];
+  projectiles: ActiveProjectileState[];
+  hazards: HazardState[];
 }
 
 // ── Match snapshot ──
@@ -96,6 +173,8 @@ export interface MatchSnapshot {
   phase: MatchPhase;
   tanks: TankState[];
   terrain: TerrainConfig;
+  projectiles: ActiveProjectileState[];
+  hazards: HazardState[];
 }
 
 // ── Shot result ──
@@ -121,15 +200,14 @@ export interface ClientEvents {
   join_room: (data: { playerName: string }) => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
-  fire_request: (data: { weaponId: string }) => void;
+  fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
 }
 
 // ── Network events: server → client ──
 export interface ServerEvents {
   room_snapshot: (snapshot: MatchSnapshot) => void;
-  state_update: (tanks: TankState[]) => void;
+  state_update: (state: RoomStateUpdate) => void;
   shot_resolved: (result: ShotResult) => void;
-  terrain_patch: (patch: TerrainPatch) => void;
   player_spawned: (tank: TankState) => void;
   player_left: (data: { playerId: PlayerId }) => void;
   game_over: (data: { winnerId: PlayerId; scores: { playerId: PlayerId; score: number }[] }) => void;
