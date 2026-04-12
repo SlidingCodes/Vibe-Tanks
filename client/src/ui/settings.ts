@@ -1,7 +1,14 @@
-import { CameraPresetId, setCameraPreset, setWideScreen } from '../scene/camera';
+import { CameraPresetId, setCameraPreset } from '../scene/camera';
 
 const LS_PRESET = 'vt.cameraPreset';
-const LS_WIDE = 'vt.wideScreen';
+
+interface FsDoc extends Document {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void>;
+}
+interface FsEl extends HTMLElement {
+  webkitRequestFullscreen?: () => Promise<void>;
+}
 
 const PRESETS: { id: CameraPresetId; label: string }[] = [
   { id: 'classic', label: 'Classic' },
@@ -23,7 +30,7 @@ export function setupSettingsMenu(): void {
   panel.innerHTML = `
     <div class="settings-title">debug</div>
     <label class="settings-row">
-      <input type="checkbox" id="settings-wide" />
+      <input type="checkbox" id="settings-fullscreen" />
       <span>Espansione schermo</span>
     </label>
     <div class="settings-section-label">Visuale</div>
@@ -35,7 +42,6 @@ export function setupSettingsMenu(): void {
 
   const camWrap = panel.querySelector('#settings-cameras') as HTMLDivElement;
   const savedPreset = (localStorage.getItem(LS_PRESET) as CameraPresetId | null) ?? 'wide';
-  const savedWide = localStorage.getItem(LS_WIDE) === '1';
 
   for (const p of PRESETS) {
     const btnP = document.createElement('button');
@@ -53,15 +59,27 @@ export function setupSettingsMenu(): void {
     camWrap.appendChild(btnP);
   }
 
-  const wideCb = panel.querySelector('#settings-wide') as HTMLInputElement;
-  wideCb.checked = savedWide;
-  wideCb.addEventListener('change', () => {
-    setWideScreen(wideCb.checked);
-    localStorage.setItem(LS_WIDE, wideCb.checked ? '1' : '0');
+  const fsCb = panel.querySelector('#settings-fullscreen') as HTMLInputElement;
+  const doc = document as FsDoc;
+  const root = document.documentElement as FsEl;
+  const requestFs = root.requestFullscreen?.bind(root) ?? root.webkitRequestFullscreen?.bind(root);
+  const exitFs = doc.exitFullscreen?.bind(doc) ?? doc.webkitExitFullscreen?.bind(doc);
+  const getFsEl = () => doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+  const fsSupported = Boolean(requestFs) && Boolean(exitFs);
+  if (!fsSupported) {
+    (fsCb.closest('.settings-row') as HTMLElement | null)?.style.setProperty('display', 'none');
+  }
+  const syncFs = () => { fsCb.checked = !!getFsEl(); };
+  syncFs();
+  document.addEventListener('fullscreenchange', syncFs);
+  document.addEventListener('webkitfullscreenchange', syncFs);
+  fsCb.addEventListener('change', () => {
+    if (!fsSupported) return;
+    if (fsCb.checked) requestFs!().catch(() => syncFs());
+    else exitFs!().catch(() => syncFs());
   });
 
   setCameraPreset(savedPreset);
-  setWideScreen(savedWide);
 
   const toggle = () => panel.classList.toggle('open');
   btn.addEventListener('click', (e) => {

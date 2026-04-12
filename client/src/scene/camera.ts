@@ -29,11 +29,10 @@ const PRESETS: Record<CameraPresetId, CameraPreset> = {
 };
 
 let currentPreset: CameraPresetId = 'wide';
-let extraFovBoost = 0;
 
 function applyProjection(): void {
   const p = PRESETS[currentPreset];
-  camera.fov = p.fov + extraFovBoost;
+  camera.fov = p.fov;
   camera.updateProjectionMatrix();
 }
 
@@ -53,11 +52,6 @@ export function createCamera(): THREE.PerspectiveCamera {
 
 export function setCameraPreset(id: CameraPresetId): void {
   currentPreset = id;
-  applyProjection();
-}
-
-export function setWideScreen(on: boolean): void {
-  extraFovBoost = on ? 12 : 0;
   applyProjection();
 }
 
