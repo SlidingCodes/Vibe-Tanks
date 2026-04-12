@@ -3,7 +3,7 @@ import { connect, getSocket } from './net/socket';
 import { createTerrain, applyTerrainPatch, getTerrainHeight } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
-  getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks, animateTreads,
+  getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
 } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
 import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
@@ -263,8 +263,6 @@ function animate(): void {
 
   // Interpolate remote tanks smoothly
   interpolateRemoteTanks(dt, myId);
-
-  animateTreads();
 
   updateProjectileAnimation(scene, dt);
   renderer.render(scene, camera);
