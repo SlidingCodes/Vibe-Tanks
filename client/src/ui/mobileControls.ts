@@ -1,6 +1,6 @@
 import {
   setVirtualKey, triggerVirtualFire,
-  setVirtualAimWorld, clearVirtualAimWorld, getAimContext,
+  setVirtualAimWorld, getAimContext,
 } from './input';
 
 /**
@@ -134,15 +134,14 @@ export function setupMobileControls(): void {
     for (const t of Array.from(e.changedTouches)) {
       if (t.identifier === aimTouchId) {
         aimTouchId = null;
-        // Leave the knob where the user released it as a visual memento
-        // of the last shot direction; it gets repositioned on next touch.
+        aimKnob.style.transform = 'translate(0, 0)';
         aimBase.classList.remove('active');
         // Tap → auto-fire straight ahead; drag → fire along current aim.
+        // The virtual aim target is intentionally NOT cleared on release
+        // so the trajectory preview stays visible until the next touch
+        // repositions it.
         if (aimMaxDrag < TAP_MAX_DRAG_PX) writeAimFromOffset(0, -AIM_RADIUS * 0.5);
         triggerVirtualFire();
-        // Clear next frame so the current fire request still sees the aim
-        // (fire_request is emitted later in the same render loop tick).
-        requestAnimationFrame(() => clearVirtualAimWorld());
         return;
       }
     }
