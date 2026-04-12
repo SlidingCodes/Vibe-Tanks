@@ -53,31 +53,38 @@ client/src/
 server/src/
   index.ts             HTTP + Socket.IO server bootstrap, single room
   rooms/Room.ts        Real-time game loop: movement tick (60hz), state broadcast (20hz), free-fire with cooldown
-  game/Simulation.ts   Euler-integrated shell flight, terrain/tank collision, splash damage
-  terrain/Heightmap.ts 2D height grid: generation, crater application, patch export
+  game/Simulation.ts   Euler-integrated shell flight, pure (returns damage+patch without mutating)
+  terrain/Heightmap.ts 2D height grid: generation, bilinear sampling, compute/apply crater patches
 shared/src/
   types/index.ts       All shared interfaces and network event contracts
   weapons.ts           Weapon definitions with cooldown values (standard, big_blast, splitter)
   constants.ts         Gameplay tuning values (gravity, grid size, HP, speed, tick rates)
+  physics.ts           Shared tank-movement step (engine grip, slope slide, cliff fall)
+                       consumed by both server sim and client prediction
 ```
 
 ## Architecture
 
-- **Real-time, server authoritative**: server runs a 60hz physics loop for tank movement and a 20hz broadcast loop for state updates. Clients send movement input and aim, server moves tanks and resolves shots.
+- **Real-time, server authoritative**: server runs a 60hz movement loop and a 20hz broadcast loop. Clients send input/aim, server integrates and resolves shots.
 - **Controls**: WASD for tank movement (forward/back/turn), mouse position raycasted to ground plane for turret aiming, left-click to fire with per-weapon cooldown.
 - **Third-person camera**: smoothed lerp follow behind the player's tank, offset rotates with tank body rotation.
-- **Custom simulation**: shell trajectory uses Euler integration (dt=1/60). No physics engine -- avoids terrain/projectile desync.
-- **Heightmap terrain**: 64x64 float grid on server. Craters use smoothstep falloff. Only changed patches are sent to clients.
-- **Data-driven weapons**: `WeaponDefinition` configs in `shared/src/weapons.ts` with cooldown values. Common projectile flow: spawn -> tick -> collision -> explosion resolver.
-- **Tank mesh hierarchy**: group (body rotation) > turretGroup (independent Y rotation for aiming) > barrel (X rotation for pitch). Turret rotation is world-space on server, converted to local-space on client by subtracting body rotation.
+- **Shared tank physics**: `shared/src/physics.ts` exports `stepTankPhysics`, called identically by the server sim (authoritative) and the client prediction. No 3rd-party physics engine. Model:
+  - Kinematic in XZ, y from bilinear heightmap sample, pitch/roll from terrain slope.
+  - Semi-implicit "target-velocity" integration: tracks pull velocity toward target (driving speed × traction, or 0 when braking) at rate `ENGINE_GRIP` / `BRAKE_GRIP`. Stable at any dt.
+  - Slope slide is `g·sin(θ)` along the downhill horizontal direction; zero below `SLIDE_GRADE_THRESHOLD`, ramps in, and above `CLIFF_GRADE` tracks lose grip entirely so the tank free-falls.
+  - Uphill traction decreases with slope (`UPHILL_TRACTION_K`), so steep climbs crawl but craters remain escapable.
+- **Custom shell sim**: `simulateShot` uses Euler integration (dt=1/60) to precompute the full trajectory, terrain patch, and damage list — without mutating world state. Room applies the crater and HP changes on a `setTimeout` matched to the client's flight animation so opponents don't react before visual impact.
+- **Heightmap terrain**: 64×64 float grid on server with bilinear `getHeight`. Craters use smoothstep falloff. `computeCraterPatch` returns the patch without mutating; `applyPatch` commits it later. Only changed patches are sent to clients.
+- **Data-driven weapons**: `WeaponDefinition` configs in `shared/src/weapons.ts` with cooldown values.
+- **Tank mesh hierarchy**: group (body yaw/pitch/roll) > turretGroup (independent Y rotation for aiming) > barrel (X rotation for pitch). Turret rotation is world-space on server, converted to local-space on client by subtracting body yaw. Pitch/roll are authoritative server values computed from the heightmap gradient.
 
 ## Network flow
 
 1. Client emits `join_room` -> server spawns tank, sends `room_snapshot`
 2. Server starts game loop at 60hz (movement) + 20hz (state broadcast)
 3. Client sends `movement_input` on WASD key change, `aim_update` every frame
-4. Client left-clicks -> `fire_request` -> server checks cooldown, runs `simulateShot()`, emits `shot_resolved` + `terrain_patch`
-5. Server re-grounds all tanks after terrain deformation
+4. Client left-clicks -> `fire_request` -> server runs `simulateShot()` (pure), emits `shot_resolved` immediately so clients can animate, then commits crater + damage after a timeout equal to the flight duration
+5. Tank y/pitch/roll follow the heightmap automatically via `stepTankPhysics` — no explicit re-ground step
 
 ## Key implementation details
 

@@ -14,7 +14,8 @@ import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { getMovementInput, getAimTarget, consumeClick } from './ui/input';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
-import { TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
+import { stepTankPhysics } from '@shared/physics';
+import { computeMuzzle } from '@shared/muzzle';
 
 // ── Scene setup ──
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -42,6 +43,7 @@ const FIRE_COOLDOWN = 1.0;
 
 // Client-side predicted state for local tank
 let predictedState: TankState | null = null;
+const predictedVel = { x: 0, z: 0 };
 
 // ── Networking ──
 const socket = connect();
@@ -121,6 +123,9 @@ socket.on('state_update', (tanks: TankState[]) => {
         while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
         while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
         predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+        // pitch/roll are recomputed every frame from the local heightmap by
+        // stepTankPhysics — overwriting with the server value would cause
+        // visible jolts at each 20Hz state_update.
       }
     } else {
       // Remote tank: feed into interpolation system
@@ -184,24 +189,9 @@ function animate(): void {
       prevInput = { ...input };
     }
 
-    // ── Client-side prediction: apply movement locally ──
-    if (input.left) predictedState.bodyRotation += TANK_TURN_SPEED * dt;
-    if (input.right) predictedState.bodyRotation -= TANK_TURN_SPEED * dt;
-
-    let moveDir = 0;
-    if (input.forward) moveDir += 1;
-    if (input.backward) moveDir -= 1;
-
-    if (moveDir !== 0) {
-      const speed = TANK_SPEED * moveDir * dt;
-      const nx = predictedState.position.x + Math.sin(predictedState.bodyRotation) * speed;
-      const nz = predictedState.position.z + Math.cos(predictedState.bodyRotation) * speed;
-
-      const { w: mapW, h: mapH } = getMapBounds();
-      predictedState.position.x = Math.max(1, Math.min(mapW - 1, nx));
-      predictedState.position.z = Math.max(1, Math.min(mapH - 1, nz));
-      predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-    }
+    // ── Client-side prediction: share the server's physics step ──
+    const { w: mapW, h: mapH } = getMapBounds();
+    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
 
     // Update local tank mesh from predicted state
     updateLocalTankMesh(predictedState);
@@ -214,11 +204,13 @@ function animate(): void {
       const dz = aimTarget.z - predictedState.position.z;
       const turretRot = Math.atan2(dx, dz);
 
-      // Ballistic solve: find launch pitch that lands at target given speed & gravity.
+      // Ballistic solve: approximate the muzzle height by the turret pivot
+      // (body tilt shifts it slightly, but the solver is only a pitch estimate
+      // — the preview below uses the true muzzle transform).
       const dist = Math.sqrt(dx * dx + dz * dz);
       const v = weapon.projectileSpeed;
       const g = -GRAVITY;
-      const startY = predictedState.position.y + 1.5;
+      const startY = predictedState.position.y + 0.8;
       const dy = aimTarget.y - startY;
       const a = (g * dist * dist) / (2 * v * v);
       const disc = dist * dist - 4 * a * (dy + a);
@@ -236,10 +228,13 @@ function animate(): void {
       predictedState.barrelPitch = barrelPitch;
       updateLocalTankMesh(predictedState);
 
-      // Trajectory preview from barrel tip
-      const sx = predictedState.position.x + Math.sin(turretRot) * 1.2;
-      const sz = predictedState.position.z + Math.cos(turretRot) * 1.2;
-      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, v);
+      // Preview uses the exact same muzzle transform the server will fire from.
+      const muzzle = computeMuzzle(predictedState);
+      updateTrajectoryPreview(
+        scene,
+        muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+        muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+      );
     } else {
       hideTrajectoryPreview();
     }

@@ -26,15 +26,11 @@ export function updateTrajectoryPreview(
   startX: number,
   startY: number,
   startZ: number,
-  turretRotation: number,
-  barrelPitch: number,
-  speed: number,
+  vx: number,
+  vy: number,
+  vz: number,
 ): void {
   if (!initialized) init(scene);
-
-  const vx = Math.sin(turretRotation) * Math.cos(barrelPitch) * speed;
-  const vy = Math.sin(barrelPitch) * speed;
-  const vz = Math.cos(turretRotation) * Math.cos(barrelPitch) * speed;
 
   let px = startX, py = startY, pz = startZ;
   let vvy = vy;
