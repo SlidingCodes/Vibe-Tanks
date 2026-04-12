@@ -23,6 +23,7 @@ import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
+import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -213,6 +214,22 @@ socket.on('shot_resolved', (result) => {
       onMinimapPatch(patch);
     }
   });
+
+  // Floating damage numbers at the moment of visual impact (matches the
+  // server's delayed HP/patch commit: startDelay + flight of the last step).
+  const SECONDS_PER_SAMPLE = 4 / 60;
+  let impactMs = 0;
+  for (const step of result.steps) {
+    if (step.eventType !== 'impact') continue;
+    const t = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECONDS_PER_SAMPLE;
+    if (t > impactMs) impactMs = t;
+  }
+  setTimeout(() => {
+    for (const d of result.damageDealt) {
+      const mesh = getAllTankMeshes().get(d.playerId);
+      if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
+    }
+  }, impactMs * 1000);
 });
 
 socket.on('player_spawned', (tank: TankState) => {
