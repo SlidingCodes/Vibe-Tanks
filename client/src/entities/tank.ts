@@ -19,9 +19,11 @@ function applyTerrainTilt(group: THREE.Object3D, yaw: number): void {
   const hR = getTerrainHeight(x + rgtX * d, z + rgtZ * d);
   const hL = getTerrainHeight(x - rgtX * d, z - rgtZ * d);
 
-  // Pitch around local X: nose up when front higher than back.
-  const targetPitch = Math.atan2(hF - hB, 2 * d);
-  // Roll around local Z: when right side is higher, tank rolls toward the left.
+  // Pitch around local X: in three.js YXZ, positive rotation.x tilts the
+  // forward vector toward -Y (nose down), so invert to raise the nose when
+  // the front of the tank is on higher terrain.
+  const targetPitch = Math.atan2(hB - hF, 2 * d);
+  // Roll around local Z: positive rotation.z lifts the right side.
   const targetRoll = Math.atan2(hR - hL, 2 * d);
 
   group.rotation.x += (targetPitch - group.rotation.x) * TILT_SMOOTH;
