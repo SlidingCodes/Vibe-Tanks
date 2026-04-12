@@ -25,14 +25,14 @@
     }
     #hud > * { pointer-events: auto; }
     #cooldown-ring {
-      position: absolute; top: 50%; left: 50%;
+      position: absolute; top: 62%; left: 50%;
       width: 160px; height: 8px; border-radius: 2px;
-      background: #fa0;
-      box-shadow: 0 0 6px rgba(255,170,0,0.6), 0 0 2px #000;
+      background: var(--cd-color, #fa0);
+      box-shadow: 0 0 6px rgba(255,170,0,0.5), 0 0 2px #000;
       transform: translate(-50%, -50%) scaleX(var(--cd-scale, 0));
       transform-origin: center center;
       opacity: var(--cd-opacity, 0);
-      transition: transform 0.06s linear, opacity 0.2s linear;
+      transition: transform 0.06s linear, opacity 0.2s linear, background 0.08s linear;
       pointer-events: none;
     }
     #health-bar {

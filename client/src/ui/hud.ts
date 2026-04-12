@@ -60,10 +60,13 @@ export function updateScoreboard(tanks: TankState[]): void {
 
 export function setCooldown(fraction: number): void {
   const f = Math.min(1, Math.max(0, fraction));
-  // Ring shows only while cooling down: starts at full size and shrinks to 0.
   const ready = f >= 1;
   cooldownRing.style.setProperty('--cd-scale', ready ? '0' : (1 - f).toFixed(3));
   cooldownRing.style.setProperty('--cd-opacity', ready ? '0' : '1');
+  // Interpolate orange (255,170,0) → white (255,255,255) as cooldown fills.
+  const g = Math.round(170 + (255 - 170) * f);
+  const b = Math.round(0 + 255 * f);
+  cooldownRing.style.setProperty('--cd-color', `rgb(255,${g},${b})`);
 }
 
 function getWeaponRoleLabel(weapon: WeaponDefinition): string {
