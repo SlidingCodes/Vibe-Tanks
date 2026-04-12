@@ -85,18 +85,47 @@
       font-weight: bold; letter-spacing: 1px;
     }
     #login-panel button:hover { background: #6f6; }
-    .damage-popup {
-      font-family: monospace; font-weight: bold; font-size: 22px;
-      color: #ffdd33; text-shadow: 0 0 4px #000, 0 0 2px #000, 1px 1px 0 #000;
-      animation: dmg-rise 1.1s ease-out forwards;
-      white-space: nowrap; transform: translate(-50%, 0);
+    /* Damage popups — stacked animation layers so rise + shake + flicker
+       don't stomp each other's transform property. */
+    .damage-popup-rise {
+      position: absolute; left: 0; top: 0;
+      animation-name: dmg-rise; animation-timing-function: ease-out;
+      animation-fill-mode: forwards; will-change: transform, opacity;
+      transform: translate(-50%, 0);
     }
-    .damage-popup.killed { color: #ff4444; font-size: 28px; letter-spacing: 2px; }
     @keyframes dmg-rise {
-      0%   { transform: translate(-50%, 0)     scale(0.6); opacity: 0; }
-      15%  { transform: translate(-50%, -10px) scale(1.2); opacity: 1; }
-      30%  { transform: translate(-50%, -18px) scale(1.0); opacity: 1; }
-      100% { transform: translate(-50%, -70px) scale(1.0); opacity: 0; }
+      0%   { transform: translate(-50%, 0)     scale(0.55); opacity: 0; }
+      10%  { transform: translate(-50%, -12px) scale(1.25); opacity: 1; }
+      22%  { transform: translate(-50%, -20px) scale(1.0);  opacity: 1; }
+      70%  { transform: translate(-50%, -60px) scale(1.0);  opacity: 1; }
+      100% { transform: translate(-50%, -95px) scale(0.95); opacity: 0; }
+    }
+    .damage-popup-shake { display: inline-flex; align-items: center; gap: 4px; }
+    .damage-popup-shake.active { animation: dmg-shake 0.09s linear infinite; }
+    @keyframes dmg-shake {
+      0%   { transform: translate(0, 0)    rotate(-2deg); }
+      25%  { transform: translate(2px, -1px) rotate(2deg); }
+      50%  { transform: translate(-2px, 1px) rotate(-1deg); }
+      75%  { transform: translate(1px, 2px) rotate(2deg); }
+      100% { transform: translate(-1px, -1px) rotate(-2deg); }
+    }
+    .damage-popup-text {
+      font-family: monospace; font-weight: bold; white-space: nowrap;
+      text-shadow: 0 0 3px #000, 1px 1px 0 #000;
+    }
+    .damage-popup-text.glow { animation: dmg-glow 0.35s ease-in-out infinite alternate; }
+    @keyframes dmg-glow {
+      from { filter: brightness(1)   drop-shadow(0 0 4px currentColor); }
+      to   { filter: brightness(1.5) drop-shadow(0 0 14px currentColor); }
+    }
+    .damage-popup-fire {
+      display: inline-block;
+      animation: dmg-fire-flicker 0.18s ease-in-out infinite alternate;
+      filter: drop-shadow(0 0 6px #ff7722);
+    }
+    @keyframes dmg-fire-flicker {
+      0%   { transform: translateY(0)    scale(1)   rotate(-6deg); opacity: 0.85; }
+      100% { transform: translateY(-2px) scale(1.15) rotate(8deg); opacity: 1; }
     }
     .tank-name-label {
       font-family: monospace; font-size: 12px; color: #fff;
