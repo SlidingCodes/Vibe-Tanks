@@ -218,6 +218,14 @@ export function updateTrajectoryPreview(
   placePoints(parentDots, segment.points);
 }
 
+export function getTrajectoryXZPoints(): { x: number; z: number }[] {
+  const out: { x: number; z: number }[] = [];
+  if (!initialized) return out;
+  for (const d of parentDots) if (d.visible) out.push({ x: d.position.x, z: d.position.z });
+  for (const d of fragmentDots) if (d.visible) out.push({ x: d.position.x, z: d.position.z });
+  return out;
+}
+
 export function hideTrajectoryPreview(): void {
   hideDots(parentDots);
   hideDots(fragmentDots);

@@ -175,6 +175,7 @@ export function updateMinimap(
   myBodyRotation: number,
   tanks: TankState[],
   myId: PlayerId,
+  trajectory: { x: number; z: number }[] = [],
 ): void {
   if (!ctx || !canvas || !offscreen) return;
   const size = MINIMAP_SIZE;
@@ -187,46 +188,82 @@ export function updateMinimap(
   ctx.closePath();
   ctx.clip();
 
-  // Fill background in case player is near an edge.
   ctx.fillStyle = '#2a2a2a';
   ctx.fillRect(0, 0, size, size);
 
   if (myPos) {
-    const srcRadiusPx = VIEW_RADIUS_UNITS * PX_PER_UNIT;
-    const sx = myPos.x * PX_PER_UNIT - srcRadiusPx;
-    const sy = myPos.z * PX_PER_UNIT - srcRadiusPx;
-    const sWH = srcRadiusPx * 2;
-    ctx.drawImage(offscreen, sx, sy, sWH, sWH, 0, 0, size, size);
-
-    // Other tanks as dots.
     const pxPerUnitVisible = size / (VIEW_RADIUS_UNITS * 2);
-    for (const t of tanks) {
-      if (t.playerId === myId || !t.alive) continue;
-      const dx = t.position.x - myPos.x;
-      const dz = t.position.z - myPos.z;
-      const cx = size / 2 + dx * pxPerUnitVisible;
-      const cy = size / 2 + dz * pxPerUnitVisible;
-      if (cx < 0 || cx > size || cy < 0 || cy > size) continue;
-      ctx.fillStyle = t.color || '#f33';
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1.5;
+    const srcScale = pxPerUnitVisible / PX_PER_UNIT;
+
+    // Rotate the whole world so the player's forward (+Z after bodyRotation)
+    // points up on screen. ctx uses Y-down; rotating by (bodyRotation - PI)
+    // sends the forward vector to (0,-1).
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(myBodyRotation - Math.PI);
+
+    // Blit the full terrain canvas positioned so the player lands at the origin.
+    const playerPxX = myPos.x * PX_PER_UNIT;
+    const playerPxY = myPos.z * PX_PER_UNIT;
+    ctx.drawImage(
+      offscreen,
+      -playerPxX * srcScale,
+      -playerPxY * srcScale,
+      offscreen.width * srcScale,
+      offscreen.height * srcScale,
+    );
+
+    // Trajectory polyline, in the same rotated frame.
+    if (trajectory.length > 1) {
+      ctx.strokeStyle = 'rgba(255,230,80,0.95)';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      for (let i = 0; i < trajectory.length; i++) {
+        const p = trajectory[i];
+        const px = (p.x - myPos.x) * pxPerUnitVisible;
+        const py = (p.z - myPos.z) * pxPerUnitVisible;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      // Impact marker at the end.
+      const end = trajectory[trajectory.length - 1];
+      const ex = (end.x - myPos.x) * pxPerUnitVisible;
+      const ey = (end.z - myPos.z) * pxPerUnitVisible;
+      ctx.fillStyle = '#ff5522';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
 
-    // Player arrow at centre, pointing along body rotation
-    // (tank "forward" is +Z in world → down in minimap when untilted).
-    ctx.translate(size / 2, size / 2);
-    ctx.rotate(myBodyRotation);
+    // Enemy tanks (also rotated with the map).
+    for (const t of tanks) {
+      if (t.playerId === myId || !t.alive) continue;
+      const dx = (t.position.x - myPos.x) * pxPerUnitVisible;
+      const dy = (t.position.z - myPos.z) * pxPerUnitVisible;
+      if (Math.hypot(dx, dy) > size / 2) continue;
+      ctx.fillStyle = t.color || '#f33';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Fixed player arrow pointing up (drawn after un-rotating).
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(0, 7);       // nose (forward = +Z)
-    ctx.lineTo(-5, -5);
-    ctx.lineTo(5, -5);
+    ctx.moveTo(size / 2, size / 2 - 7);
+    ctx.lineTo(size / 2 - 5, size / 2 + 5);
+    ctx.lineTo(size / 2 + 5, size / 2 + 5);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -234,7 +271,6 @@ export function updateMinimap(
 
   ctx.restore();
 
-  // Ring border (drawn unclipped).
   ctx.strokeStyle = 'rgba(255,255,255,0.6)';
   ctx.lineWidth = 2;
   ctx.beginPath();

@@ -9,7 +9,7 @@ import {
   tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
-import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
+import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
 import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
@@ -345,7 +345,7 @@ function animate(): void {
     const myPos = predictedState ? predictedState.position : null;
     const myRot = predictedState ? predictedState.bodyRotation : 0;
     const tanksForMap = latestTanks.length ? latestTanks : snapshot.tanks;
-    updateMinimap(myPos, myRot, tanksForMap, myId);
+    updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints());
   }
 
   renderer.render(scene, camera);
