@@ -72,7 +72,7 @@ export class Heightmap {
           const t = dist / blastRadius;
           const falloff = 1 - t * t * (3 - 2 * t);
           const idx = z * this.width + x;
-          this.data[idx] = Math.max(0, this.data[idx] - terrainDamage * falloff);
+          this.data[idx] = this.data[idx] - terrainDamage * falloff;
         }
 
         patchHeights.push(this.data[z * this.width + x]);
