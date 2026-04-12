@@ -31,9 +31,9 @@ export function setupSettingsMenu(): void {
     <div class="settings-title">debug</div>
     <label class="settings-row">
       <input type="checkbox" id="settings-fullscreen" />
-      <span>Espansione schermo</span>
+      <span>Fullscreen</span>
     </label>
-    <div class="settings-section-label">Visuale</div>
+    <div class="settings-section-label">Camera</div>
     <div id="settings-cameras" class="settings-cameras"></div>
   `;
 

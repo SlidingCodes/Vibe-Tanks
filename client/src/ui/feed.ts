@@ -34,15 +34,15 @@ export function pushFeedEvent(ev: MatchEvent): void {
 function renderEvent(ev: MatchEvent): string {
   switch (ev.kind) {
     case 'join':
-      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">è entrato</span>`;
+      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">joined</span>`;
     case 'leave':
-      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">è uscito</span>`;
+      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">left</span>`;
     case 'suicide':
-      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">si è distrutto</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
+      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">blew themself up</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
     case 'kill':
-      return `${nameSpan(ev.killerName, ev.killerColor)} <span class="feed-verb">ha ucciso</span> ${nameSpan(ev.victimName, ev.victimColor)} <span class="feed-dmg">-${ev.damage}</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
+      return `${nameSpan(ev.killerName, ev.killerColor)} <span class="feed-verb">killed</span> ${nameSpan(ev.victimName, ev.victimColor)} <span class="feed-dmg">-${ev.damage}</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
     case 'reset':
-      return `<span class="feed-verb">Nuova partita — mappa rigenerata</span>`;
+      return `<span class="feed-verb">New match — map regenerated</span>`;
   }
 }
 
