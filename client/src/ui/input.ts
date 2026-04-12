@@ -68,6 +68,26 @@ export function consumeWeaponSlot(): number | null {
   return slot;
 }
 
+// ── Virtual input injection (used by the mobile controls) ──
+// The mobile controls write into the same underlying state so that
+// getMovementInput / getAimTarget / consumeClick remain the single read path.
+export function setVirtualKey(code: string, pressed: boolean): void {
+  keys[code] = pressed;
+}
+
+export function setVirtualAim(ndcX: number, ndcY: number): void {
+  mouse.x = ndcX;
+  mouse.y = ndcY;
+}
+
+export function triggerVirtualFire(): void {
+  mouseDown = true;
+}
+
+export function setVirtualWeaponSlot(slot: number): void {
+  pendingWeaponSlot = slot;
+}
+
 // ── Pointer lock for seamless mouse control ──
 const canvas = document.querySelector('canvas');
 

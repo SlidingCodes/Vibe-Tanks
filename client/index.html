@@ -120,6 +120,42 @@
       background: rgba(154,19,19,0.15); color: #c22;
       border-color: rgba(194,34,34,0.9);
     }
+    /* Fullscreen toggle — always visible, tiny, top-right */
+    #fullscreen-btn {
+      position: fixed; top: 10px; right: 10px; width: 32px; height: 32px;
+      background: rgba(0,0,0,0.4); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
+      z-index: 5; font-family: sans-serif;
+    }
+    #fullscreen-btn:hover { background: rgba(0,0,0,0.65); }
+    /* Mobile overlay controls — hidden by default, shown when body has .mobile */
+    #mobile-controls { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+    body.mobile #mobile-controls { display: block; }
+    body.mobile #controls-hint { display: none; }
+    body.mobile { touch-action: none; -webkit-user-select: none; user-select: none; }
+    body.mobile #weapon-hud { pointer-events: auto; bottom: 120px; }
+    body.mobile #weapon-hud .weapon-chip { padding: 10px 14px; font-size: 14px; }
+    body.mobile #cooldown-bar { bottom: 100px; }
+    #mc-joystick-base {
+      position: absolute; left: 32px; bottom: 40px;
+      width: 140px; height: 140px; border-radius: 50%;
+      background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
+      pointer-events: auto; touch-action: none;
+    }
+    #mc-joystick-knob {
+      position: absolute; top: 50%; left: 50%; margin: -28px 0 0 -28px;
+      width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(255,255,255,0.35); border: 2px solid rgba(255,255,255,0.6);
+      pointer-events: none; transition: transform 0.05s linear;
+    }
+    #mc-fire {
+      position: absolute; right: 32px; bottom: 40px;
+      width: 110px; height: 110px; border-radius: 50%;
+      background: rgba(154,19,19,0.45); color: #fff; font-size: 16px; font-weight: bold;
+      letter-spacing: 2px; border: 2px solid rgba(255,255,255,0.4);
+      pointer-events: auto; touch-action: none; font-family: monospace;
+    }
+    #mc-fire.pressed { background: rgba(194,34,34,0.9); transform: scale(0.94); }
   </style>
 </head>
 <body>
@@ -147,6 +183,11 @@
     <div id="death-timer"></div>
     <button id="death-respawn" disabled>SPAWN AGAIN</button>
   </div>
+  <div id="mobile-controls">
+    <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>
+    <button id="mc-fire" type="button">FIRE</button>
+  </div>
+  <button id="fullscreen-btn" type="button" title="Enter fullscreen">⤢</button>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
