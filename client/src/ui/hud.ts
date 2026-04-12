@@ -2,7 +2,7 @@ import { TankState, WeaponDefinition } from '@shared/types/index';
 
 const healthBar = document.getElementById('health-bar')!;
 const scoreboard = document.getElementById('scoreboard')!;
-const cooldownFill = document.getElementById('cooldown-fill')!;
+const cooldownRing = document.getElementById('cooldown-ring') as HTMLDivElement;
 const weaponHud = document.getElementById('weapon-hud')!;
 const waitingOverlay = document.getElementById('waiting-overlay')!;
 const deathOverlay = document.getElementById('death-overlay') as HTMLDivElement;
@@ -59,8 +59,11 @@ export function updateScoreboard(tanks: TankState[]): void {
 }
 
 export function setCooldown(fraction: number): void {
-  cooldownFill.style.width = `${Math.min(1, Math.max(0, fraction)) * 100}%`;
-  cooldownFill.style.background = fraction >= 1 ? '#4f4' : '#fa0';
+  const f = Math.min(1, Math.max(0, fraction));
+  // Ring shows only while cooling down: starts at full size and shrinks to 0.
+  const ready = f >= 1;
+  cooldownRing.style.setProperty('--cd-scale', ready ? '0' : (1 - f).toFixed(3));
+  cooldownRing.style.setProperty('--cd-opacity', ready ? '0' : '1');
 }
 
 function getWeaponRoleLabel(weapon: WeaponDefinition): string {
