@@ -22,6 +22,7 @@ import {
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
+import { setupFeed, pushFeedEvent } from './ui/feed';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
@@ -80,6 +81,7 @@ hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();
 setupSettingsMenu();
+setupFeed();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
@@ -240,6 +242,10 @@ socket.on('player_spawned', (tank: TankState) => {
 
 socket.on('player_left', ({ playerId }) => {
   removeTankMesh(playerId, scene);
+});
+
+socket.on('match_event', (ev) => {
+  pushFeedEvent(ev);
 });
 
 socket.on('game_over', ({ winnerId }) => {

@@ -128,6 +128,13 @@ export interface ClientEvents {
   fire_request: (data: { weaponId: string }) => void;
 }
 
+// ── Match events (server → client feed) ──
+export type MatchEvent =
+  | { kind: 'join'; name: string; color: string }
+  | { kind: 'leave'; name: string; color: string }
+  | { kind: 'kill'; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
+  | { kind: 'suicide'; name: string; color: string; weaponId: string };
+
 // ── Network events: server → client ──
 export interface ServerEvents {
   room_snapshot: (snapshot: MatchSnapshot) => void;
@@ -136,5 +143,6 @@ export interface ServerEvents {
   terrain_patch: (patch: TerrainPatch) => void;
   player_spawned: (tank: TankState) => void;
   player_left: (data: { playerId: PlayerId }) => void;
+  match_event: (event: MatchEvent) => void;
   game_over: (data: { winnerId: PlayerId; scores: { playerId: PlayerId; score: number }[] }) => void;
 }

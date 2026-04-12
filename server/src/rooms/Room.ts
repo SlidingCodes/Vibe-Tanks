@@ -68,6 +68,9 @@ export class Room {
     // Broadcast new tank to others
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
+    this.io.to(this.id).emit('match_event', {
+      kind: 'join', name: tank.playerName, color: tank.color,
+    });
 
     // Start the game loop when enough players
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
@@ -76,9 +79,15 @@ export class Room {
   }
 
   removePlayer(playerId: PlayerId): void {
+    const tank = this.tanks.get(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
     this.io.to(this.id).emit('player_left', { playerId });
+    if (tank) {
+      this.io.to(this.id).emit('match_event', {
+        kind: 'leave', name: tank.playerName, color: tank.color,
+      });
+    }
 
     if (this.players.size === 0) {
       this.stopLoop();
@@ -197,6 +206,19 @@ export class Room {
             victim.alive = false;
             if (victimPlayer) {
               victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+            }
+            if (dmg.playerId === socket.id) {
+              this.io.to(this.id).emit('match_event', {
+                kind: 'suicide', name: victim.playerName, color: victim.color,
+                weaponId: data.weaponId,
+              });
+            } else {
+              this.io.to(this.id).emit('match_event', {
+                kind: 'kill',
+                killerName: tank.playerName, killerColor: tank.color,
+                victimName: victim.playerName, victimColor: victim.color,
+                damage: Math.round(dmg.damage), weaponId: data.weaponId,
+              });
             }
           }
           if (dmg.playerId !== socket.id) {
