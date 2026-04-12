@@ -1,8 +1,9 @@
-import { TankState } from '@shared/types/index';
+import { TankState, WeaponDefinition } from '@shared/types/index';
 
 const healthBar = document.getElementById('health-bar')!;
 const scoreboard = document.getElementById('scoreboard')!;
 const cooldownFill = document.getElementById('cooldown-fill')!;
+const weaponHud = document.getElementById('weapon-hud')!;
 const waitingOverlay = document.getElementById('waiting-overlay')!;
 
 export function setHealth(tank: TankState | undefined): void {
@@ -25,6 +26,15 @@ export function updateScoreboard(tanks: TankState[]): void {
 export function setCooldown(fraction: number): void {
   cooldownFill.style.width = `${Math.min(1, Math.max(0, fraction)) * 100}%`;
   cooldownFill.style.background = fraction >= 1 ? '#4f4' : '#fa0';
+}
+
+export function setWeapons(weapons: WeaponDefinition[], selectedWeaponId: string): void {
+  weaponHud.innerHTML = weapons
+    .map((weapon, index) => {
+      const selectedClass = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
+      return `<div class="${selectedClass}">[${index + 1}] ${weapon.name}</div>`;
+    })
+    .join('');
 }
 
 export function showWaiting(show: boolean): void {

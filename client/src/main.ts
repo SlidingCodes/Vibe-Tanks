@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { connect, getSocket } from './net/socket';
+import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
+import { WEAPONS } from '@shared/weapons';
 import { createTerrain, applyTerrainPatch, getTerrainHeight } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
@@ -7,14 +8,12 @@ import {
 } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
 import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
-import { GRAVITY } from '@shared/constants';
-import { WEAPONS } from '@shared/weapons';
-import { createCamera, followTank, overviewCamera, getCamera } from './scene/camera';
+import { connect } from './net/socket';
+import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
-import { getMovementInput, getAimTarget, consumeClick } from './ui/input';
+import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot } from './ui/input';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
-import { TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
 
 // ── Scene setup ──
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -38,10 +37,16 @@ window.addEventListener('resize', () => {
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
 let lastFireTime = 0;
-const FIRE_COOLDOWN = 1.0;
+let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 
 // Client-side predicted state for local tank
 let predictedState: TankState | null = null;
+
+function getSelectedWeapon() {
+  return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
+}
+
+hud.setWeapons(WEAPONS, selectedWeaponId);
 
 // ── Networking ──
 const socket = connect();
@@ -173,9 +178,20 @@ function animate(): void {
   const dt = Math.min(clock.getDelta(), 0.1);
   const now = clock.getElapsedTime();
 
+  const requestedWeaponSlot = consumeWeaponSlot();
+  if (requestedWeaponSlot !== null) {
+    const weapon = WEAPONS[requestedWeaponSlot];
+    if (weapon) {
+      selectedWeaponId = weapon.id;
+      hud.setWeapons(WEAPONS, selectedWeaponId);
+    }
+  }
+
   const myTankMesh = getAllTankMeshes().get(myId);
 
   if (myTankMesh && predictedState && predictedState.alive) {
+    const selectedWeapon = getSelectedWeapon();
+
     // ── Send movement input ──
     const input = getMovementInput();
     if (input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
@@ -208,7 +224,6 @@ function animate(): void {
 
     // ── Mouse aiming ──
     const aimTarget = getAimTarget(camera, predictedState.position.y);
-    const weapon = WEAPONS.find((w) => w.id === 'standard')!;
     if (aimTarget) {
       const dx = aimTarget.x - predictedState.position.x;
       const dz = aimTarget.z - predictedState.position.z;
@@ -216,7 +231,7 @@ function animate(): void {
 
       // Ballistic solve: find launch pitch that lands at target given speed & gravity.
       const dist = Math.sqrt(dx * dx + dz * dz);
-      const v = weapon.projectileSpeed;
+      const v = selectedWeapon.projectileSpeed;
       const g = -GRAVITY;
       const startY = predictedState.position.y + 1.5;
       const dy = aimTarget.y - startY;
@@ -239,7 +254,7 @@ function animate(): void {
       // Trajectory preview from barrel tip
       const sx = predictedState.position.x + Math.sin(turretRot) * 1.2;
       const sz = predictedState.position.z + Math.cos(turretRot) * 1.2;
-      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, v);
+      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, selectedWeapon.projectileSpeed);
     } else {
       hideTrajectoryPreview();
     }
@@ -247,18 +262,20 @@ function animate(): void {
     // ── Click to fire ──
     if (consumeClick()) {
       const timeSinceFire = now - lastFireTime;
-      if (timeSinceFire >= FIRE_COOLDOWN) {
-        socket.emit('fire_request', { weaponId: 'standard' });
+      if (timeSinceFire >= selectedWeapon.cooldown) {
+        socket.emit('fire_request', { weaponId: selectedWeapon.id });
         lastFireTime = now;
       }
     }
 
     // ── Cooldown bar ──
-    const cooldownProgress = Math.min(1, (now - lastFireTime) / FIRE_COOLDOWN);
+    const cooldownProgress = Math.min(1, (now - lastFireTime) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
 
     // ── Third-person camera follows predicted position ──
     followTank(myTankMesh.group.position, predictedState.bodyRotation, dt);
+  } else {
+    hideTrajectoryPreview();
   }
 
   // Interpolate remote tanks smoothly
