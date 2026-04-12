@@ -24,9 +24,22 @@ export function setupFullscreenButton(): void {
   const exitFs = doc.exitFullscreen?.bind(doc) ?? doc.webkitExitFullscreen?.bind(doc);
   const getFsEl = () => doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
 
-  // If neither API is available (iOS Safari on iPhone), hide the button.
+  // iPhone Safari doesn't expose the Fullscreen API at all. Detect
+  // standalone-mode (launched from the Home Screen) vs. in-browser and,
+  // when in-browser, turn the button into an "install to Home Screen" hint.
   if (!requestFs || !exitFs) {
-    btn.style.display = 'none';
+    const isIOS = /iphone|ipod|ipad/i.test(navigator.userAgent);
+    const nav = navigator as Navigator & { standalone?: boolean };
+    const isStandalone = nav.standalone === true ||
+      window.matchMedia?.('(display-mode: standalone)').matches;
+    if (isIOS && !isStandalone) {
+      btn.textContent = '⤢';
+      btn.title = 'Add to Home Screen for fullscreen';
+      btn.addEventListener('click', showIosHint);
+      btn.addEventListener('touchstart', (e) => { e.preventDefault(); showIosHint(); }, { passive: false });
+    } else {
+      btn.style.display = 'none';
+    }
     return;
   }
 
@@ -49,4 +62,28 @@ export function setupFullscreenButton(): void {
   };
   btn.addEventListener('click', toggle);
   btn.addEventListener('touchstart', toggle, { passive: false });
+}
+
+function showIosHint(): void {
+  if (document.getElementById('ios-fs-hint')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'ios-fs-hint';
+  overlay.innerHTML = `
+    <div class="ios-fs-panel">
+      <h2>Fullscreen su iPhone</h2>
+      <p>Safari non permette il fullscreen da pulsante.</p>
+      <p>Per giocare a tutto schermo:</p>
+      <ol>
+        <li>tocca <b>Condividi</b> <span class="ios-fs-share">⬆︎</span> nella barra in basso</li>
+        <li>scegli <b>Aggiungi alla schermata Home</b></li>
+        <li>apri "Vibe Tanks" dall'icona sulla Home</li>
+      </ol>
+      <button type="button">OK</button>
+    </div>`;
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay || (e.target as HTMLElement).tagName === 'BUTTON') {
+      overlay.remove();
+    }
+  });
+  document.body.appendChild(overlay);
 }
