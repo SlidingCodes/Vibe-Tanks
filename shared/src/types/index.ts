@@ -99,6 +99,8 @@ export interface MatchSnapshot {
   phase: MatchPhase;
   tanks: TankState[];
   terrain: TerrainConfig;
+  /** Seconds until the next match reset (terrain regen + score reset). */
+  resetsInSeconds: number;
 }
 
 // ── Shot result ──
@@ -133,7 +135,8 @@ export type MatchEvent =
   | { kind: 'join'; name: string; color: string }
   | { kind: 'leave'; name: string; color: string }
   | { kind: 'kill'; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
-  | { kind: 'suicide'; name: string; color: string; weaponId: string };
+  | { kind: 'suicide'; name: string; color: string; weaponId: string }
+  | { kind: 'reset' };
 
 // ── Network events: server → client ──
 export interface ServerEvents {

@@ -41,6 +41,8 @@ function renderEvent(ev: MatchEvent): string {
       return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">si è distrutto</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
     case 'kill':
       return `${nameSpan(ev.killerName, ev.killerColor)} <span class="feed-verb">ha ucciso</span> ${nameSpan(ev.victimName, ev.victimColor)} <span class="feed-dmg">-${ev.damage}</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
+    case 'reset':
+      return `<span class="feed-verb">Nuova partita — mappa rigenerata</span>`;
   }
 }
 

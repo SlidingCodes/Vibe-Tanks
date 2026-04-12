@@ -15,6 +15,7 @@ import { simulateShot } from '../game/Simulation';
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
+const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
 interface PlayerState {
   socket: Socket;
@@ -37,11 +38,46 @@ export class Room {
   players: Map<PlayerId, PlayerState> = new Map();
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
+  private resetTimeout: ReturnType<typeof setTimeout> | null = null;
+  private matchResetAt: number = 0; // epoch seconds
 
   constructor(id: string, io: Server) {
     this.id = id;
     this.io = io;
     this.heightmap = new Heightmap();
+    this.scheduleReset();
+  }
+
+  private scheduleReset(): void {
+    if (this.resetTimeout) clearTimeout(this.resetTimeout);
+    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
+    this.resetTimeout = setTimeout(() => this.resetMatch(), MATCH_DURATION_SECONDS * 1000);
+  }
+
+  private resetMatch(): void {
+    this.heightmap.regenerate();
+    for (const [pid, tank] of this.tanks) {
+      const pos = this.findSpawnPosition();
+      tank.position = pos;
+      tank.hp = TANK_MAX_HP;
+      tank.alive = true;
+      tank.score = 0;
+      tank.bodyRotation = 0;
+      tank.bodyPitch = 0;
+      tank.bodyRoll = 0;
+      tank.turretRotation = 0;
+      tank.barrelPitch = 0.2;
+      const player = this.players.get(pid);
+      if (player) {
+        player.velX = 0;
+        player.velZ = 0;
+        player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+        player.respawnAllowedAt = 0;
+      }
+    }
+    this.scheduleReset();
+    this.io.to(this.id).emit('match_event', { kind: 'reset' });
+    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -310,6 +346,7 @@ export class Room {
       phase: this.phase,
       tanks: Array.from(this.tanks.values()),
       terrain: this.heightmap.toConfig(),
+      resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
     };
   }
 }

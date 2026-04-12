@@ -15,21 +15,29 @@ export class Heightmap {
     this.generate();
   }
 
-  /** Generate gentle rolling hills */
+  /** Generate gentle rolling hills with a random phase per match. */
   private generate(): void {
+    const phaseX = Math.random() * Math.PI * 2;
+    const phaseZ = Math.random() * Math.PI * 2;
+    const phaseD = Math.random() * Math.PI * 2;
+    const freqX = 2 + Math.random() * 1.5;
+    const freqZ = 2.5 + Math.random() * 1.5;
     for (let z = 0; z < this.height; z++) {
       for (let x = 0; x < this.width; x++) {
         const nx = x / this.width;
         const nz = z / this.height;
-        // Combine a few sine waves for rolling terrain
         let h = 0;
-        h += Math.sin(nx * Math.PI * 2) * 2;
-        h += Math.sin(nz * Math.PI * 3) * 1.5;
-        h += Math.sin((nx + nz) * Math.PI * 4) * 0.5;
-        h += 2; // raise the base so terrain stays above zero
+        h += Math.sin(nx * Math.PI * freqX + phaseX) * 2;
+        h += Math.sin(nz * Math.PI * freqZ + phaseZ) * 1.5;
+        h += Math.sin((nx + nz) * Math.PI * 4 + phaseD) * 0.5;
+        h += 2;
         this.data[z * this.width + x] = h;
       }
     }
+  }
+
+  regenerate(): void {
+    this.generate();
   }
 
   /** Bilinear-interpolated terrain height (smooth everywhere, including craters). */

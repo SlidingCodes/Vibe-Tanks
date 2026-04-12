@@ -44,6 +44,17 @@ export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.
   return terrainMesh;
 }
 
+/** Replace all vertex heights with a fresh config (used on match reset). */
+export function rebuildTerrain(config: TerrainConfig): void {
+  if (!terrainGeometry) return;
+  const positions = terrainGeometry.attributes.position;
+  for (let i = 0; i < positions.count; i++) {
+    positions.setY(i, config.heights[i]);
+  }
+  positions.needsUpdate = true;
+  terrainGeometry.computeVertexNormals();
+}
+
 export function applyTerrainPatch(patch: TerrainPatch): void {
   if (!terrainGeometry) return;
 

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, getTerrainHeight } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -23,6 +23,7 @@ import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
 import { setupFeed, pushFeedEvent } from './ui/feed';
+import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
@@ -82,6 +83,7 @@ hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
 setupFullscreenButton();
 setupSettingsMenu();
 setupFeed();
+setupMatchTimer();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
@@ -107,7 +109,12 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     const t = createTerrain(snap.terrain, scene);
     t.name = '__terrain_built';
     initMinimap(snap.terrain);
+  } else {
+    rebuildTerrain(snap.terrain);
+    initMinimap(snap.terrain);
   }
+
+  setMatchResetCountdown(snap.resetsInSeconds);
 
   // Sync tanks
   const existingIds = new Set(getAllTankMeshes().keys());
