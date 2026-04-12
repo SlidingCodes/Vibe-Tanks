@@ -6,6 +6,7 @@ let terrainGeometry: THREE.PlaneGeometry;
 let gridWidth: number;
 let gridHeight: number;
 let cellSize: number;
+let heightData: Float32Array | null = null;
 
 export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.Mesh {
   gridWidth = config.gridWidth;
@@ -23,6 +24,7 @@ export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.
   terrainGeometry.rotateX(-Math.PI / 2);
 
   // Apply heights
+  heightData = new Float32Array(config.heights);
   const positions = terrainGeometry.attributes.position;
   for (let i = 0; i < positions.count; i++) {
     positions.setY(i, config.heights[i]);
@@ -58,6 +60,7 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
       const vertexIndex = gz * gridWidth + gx;
       const patchIndex = pz * patch.width + px;
       positions.setY(vertexIndex, patch.heights[patchIndex]);
+      if (heightData) heightData[vertexIndex] = patch.heights[patchIndex];
     }
   }
 
@@ -67,4 +70,11 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
 
 export function getTerrainMesh(): THREE.Mesh {
   return terrainMesh;
+}
+
+export function getTerrainHeight(x: number, z: number): number {
+  if (!heightData) return 0;
+  const gx = Math.max(0, Math.min(gridWidth - 1, Math.round(x / cellSize)));
+  const gz = Math.max(0, Math.min(gridHeight - 1, Math.round(z / cellSize)));
+  return heightData[gz * gridWidth + gx];
 }

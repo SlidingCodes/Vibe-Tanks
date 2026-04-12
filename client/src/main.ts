@@ -3,6 +3,9 @@ import { connect, getSocket } from './net/socket';
 import { createTerrain, applyTerrainPatch } from './scene/terrain';
 import { createTankMesh, updateTankMesh, removeTankMesh, getAllTankMeshes } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
+import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
+import { GRAVITY } from '@shared/constants';
+import { WEAPONS } from '@shared/weapons';
 import { createCamera, followTank, overviewCamera, getCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
@@ -96,11 +99,9 @@ socket.on('state_update', (tanks: TankState[]) => {
 });
 
 socket.on('shot_resolved', (result) => {
-  playShotAnimation(result, scene, () => {});
-});
-
-socket.on('terrain_patch', (patch) => {
-  applyTerrainPatch(patch);
+  playShotAnimation(result, scene, () => {
+    if (result.terrainPatch) applyTerrainPatch(result.terrainPatch);
+  });
 });
 
 socket.on('player_spawned', (tank: TankState) => {
@@ -140,22 +141,41 @@ function animate(): void {
 
     // ── Mouse aiming ──
     const aimTarget = getAimTarget(camera, myTankMesh.state.position.y);
+    const weapon = WEAPONS.find((w) => w.id === 'standard')!;
     if (aimTarget) {
       const tankPos = myTankMesh.group.position;
       const dx = aimTarget.x - tankPos.x;
       const dz = aimTarget.z - tankPos.z;
       const turretRot = Math.atan2(dx, dz);
 
-      // Calculate a pitch based on distance (further = more pitch, capped)
+      // Ballistic solve: find launch pitch that lands at target given speed & gravity.
       const dist = Math.sqrt(dx * dx + dz * dz);
-      const barrelPitch = Math.min(Math.PI / 4, Math.max(0.05, dist * 0.02));
+      const v = weapon.projectileSpeed;
+      const g = -GRAVITY;
+      const startY = tankPos.y + 1.5;
+      const dy = aimTarget.y - startY;
+      const a = (g * dist * dist) / (2 * v * v);
+      const disc = dist * dist - 4 * a * (dy + a);
+      let barrelPitch: number;
+      if (disc < 0) {
+        barrelPitch = Math.PI / 4; // out of range: max range
+      } else {
+        const u = (dist - Math.sqrt(disc)) / (2 * a);
+        barrelPitch = Math.max(0.02, Math.min(Math.PI / 2.2, Math.atan(u)));
+      }
 
       socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
 
-      // Update local visual immediately
       myTankMesh.state.turretRotation = turretRot;
       myTankMesh.state.barrelPitch = barrelPitch;
       updateTankMesh(myTankMesh.state);
+
+      // Trajectory preview from barrel tip
+      const sx = tankPos.x + Math.sin(turretRot) * 1.2;
+      const sz = tankPos.z + Math.cos(turretRot) * 1.2;
+      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, v);
+    } else {
+      hideTrajectoryPreview();
     }
 
     // ── Click to fire ──
@@ -175,7 +195,7 @@ function animate(): void {
     followTank(myTankMesh.group.position, myTankMesh.state.bodyRotation, dt);
   }
 
-  updateProjectileAnimation(scene);
+  updateProjectileAnimation(scene, dt);
   renderer.render(scene, camera);
 }
 

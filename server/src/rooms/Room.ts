@@ -160,9 +160,6 @@ export class Room {
       }
 
       this.io.to(this.id).emit('shot_resolved', result);
-      if (result.terrainPatch) {
-        this.io.to(this.id).emit('terrain_patch', result.terrainPatch);
-      }
 
       // Re-ground all tanks after terrain change
       for (const t of this.tanks.values()) {

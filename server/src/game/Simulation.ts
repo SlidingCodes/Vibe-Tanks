@@ -3,7 +3,7 @@ import { GRAVITY } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
 const SIM_DT = 1 / 60;
-const MAX_TICKS = 600; // 10 seconds max flight
+const MAX_TICKS = 900; // 15 seconds max flight
 
 /** Simulate a projectile from a tank's turret and return the result */
 export function simulateShot(
