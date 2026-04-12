@@ -345,7 +345,11 @@ function animate(): void {
     const myPos = predictedState ? predictedState.position : null;
     const myRot = predictedState ? predictedState.bodyRotation : 0;
     const tanksForMap = latestTanks.length ? latestTanks : snapshot.tanks;
-    updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints());
+    const meshPositions = new Map<string, { x: number; z: number }>();
+    for (const [pid, mesh] of getAllTankMeshes()) {
+      meshPositions.set(pid, { x: mesh.group.position.x, z: mesh.group.position.z });
+    }
+    updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints(), meshPositions);
   }
 
   renderer.render(scene, camera);
