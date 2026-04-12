@@ -145,6 +145,11 @@ function simulateSegment(
   };
 }
 
+/**
+ * Compute the impact outcome without mutating world state. The patch and
+ * damage contributions are returned via `damageTotals` and the returned
+ * patch so the caller can commit them at the right visual moment.
+ */
 function applyImpact(
   impact: ImpactSpec,
   heightmap: Heightmap,
@@ -152,7 +157,7 @@ function applyImpact(
   damageTotals: Map<string, { damage: number; killed: boolean }>,
 ) {
   const terrainPatch = impact.terrainDamage > 0
-    ? heightmap.applyCrater(impact.point, impact.blastRadius, impact.terrainDamage)
+    ? heightmap.computeCraterPatch(impact.point, impact.blastRadius, impact.terrainDamage)
     : null;
 
   for (const tank of allTanks) {
@@ -168,13 +173,9 @@ function applyImpact(
       const falloff = 1 - t * t;
       const dmg = Math.round(impact.damage * falloff);
       if (dmg > 0) {
-        tank.hp = Math.max(0, tank.hp - dmg);
-        const killed = tank.hp <= 0;
-        if (killed) tank.alive = false;
-
         const current = damageTotals.get(tank.playerId) ?? { damage: 0, killed: false };
         current.damage += dmg;
-        current.killed = current.killed || killed;
+        // killed is finalised after all steps accumulate; see simulateShot tail.
         damageTotals.set(tank.playerId, current);
       }
     }
@@ -342,6 +343,13 @@ export function simulateShot(
     default:
       steps = simulateStandardShot(startPos, startVel, weapon, heightmap, allTanks, damageTotals);
       break;
+  }
+
+  // Finalise killed flag against the victim's current hp (damage is deferred,
+  // so we compare against the authoritative hp at fire time).
+  for (const [playerId, totals] of damageTotals) {
+    const victim = allTanks.find((t) => t.playerId === playerId);
+    if (victim && totals.damage >= victim.hp) totals.killed = true;
   }
 
   return {

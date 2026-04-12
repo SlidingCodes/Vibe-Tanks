@@ -158,15 +158,34 @@ export class Room {
         Array.from(this.tanks.values()),
       );
 
-      // Simulation already committed crater + damage. Award score and forward.
-      for (const dmg of result.damageDealt) {
-        if (dmg.playerId !== socket.id) {
-          tank.score += dmg.damage;
-          if (dmg.killed) tank.score += 50;
+      this.io.to(this.id).emit('shot_resolved', result);
+
+      // Defer world mutations to match the client projectile animation. Each
+      // step's crater applies at its own impact time; cumulative damage and
+      // score land at the latest step so opponents don't sink before visual
+      // impact, even for split/airburst multi-step weapons.
+      const SAMPLE_DT = 4 / 60;
+      let lastImpactSeconds = 0;
+      for (const step of result.steps) {
+        const flightSeconds = step.startDelay + Math.max(0, (step.trajectory.length - 1) * SAMPLE_DT);
+        lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
+        const patch = step.terrainPatch;
+        if (patch) {
+          setTimeout(() => this.heightmap.applyPatch(patch), flightSeconds * 1000);
         }
       }
-
-      this.io.to(this.id).emit('shot_resolved', result);
+      setTimeout(() => {
+        for (const dmg of result.damageDealt) {
+          const victim = this.tanks.get(dmg.playerId);
+          if (!victim || !victim.alive) continue;
+          victim.hp = Math.max(0, victim.hp - dmg.damage);
+          if (victim.hp <= 0) victim.alive = false;
+          if (dmg.playerId !== socket.id) {
+            tank.score += dmg.damage;
+            if (dmg.killed) tank.score += 50;
+          }
+        }
+      }, lastImpactSeconds * 1000);
     });
 
     socket.on('disconnect', () => {
