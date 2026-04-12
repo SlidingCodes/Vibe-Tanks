@@ -10,169 +10,109 @@ Real-time 3D multiplayer tank game with destructible terrain, built with Three.j
 - **Destructible terrain**: every shot reshapes the battlefield via heightmap craters.
 - **Weapon variety**: same input flow, different projectile and explosion behavior.
 
-## Recommended stack
+## Controls
+
+- `W` / `S` - Move forward / backward
+- `A` / `D` - Turn tank left / right
+- `Mouse` - Aim turret (position raycasts to ground plane)
+- `Left click` - Fire (respects per-weapon cooldown)
+
+## Tech stack
 
 ### Client
 - **Three.js** for rendering.
 - **TypeScript** for shared types between client and server.
-- **Vite** for fast client setup.
-- **Rapier3D** for collision / rigid-body support where needed.
-- Prefer **custom gameplay simulation** for shell flight, explosion resolution, and terrain edits.
+- **Vite** for fast client dev server (port 3000) with Socket.IO proxy.
+- **Custom gameplay simulation** for shell flight, explosion resolution, and terrain edits (no physics engine).
 
 ### Server
 - **Node.js + TypeScript**.
-- **Socket.IO** or **Colyseus** for room-based multiplayer.
-- Keep the **server authoritative** for:
-  - turn state
-  - tank positions
-  - projectile simulation result
+- **Socket.IO** for real-time multiplayer.
+- **Server authoritative** for:
+  - tank positions and rotations
+  - projectile simulation
   - terrain edits
   - damage / scoring
 
-## Engine recommendation
+## Running locally
 
-Use **Rapier3D** over `cannon-es` if efficiency is the priority.
+```bash
+# Install all dependencies (root + server + client via postinstall)
+npm install
 
-### Recommended split
+# Run both server and client concurrently
+npm run dev
+```
 
-- **Three.js** renders the world.
-- **Rapier3D** handles selective physics: tank collision, grounding, optional debris, pickups.
-- **Custom server simulation** handles the gameplay-critical path:
-  - shell trajectory
-  - hit detection
-  - explosion resolution
-  - terrain deformation
-  - turn progression
+Open `http://localhost:3000` in a browser. Open a second tab to add another player.
+
+## Architecture
+
+### Real-time loop
+
+- **Server 60Hz movement tick**: applies WASD input to each tank, clamps to map bounds, re-grounds tanks to the heightmap.
+- **Server 20Hz state broadcast**: sends the full tank list to all clients for position/aim/HP sync.
+- **Client render loop**: reads keyboard + mouse, sends `movement_input` on key change, `aim_update` every frame, `fire_request` on click.
+
+### Server authoritative model
+
+Clients never own gameplay truth. A shot is only real after `shot_resolved` comes back from the server.
+
+- **Client sends**: movement input, turret rotation, barrel pitch, fire requests.
+- **Server computes**: tank movement, projectile path (Euler integration), terrain collision, crater deformation, splash damage.
+- **Server broadcasts**: state updates, shot results, terrain patches, player join/leave events.
 
 ### Why this split is better
 
-A full physics-engine-driven approach sounds attractive, but destructible terrain plus multiplayer sync changes the tradeoff.
+Destructible terrain + multiplayer sync is where full physics engines break down:
 
-- Rebuilding terrain colliders often can get expensive.
+- Rebuilding terrain colliders on every shot is expensive.
 - Terrain replication is easier when the server owns a heightmap, not a physics engine scene.
 - Ballistic artillery logic is simple enough to simulate deterministically in fixed ticks.
 - This keeps the game fair and avoids terrain / projectile desync.
 
-### MVP rule
-
-If you need to cut scope even harder, you can skip a physics engine entirely in the first playable version and do:
-
-- manual shell ballistics
-- terrain height sampling for tank grounding
-- manual hit / blast checks
-
-Then add Rapier3D later for better collision support.
-
-## High-level architecture
-
-Use a split like this:
+## Directory layout
 
 ```text
-client/
-  scene/         Three.js scene, camera, lights, terrain mesh
-  entities/      tank, projectile, fx, pickups
-  net/           socket connection, interpolation, reconciliation
-  ui/            power meter, weapon picker, turn banner, scoreboard
-server/
-  rooms/         match lifecycle and player slots
-  game/          turn system, firing rules, damage, spawn rules
-  terrain/       heightmap storage and crater application
-  weapons/       weapon definitions and effect resolvers
-shared/
-  types/         events, snapshots, weapon config, match state
+client/src/
+  main.ts             App entry point, render loop, input wiring
+  scene/terrain.ts    Three.js heightmap mesh, dirty-region patch updates
+  scene/camera.ts     Third-person camera follow with smoothed lerp
+  scene/lights.ts     Ambient + directional + hemisphere lights
+  entities/tank.ts    Tank mesh (body + turretGroup + barrel)
+  entities/projectile.ts  Shot trajectory animation, explosion FX
+  net/socket.ts       Socket.IO client connection
+  ui/hud.ts           HP bar, scoreboard, cooldown bar
+  ui/input.ts         WASD keyboard, mouse NDC, ground-plane raycast aim
+  ui/trajectoryPreview.ts  Predicted shot arc rendered from current aim
+server/src/
+  index.ts            HTTP + Socket.IO bootstrap, single room
+  rooms/Room.ts       Match lifecycle, real-time game loop, free-fire
+  game/Simulation.ts  Euler-integrated shell flight, collision, splash damage
+  terrain/Heightmap.ts  2D height grid, crater application, patch export
+shared/src/
+  types/index.ts      Shared interfaces and network event contracts
+  weapons.ts          Weapon definitions (standard, big_blast, splitter)
+  constants.ts        Gameplay tuning (gravity, grid size, speed, tick rates)
 ```
-
-## Multiplayer rules
-
-### Server authoritative model
-
-Good fit for artillery games because simulation is discrete and easy to serialize.
-
-- Client sends:
-  - aim angle
-  - turret rotation
-  - shot power
-  - selected weapon
-  - fire input
-- Server computes:
-  - spawn point of projectile
-  - projectile path
-  - collision
-  - crater deformation
-  - splash damage
-  - end of turn
-- Server broadcasts:
-  - updated match snapshot
-  - projectile events
-  - terrain patch/crater data
-  - health and score changes
-
-### Why this matters
-
-Terrain destruction plus late joiners makes peer-to-peer sync painful. Server authority avoids divergent terrain and projectile outcomes.
-
-## Mid-round spawning
-
-Handle join-in-progress as a first-class feature.
-
-### Suggested rules
-
-- New player joins room.
-- Server places them into a **pending spawn queue**.
-- Spawn them:
-  - at the start of the next turn, or
-  - immediately after the current projectile / explosion chain is fully resolved.
-- Never spawn during active projectile simulation.
-- Give short spawn protection if needed, for example:
-  - immune until their first turn starts, or
-  - reduced damage for 2 seconds.
-
-### Spawn logic pointers
-
-- Find a valid ground point by sampling the terrain heightmap.
-- Reject positions that are:
-  - inside a crater wall that is too steep
-  - too close to another tank
-  - under active explosion area
-- Snap the tank to terrain normal or keep tanks upright and only align the base.
 
 ## Terrain destruction
 
-The simplest reliable approach is a **heightmap terrain**.
+Terrain is a **heightmap** -- a 2D grid of heights stored on the server.
 
-### Recommended approach
-
-- Store terrain as a 2D height grid on the server.
-- Build the visible mesh from that height grid on the client.
-- On explosion:
-  - convert impact position to terrain local coordinates
-  - find affected heightmap cells inside blast radius
-  - lower heights using a falloff curve
-  - recalculate normals for the changed region
-  - send only the changed patch to clients
+- Server owns the heightmap truth. Clients build the visible mesh from it.
+- On explosion: convert impact to grid coordinates, find affected cells inside blast radius, lower heights using smoothstep falloff, send only the changed patch to clients.
+- Client rebuilds only dirty vertices and recomputes normals locally. The full mesh is never rebuilt after the initial snapshot.
 
 ### Why heightmap first
 
 - Easy crater math
-- Cheap replication over network
-- Easy to query spawn height
-- Easier tank grounding than full voxel terrain
-
-### Crater shaping ideas
-
-- **Linear falloff**: cheap, arcade feel.
-- **Smoothstep falloff**: better-looking crater edges.
-- **Layered noise**: makes terrain damage less perfect and more natural.
-
-### Important constraint
-
-Do not fully rebuild the whole terrain mesh after every shot. Update only the dirty region.
+- Cheap replication over the network (only the changed patch is sent)
+- Easy to sample for tank grounding and spawn positions
 
 ## Weapons system
 
-Make weapons data-driven.
-
-Each weapon should be a config object plus a resolver.
+Weapons are data-driven. Each is a config object, and the same projectile flow runs for all of them.
 
 ```ts
 interface WeaponDefinition {
@@ -183,251 +123,54 @@ interface WeaponDefinition {
   damage: number;
   terrainDamage: number;
   behavior: 'standard' | 'split' | 'bounce' | 'drill' | 'airburst';
+  cooldown: number;   // seconds between shots
 }
 ```
 
-### Good first weapon set
+### Current weapon set
 
-- **Standard Shell**: one projectile, normal blast.
-- **Big Blast**: slow shot, larger crater.
-- **Bouncer**: bounces 1-3 times before exploding.
-- **Splitter**: splits into multiple child projectiles mid-air.
-- **Driller**: penetrates terrain a short distance, then explodes underground.
-- **Airburst**: explodes above ground and rains fragments.
-- **Napalm / Acid**: damage-over-time area plus shallow terrain damage.
+- **Standard Shell** (`standard`) - one projectile, normal blast, 1s cooldown.
+- **Big Blast** (`big_blast`) - slow shot, larger crater, 2.5s cooldown.
+- **Splitter** (`splitter`) - splits mid-air into multiple projectiles, 1.5s cooldown.
 
-### Behavior implementation pattern
+### Common projectile flow
 
-Keep common projectile flow shared:
+1. Fire request validated (alive tank, cooldown elapsed)
+2. Projectile spawned at barrel tip
+3. Euler integration per tick (gravity + initial velocity)
+4. Terrain or out-of-bounds collision ends the shot
+5. Explosion resolver applies crater + splash damage
 
-1. weapon selected
-2. projectile spawned
-3. projectile updated per tick
-4. behavior hook runs
-5. collision or trigger condition met
-6. explosion resolver applies terrain + damage + effects
+## Mouse aiming and ballistic solve
 
-This prevents each weapon from becoming a one-off mess.
+Turret rotation is driven by the mouse. Every frame the client:
 
-## Tank control and camera
+1. Converts mouse to NDC, builds a ray via `THREE.Raycaster`.
+2. Intersects the ray with a horizontal ground plane at the player's tank Y.
+3. Computes `atan2(dx, dz)` for turret rotation.
+4. Runs a ballistic solve given projectile speed and gravity to find the barrel pitch that lands at the crosshair target. The resulting arc is also previewed visually.
 
-Keep controls simple.
+The same turret rotation and barrel pitch are sent to the server each frame via `aim_update`, and the server uses them when a fire request arrives.
 
-- horizontal aim
-- barrel pitch
-- power charge
-- weapon select
-- fire
+## Match state synced
 
-### Camera pointers
+Every 20Hz the server broadcasts the full tank list, which contains per-tank:
 
-- Default side-angle camera for aiming readability.
-- Brief projectile follow camera after firing.
-- Snap back to next active tank when turn ends.
-- For join-in-progress, start with overview camera while waiting to spawn.
+- `playerId`, `color`
+- `position`, `bodyRotation`, `turretRotation`, `barrelPitch`
+- `hp`, `maxHp`, `alive`, `score`
 
-## Turn flow
+Plus one-shot events: `shot_resolved`, `terrain_patch`, `player_spawned`, `player_left`, `game_over`.
 
-A clean turn loop helps everything else.
+## Implementation risks to watch for
 
-1. Start turn for active player.
-2. Allow aim + weapon selection.
-3. Fire projectile.
-4. Lock inputs for all players while simulation resolves.
-5. Apply explosions, terrain changes, deaths, score updates.
-6. Resolve pending spawns.
-7. Advance turn.
-
-## Match state to replicate
-
-At minimum sync:
-
-- room id
-- current turn player id
-- player list
-- tank transforms
-- hp / score / alive state
-- selected weapon / inventory
-- terrain patch updates
-- projectile events
-- explosion events
-- match phase
-
-## MVP milestone order
-
-### Milestone 1
-- one room
-- two players
-- one tank each
-- one weapon
-- one static heightmap terrain
-- basic turn system
-
-### Milestone 2
-- server-authoritative firing
-- crater deformation
-- damage and death
-- spectator / waiting state
-
-### Milestone 3
-- join-in-progress spawn queue
-- 4-8 players per room
-- multiple weapons with behavior hooks
-- scoreboard and rematch flow
-
-### Milestone 4
-- polish FX
-- terrain materials
-- sound
-- replay / match summary
-
-## 3-person parallel work plan
-
-Use one short shared setup phase, then split into 3 clear lanes.
-
-### Phase 0: lock shared contracts first
-
-All 3 people work together first.
-
-Define in `shared/`:
-- `PlayerId`, `RoomId`
-- `MatchPhase`
-- `TankState`
-- `ProjectileState`
-- `WeaponDefinition`
-- `TerrainPatch`
-- network events:
-  - `join_room`
-  - `room_snapshot`
-  - `aim_update`
-  - `fire_request`
-  - `shot_resolved`
-  - `terrain_patch`
-  - `turn_started`
-  - `player_spawned`
-
-Do this before feature work. It unlocks parallel work and reduces merge conflicts.
-
-### Person 1: server / game authority
-
-Own:
-- room lifecycle
-- turn system
-- pending spawn queue
-- server-side shell simulation
-- hit / damage / scoring
-- terrain heightmap truth
-
-Deliverables:
-- Node + TypeScript multiplayer server
-- fixed-tick match loop
-- authoritative `fire_request -> shot_resolved`
-- server crater application
-- join-in-progress spawn queue
-- snapshot + patch broadcast
-
-### Person 2: client / Three.js / terrain rendering
-
-Own:
-- Three.js scene bootstrap
-- camera system
-- tank rendering
-- terrain mesh generation from heightmap
-- terrain patch mesh updates
-- interpolation of server snapshots
-
-Deliverables:
-- playable client scene
-- aiming camera + projectile follow camera
-- tank placement on terrain
-- efficient dirty-region terrain mesh updates
-- spectator / waiting camera for late joiners
-
-### Person 3: weapons / UI / FX / tools
-
-Own:
-- weapon data definitions
-- HUD
-- weapon selection UX
-- power / aim UI
-- projectile and explosion FX
-- debug and tuning tools
-
-Deliverables:
-- shared weapon definitions
-- first 3-5 weapons
-- health / turn / weapon / power HUD
-- scoreboard
-- local debug panel for event logs and crater testing
-- placeholder visual FX wired to server events
-
-### Parallel order
-
-1. All 3 define shared types and event names.
-2. Split into the 3 lanes above.
-3. Integrate the first vertical slice.
-4. Expand content only after the slice is stable.
-
-### First integration target
-
-Hit this before adding many weapons:
-- 2 players in one room
-- 2 tanks on one map
-- 1 standard shell
-- destructible terrain
-- damage + next turn
-- late joiner waits, then spawns safely
-
-### Handoff boundaries
-
-Person 1 exports:
-- `room_snapshot`
-- `terrain_patch`
-- `shot_resolved`
-- `turn_started`
-- `player_spawned`
-
-Person 2 exports:
-- `applySnapshot(snapshot)`
-- `applyTerrainPatch(patch)`
-- `playShotResolved(event)`
-
-Person 3 exports:
-- `WeaponDefinition[]`
-- HUD inputs for aim, power, weapon select, and fire
-
-### Coordination rules
-
-- `main` should stay runnable.
-- Keep shared event names stable after Phase 0.
-- Let only one person own shared-contract edits at a time.
-- Server owns gameplay truth; client owns rendering.
-- Weapon definitions can be shared, but weapon resolution stays server-side.
-
-## Biggest implementation risks
-
-- **Terrain sync drift** if clients can deform terrain locally without server confirmation.
-- **Projectile desync** if client and server run different physics values.
-- **Spawn unfairness** if players appear inside active blast zones.
-- **Performance spikes** if terrain normals/geometry are rebuilt globally after each hit.
+- **Terrain sync drift** if clients deform terrain locally without server confirmation.
+- **Projectile desync** if client and server run different gravity or speed values (keep them in `shared/constants.ts`).
+- **Performance spikes** if terrain normals/geometry are rebuilt globally after each hit -- always patch only dirty regions.
+- **Cheat risk** if server trusts client-supplied turret rotation blindly. Currently the server accepts the last `aim_update` on fire; a fairness pass would validate rate of change.
 
 ## Practical advice
 
-- Start with fake cubes for tanks and a simple plane converted to a heightmap mesh.
-- Make one weapon feel good before adding many.
-- Keep all gameplay numbers in data files for fast tuning.
-- Log every turn event on the server while building; artillery bugs are much easier to debug from event logs.
-- Treat late-join support as part of the main loop early, not a bolt-on later.
-
-## First concrete build target
-
-Build this vertical slice first:
-
-- 2 players in one room
-- 1 destructible terrain map
-- 1 tank per player
-- 1 standard shell weapon
-- server-authoritative shot resolution
-- next-turn spawn queue for join-in-progress
-
-If that slice works, the rest becomes content and polish instead of architecture rescue.
+- Keep all gameplay numbers in `shared/src/constants.ts` and `shared/src/weapons.ts` so client and server can never disagree.
+- Log every shot on the server while building; artillery bugs are easier to debug from event logs than from replaying frames.
+- Keep weapon behaviors small and composable instead of one-off code paths.
