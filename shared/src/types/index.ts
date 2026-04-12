@@ -42,6 +42,19 @@ export interface TankState {
 
 // ── Weapons ──
 export type WeaponBehavior = 'standard' | 'split' | 'bounce' | 'drill' | 'airburst';
+export type ShotEventType = 'impact' | 'split';
+export type ShotVisualStyle = 'standard' | 'big_blast' | 'splitter_parent' | 'splitter_fragment';
+
+export interface WeaponBehaviorConfig {
+  airburstHeight?: number;
+  splitTime?: number;
+  fragmentCount?: number;
+  fragmentSpread?: number;
+  fragmentSpeedScale?: number;
+  fragmentBlastRadius?: number;
+  fragmentDamage?: number;
+  fragmentTerrainDamage?: number;
+}
 
 export interface WeaponDefinition {
   id: string;
@@ -52,6 +65,7 @@ export interface WeaponDefinition {
   terrainDamage: number;
   behavior: WeaponBehavior;
   cooldown: number; // seconds between shots
+  behaviorConfig?: WeaponBehaviorConfig;
 }
 
 // ── Projectile ──
@@ -87,12 +101,20 @@ export interface MatchSnapshot {
 }
 
 // ── Shot result ──
+export interface ShotStep {
+  startDelay: number;
+  trajectory: Vec3[];
+  endPoint: Vec3;
+  eventType: ShotEventType;
+  terrainPatch: TerrainPatch | null;
+  blastRadius: number;
+  visualStyle: ShotVisualStyle;
+}
+
 export interface ShotResult {
   shooterId: PlayerId;
   weaponId: string;
-  trajectory: Vec3[];
-  impactPoint: Vec3;
-  terrainPatch: TerrainPatch | null;
+  steps: ShotStep[];
   damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
 }
 

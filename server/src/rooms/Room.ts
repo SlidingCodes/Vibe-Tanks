@@ -158,24 +158,15 @@ export class Room {
         Array.from(this.tanks.values()),
       );
 
-      this.io.to(this.id).emit('shot_resolved', result);
-
-      // Defer world mutations (crater + damage + score) to match the client's
-      // projectile flight animation so opponents don't drop before impact.
-      const flightSeconds = Math.max(0, (result.trajectory.length - 1) * (4 / 60));
-      setTimeout(() => {
-        if (result.terrainPatch) this.heightmap.applyPatch(result.terrainPatch);
-        for (const dmg of result.damageDealt) {
-          const victim = this.tanks.get(dmg.playerId);
-          if (!victim || !victim.alive) continue;
-          victim.hp = Math.max(0, victim.hp - dmg.damage);
-          if (victim.hp <= 0) victim.alive = false;
-          if (dmg.playerId !== socket.id) {
-            tank.score += dmg.damage;
-            if (dmg.killed) tank.score += 50;
-          }
+      // Simulation already committed crater + damage. Award score and forward.
+      for (const dmg of result.damageDealt) {
+        if (dmg.playerId !== socket.id) {
+          tank.score += dmg.damage;
+          if (dmg.killed) tank.score += 50;
         }
-      }, flightSeconds * 1000);
+      }
+
+      this.io.to(this.id).emit('shot_resolved', result);
     });
 
     socket.on('disconnect', () => {

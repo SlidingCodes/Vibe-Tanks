@@ -3,8 +3,18 @@ import { MovementInput } from '@shared/types/index';
 
 // ── Keyboard ──
 const keys: Record<string, boolean> = {};
+let pendingWeaponSlot: number | null = null;
 
-window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+window.addEventListener('keydown', (e) => {
+  if (!keys[e.code] && e.code.startsWith('Digit')) {
+    const slot = Number(e.code.slice(5)) - 1;
+    if (Number.isInteger(slot) && slot >= 0) {
+      pendingWeaponSlot = slot;
+    }
+  }
+
+  keys[e.code] = true;
+});
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 export function getMovementInput(): MovementInput {
@@ -50,6 +60,12 @@ export function consumeClick(): boolean {
     return true;
   }
   return false;
+}
+
+export function consumeWeaponSlot(): number | null {
+  const slot = pendingWeaponSlot;
+  pendingWeaponSlot = null;
+  return slot;
 }
 
 // ── Pointer lock for seamless mouse control ──

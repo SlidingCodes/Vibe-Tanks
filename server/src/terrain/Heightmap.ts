@@ -97,6 +97,13 @@ export class Heightmap {
     }
   }
 
+  /** Convenience: compute the crater patch and apply it in one call. */
+  applyCrater(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {
+    const patch = this.computeCraterPatch(impact, blastRadius, terrainDamage);
+    this.applyPatch(patch);
+    return patch;
+  }
+
   toConfig(): TerrainConfig {
     return {
       gridWidth: this.width,
