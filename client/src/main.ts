@@ -18,6 +18,7 @@ import { showLogin } from './ui/login';
 import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot, setVirtualWeaponSlot } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
+import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -52,6 +53,7 @@ window.addEventListener('resize', () => {
 // ── Game state ──
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
+let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 
@@ -96,6 +98,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   if (!scene.getObjectByName('__terrain_built')) {
     const t = createTerrain(snap.terrain, scene);
     t.name = '__terrain_built';
+    initMinimap(snap.terrain);
   }
 
   // Sync tanks
@@ -132,6 +135,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 });
 
 socket.on('state_update', (tanks: TankState[]) => {
+  latestTanks = tanks;
   for (const tankState of tanks) {
     const existing = getAllTankMeshes().get(tankState.playerId);
     if (!existing) {
@@ -199,7 +203,10 @@ socket.on('state_update', (tanks: TankState[]) => {
 
 socket.on('shot_resolved', (result) => {
   playShotAnimation(result, scene, (patch) => {
-    if (patch) applyTerrainPatch(patch);
+    if (patch) {
+      applyTerrainPatch(patch);
+      onMinimapPatch(patch);
+    }
   });
 });
 
@@ -333,6 +340,14 @@ function animate(): void {
   tickTankEffects(dt);
 
   updateProjectileAnimation(scene, dt);
+
+  if (snapshot) {
+    const myPos = predictedState ? predictedState.position : null;
+    const myRot = predictedState ? predictedState.bodyRotation : 0;
+    const tanksForMap = latestTanks.length ? latestTanks : snapshot.tanks;
+    updateMinimap(myPos, myRot, tanksForMap, myId);
+  }
+
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }

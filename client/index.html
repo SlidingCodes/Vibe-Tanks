@@ -129,6 +129,15 @@
       z-index: 30; font-family: sans-serif;
     }
     #fullscreen-btn:hover { background: rgba(0,0,0,0.65); }
+    #minimap {
+      position: fixed; bottom: 20px; right: 20px;
+      width: 180px; height: 180px; border-radius: 50%;
+      pointer-events: none; z-index: 5;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    body.mobile #minimap {
+      width: 120px; height: 120px; bottom: auto; top: 60px; right: 12px;
+    }
     /* Mobile overlay controls — hidden by default, shown when body has .mobile */
     #mobile-controls { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 4; }
     body.mobile #mobile-controls { display: block; }
