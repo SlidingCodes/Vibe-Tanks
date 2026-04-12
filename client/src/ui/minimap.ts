@@ -6,9 +6,9 @@ import { TerrainConfig, TerrainPatch, TankState, PlayerId } from '@shared/types/
 // minimap canvas so the world appears to scroll beneath a fixed crosshair.
 
 const PX_PER_UNIT = 8;               // offscreen canvas scale
-const VIEW_RADIUS_UNITS = 18;        // world-space radius shown in the minimap
+const VIEW_RADIUS_UNITS = 24;        // world-space radius shown in the minimap
 const CONTOUR_STEP = 1.2;            // height step between contour lines
-const MINIMAP_SIZE = 180;            // visible px (square, clipped to circle)
+const MINIMAP_SIZE = 220;            // visible px (square, clipped to circle)
 
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
@@ -176,6 +176,7 @@ export function updateMinimap(
   tanks: TankState[],
   myId: PlayerId,
   trajectory: { x: number; z: number }[] = [],
+  tankPositions?: Map<PlayerId, { x: number; z: number }>,
 ): void {
   if (!ctx || !canvas || !offscreen) return;
   const size = MINIMAP_SIZE;
@@ -240,11 +241,14 @@ export function updateMinimap(
       ctx.stroke();
     }
 
-    // Enemy tanks (also rotated with the map).
+    // Enemy tanks (also rotated with the map). Position comes from the
+    // interpolated mesh when available so the dots track the smoothed 3D
+    // positions rather than the 20 Hz state broadcasts.
     for (const t of tanks) {
       if (t.playerId === myId || !t.alive) continue;
-      const dx = (t.position.x - myPos.x) * pxPerUnitVisible;
-      const dy = (t.position.z - myPos.z) * pxPerUnitVisible;
+      const pos = tankPositions?.get(t.playerId) ?? { x: t.position.x, z: t.position.z };
+      const dx = (pos.x - myPos.x) * pxPerUnitVisible;
+      const dy = (pos.z - myPos.z) * pxPerUnitVisible;
       if (Math.hypot(dx, dy) > size / 2) continue;
       ctx.fillStyle = t.color || '#f33';
       ctx.strokeStyle = '#000';
