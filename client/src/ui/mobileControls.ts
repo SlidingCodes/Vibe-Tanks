@@ -134,7 +134,8 @@ export function setupMobileControls(): void {
     for (const t of Array.from(e.changedTouches)) {
       if (t.identifier === aimTouchId) {
         aimTouchId = null;
-        aimKnob.style.transform = 'translate(0, 0)';
+        // Leave the knob where the user released it as a visual memento
+        // of the last shot direction; it gets repositioned on next touch.
         aimBase.classList.remove('active');
         // Tap → auto-fire straight ahead; drag → fire along current aim.
         if (aimMaxDrag < TAP_MAX_DRAG_PX) writeAimFromOffset(0, -AIM_RADIUS * 0.5);
@@ -165,9 +166,11 @@ export function setupMobileControls(): void {
   function writeAimFromOffset(offsetX: number, offsetY: number): void {
     const ctx = getAimContext();
     const mag = Math.min(1, Math.hypot(offsetX, offsetY) / AIM_RADIUS);
-    // Joystick angle where "up" (negative screen Y) = tank forward.
-    // atan2(x, -y): up → 0, right → +π/2, matching body yaw convention.
-    const joyAngle = mag > 0 ? Math.atan2(offsetX, -offsetY) : 0;
+    // The third-person camera sits behind the tank and looks forward, so
+    // world +X ends up on screen-LEFT (right-handed coords). Flip the
+    // joystick X sign so dragging right on screen aims right on screen.
+    // atan2(-x, -y): up → 0, right → -π/2 offset applied to body yaw.
+    const joyAngle = mag > 0 ? Math.atan2(-offsetX, -offsetY) : 0;
     const aimAngle = ctx.bodyRot + joyAngle;
     const range = AIM_MIN_RANGE + (AIM_MAX_RANGE - AIM_MIN_RANGE) * mag;
     setVirtualAimWorld(

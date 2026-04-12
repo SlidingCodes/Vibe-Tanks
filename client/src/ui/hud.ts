@@ -1,6 +1,8 @@
 import { TankState, WeaponDefinition } from '@shared/types/index';
 
-const healthBar = document.getElementById('health-bar')!;
+const healthBar = document.getElementById('health-bar') as HTMLDivElement;
+const healthFill = document.getElementById('health-fill') as HTMLDivElement;
+const healthLabel = document.getElementById('health-label') as HTMLDivElement;
 const scoreboard = document.getElementById('scoreboard')!;
 const cooldownRing = document.getElementById('cooldown-ring') as HTMLDivElement;
 const weaponHud = document.getElementById('weapon-hud')!;
@@ -42,9 +44,28 @@ export function hideDeathScreen(): void {
 }
 
 export function setHealth(tank: TankState | undefined): void {
-  if (!tank) { healthBar.textContent = ''; return; }
-  const pct = Math.round((tank.hp / tank.maxHp) * 100);
-  healthBar.textContent = `HP: ${tank.hp}/${tank.maxHp} (${pct}%)`;
+  if (!tank) {
+    healthBar.style.display = 'none';
+    return;
+  }
+  healthBar.style.display = 'block';
+  const pct = Math.max(0, Math.min(1, tank.hp / tank.maxHp));
+  healthFill.style.setProperty('--hp-scale', pct.toFixed(3));
+  // Interpolate green (80,220,80) → yellow (230,210,60) → red (220,60,60).
+  let r: number, g: number, b: number;
+  if (pct > 0.5) {
+    const t = (pct - 0.5) * 2;
+    r = Math.round(230 + (80 - 230) * t);
+    g = Math.round(210 + (220 - 210) * t);
+    b = Math.round(60 + (80 - 60) * t);
+  } else {
+    const t = pct * 2;
+    r = Math.round(220 + (230 - 220) * t);
+    g = Math.round(60 + (210 - 60) * t);
+    b = Math.round(60 + (60 - 60) * t);
+  }
+  healthFill.style.setProperty('--hp-color', `rgb(${r},${g},${b})`);
+  healthLabel.textContent = `${tank.hp} / ${tank.maxHp}`;
 }
 
 export function updateScoreboard(tanks: TankState[]): void {
