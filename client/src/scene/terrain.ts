@@ -68,3 +68,32 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
 export function getTerrainMesh(): THREE.Mesh {
   return terrainMesh;
 }
+
+/** Sample height from terrain geometry with bilinear interpolation for smooth movement */
+export function getTerrainHeight(x: number, z: number): number {
+  if (!terrainGeometry) return 0;
+
+  const positions = terrainGeometry.attributes.position;
+  const fx = x / cellSize;
+  const fz = z / cellSize;
+
+  const x0 = Math.max(0, Math.min(gridWidth - 2, Math.floor(fx)));
+  const z0 = Math.max(0, Math.min(gridHeight - 2, Math.floor(fz)));
+  const x1 = x0 + 1;
+  const z1 = z0 + 1;
+
+  // Fractional part within the cell
+  const tx = fx - x0;
+  const tz = fz - z0;
+
+  // Sample four corners
+  const h00 = positions.getY(z0 * gridWidth + x0);
+  const h10 = positions.getY(z0 * gridWidth + x1);
+  const h01 = positions.getY(z1 * gridWidth + x0);
+  const h11 = positions.getY(z1 * gridWidth + x1);
+
+  // Bilinear interpolation
+  const h0 = h00 + (h10 - h00) * tx;
+  const h1 = h01 + (h11 - h01) * tx;
+  return h0 + (h1 - h0) * tz;
+}

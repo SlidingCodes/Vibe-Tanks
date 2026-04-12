@@ -8,9 +8,19 @@ export interface TankMesh {
   turret: THREE.Mesh;
   barrel: THREE.Mesh;
   state: TankState;
+  // Interpolation state for remote tanks
+  prevPosition: THREE.Vector3;
+  targetPosition: THREE.Vector3;
+  prevBodyRotation: number;
+  targetBodyRotation: number;
+  interpTime: number;   // time elapsed since last server update
+  interpDuration: number; // expected time between server updates (1/TICK_RATE)
 }
 
 const tankMeshes: Map<string, TankMesh> = new Map();
+
+// Server broadcasts at 20hz -> 50ms between updates
+const SERVER_BROADCAST_INTERVAL = 1 / 20;
 
 export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
   const group = new THREE.Group();
@@ -46,34 +56,93 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
 
   group.add(turretGroup);
 
-  group.position.set(tank.position.x, tank.position.y, tank.position.z);
+  const pos = new THREE.Vector3(tank.position.x, tank.position.y, tank.position.z);
+  group.position.copy(pos);
   scene.add(group);
 
-  const tm: TankMesh = { group, body, turretGroup, turret, barrel, state: tank };
+  const tm: TankMesh = {
+    group, body, turretGroup, turret, barrel, state: tank,
+    prevPosition: pos.clone(),
+    targetPosition: pos.clone(),
+    prevBodyRotation: tank.bodyRotation,
+    targetBodyRotation: tank.bodyRotation,
+    interpTime: 0,
+    interpDuration: SERVER_BROADCAST_INTERVAL,
+  };
   tankMeshes.set(tank.playerId, tm);
   return tm;
 }
 
+/** Called when a new server state arrives for a remote tank */
+export function onServerStateReceived(tank: TankState): void {
+  const tm = tankMeshes.get(tank.playerId);
+  if (!tm) return;
+
+  // Snapshot current visual position as "prev" and set new target
+  tm.prevPosition.copy(tm.group.position);
+  tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
+  tm.prevBodyRotation = tm.group.rotation.y;
+  tm.targetBodyRotation = tank.bodyRotation;
+  tm.interpTime = 0;
+  tm.interpDuration = SERVER_BROADCAST_INTERVAL;
+
+  // Update non-interpolated state
+  tm.state = tank;
+}
+
+/** Interpolate remote tanks each frame */
+export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {
+  for (const [pid, tm] of tankMeshes) {
+    if (pid === localPlayerId) continue; // local tank is predicted, not interpolated
+
+    tm.interpTime += dt;
+    const t = Math.min(tm.interpTime / tm.interpDuration, 1);
+
+    // Lerp position
+    tm.group.position.lerpVectors(tm.prevPosition, tm.targetPosition, t);
+
+    // Lerp body rotation (handle angle wrapping)
+    tm.group.rotation.y = lerpAngle(tm.prevBodyRotation, tm.targetBodyRotation, t);
+
+    // Turret and barrel apply directly (aim is updated every frame anyway)
+    tm.turretGroup.rotation.y = tm.state.turretRotation - tm.group.rotation.y;
+    tm.barrel.rotation.x = -tm.state.barrelPitch;
+
+    tm.group.visible = tm.state.alive;
+  }
+}
+
+/** Update the local tank mesh directly (used by client-side prediction) */
+export function updateLocalTankMesh(tank: TankState): void {
+  const tm = tankMeshes.get(tank.playerId);
+  if (!tm) return;
+
+  tm.state = tank;
+  tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
+  tm.group.rotation.y = tank.bodyRotation;
+  tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
+  tm.barrel.rotation.x = -tank.barrelPitch;
+  tm.group.visible = tank.alive;
+}
+
+/** Legacy full-snap update (used for snapshot sync) */
 export function updateTankMesh(tank: TankState): void {
   const tm = tankMeshes.get(tank.playerId);
   if (!tm) return;
 
   tm.state = tank;
-
-  // Smooth position update
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
-
-  // Body rotation
   tm.group.rotation.y = tank.bodyRotation;
-
-  // Turret rotation is in world space, but turretGroup is a child of group,
-  // so subtract body rotation to get local turret rotation
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
-
-  // Barrel pitch (rotate barrel up/down around X)
   tm.barrel.rotation.x = -tank.barrelPitch;
-
   tm.group.visible = tank.alive;
+
+  // Also reset interpolation targets
+  tm.prevPosition.copy(tm.group.position);
+  tm.targetPosition.copy(tm.group.position);
+  tm.prevBodyRotation = tank.bodyRotation;
+  tm.targetBodyRotation = tank.bodyRotation;
+  tm.interpTime = 0;
 }
 
 export function removeTankMesh(playerId: string, scene: THREE.Scene): void {
@@ -86,4 +155,13 @@ export function removeTankMesh(playerId: string, scene: THREE.Scene): void {
 
 export function getAllTankMeshes(): Map<string, TankMesh> {
   return tankMeshes;
+}
+
+/** Lerp between two angles, handling wraparound */
+function lerpAngle(a: number, b: number, t: number): number {
+  let diff = b - a;
+  // Wrap to [-PI, PI]
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * t;
 }
