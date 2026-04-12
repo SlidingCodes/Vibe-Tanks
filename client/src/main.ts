@@ -18,6 +18,7 @@ import { showLogin } from './ui/login';
 import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot, setVirtualWeaponSlot } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
+import { setupSettingsMenu } from './ui/settings';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -74,6 +75,7 @@ hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
 
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();
+setupSettingsMenu();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
