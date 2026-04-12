@@ -11,4 +11,4 @@ export const TERRAIN_CELL_SIZE = 1.0;
 export const MIN_PLAYERS_TO_START = 1;
 export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
-export const SERVER_PORT = 3101;
+export const SERVER_PORT = 3001;

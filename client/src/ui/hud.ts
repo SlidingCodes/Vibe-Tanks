@@ -28,11 +28,23 @@ export function setCooldown(fraction: number): void {
   cooldownFill.style.background = fraction >= 1 ? '#4f4' : '#fa0';
 }
 
+function getWeaponRoleLabel(weapon: WeaponDefinition): string {
+  switch (weapon.behavior) {
+    case 'airburst':
+      return 'Airburst';
+    case 'split':
+      return 'Cluster';
+    case 'standard':
+    default:
+      return 'Precision';
+  }
+}
+
 export function setWeapons(weapons: WeaponDefinition[], selectedWeaponId: string): void {
   weaponHud.innerHTML = weapons
     .map((weapon, index) => {
       const selectedClass = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-      return `<div class="${selectedClass}">[${index + 1}] ${weapon.name}</div>`;
+      return `<div class="${selectedClass}">[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}</div>`;
     })
     .join('');
 }

@@ -140,8 +140,8 @@ socket.on('state_update', (tanks: TankState[]) => {
 });
 
 socket.on('shot_resolved', (result) => {
-  playShotAnimation(result, scene, () => {
-    if (result.terrainPatch) applyTerrainPatch(result.terrainPatch);
+  playShotAnimation(result, scene, (patch) => {
+    if (patch) applyTerrainPatch(patch);
   });
 });
 
@@ -254,7 +254,7 @@ function animate(): void {
       // Trajectory preview from barrel tip
       const sx = predictedState.position.x + Math.sin(turretRot) * 1.2;
       const sz = predictedState.position.z + Math.cos(turretRot) * 1.2;
-      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, selectedWeapon.projectileSpeed);
+      updateTrajectoryPreview(scene, sx, startY, sz, turretRot, barrelPitch, selectedWeapon);
     } else {
       hideTrajectoryPreview();
     }
