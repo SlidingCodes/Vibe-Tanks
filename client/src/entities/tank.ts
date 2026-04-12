@@ -36,20 +36,50 @@ export interface TankMesh {
   turretGroup: THREE.Group;  // pivots on Y for turret rotation
   turret: THREE.Mesh;
   barrel: THREE.Mesh;
+  leftTread: THREE.Mesh;
+  rightTread: THREE.Mesh;
+  leftTreadTex: THREE.Texture;
+  rightTreadTex: THREE.Texture;
   state: TankState;
   // Interpolation state for remote tanks
   prevPosition: THREE.Vector3;
   targetPosition: THREE.Vector3;
   prevBodyRotation: number;
   targetBodyRotation: number;
-  interpTime: number;   // time elapsed since last server update
-  interpDuration: number; // expected time between server updates (1/TICK_RATE)
+  interpTime: number;
+  interpDuration: number;
+  // Tread animation bookkeeping — last rendered pose
+  lastX: number;
+  lastZ: number;
+  lastYaw: number;
 }
 
 const tankMeshes: Map<string, TankMesh> = new Map();
 
 // Server broadcasts at 20hz -> 50ms between updates
 const SERVER_BROADCAST_INTERVAL = 1 / 20;
+
+const TREAD_HALF_WIDTH = 0.6;      // distance from tank center to each tread
+const TREAD_SCROLL_SCALE = 0.55;   // texture offset per world unit travelled
+
+function makeTreadTexture(): THREE.Texture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 16;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, 16, 16);
+  ctx.fillStyle = '#4a4a4a';
+  // Vertical bars → bands across the tread once mapped
+  for (let i = 0; i < 16; i += 4) ctx.fillRect(i, 0, 2, 16);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.repeat.set(10, 1);
+  return tex;
+}
 
 export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
   const group = new THREE.Group();
@@ -87,18 +117,38 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene): TankMesh {
 
   group.add(turretGroup);
 
+  // Treads: thin boxes on either side of the body, slightly longer than it.
+  const treadGeo = new THREE.BoxGeometry(0.22, 0.32, 1.8);
+  const leftTreadTex = makeTreadTexture();
+  const rightTreadTex = makeTreadTexture();
+  const leftTreadMat = new THREE.MeshStandardMaterial({ map: leftTreadTex, color: 0x888888 });
+  const rightTreadMat = new THREE.MeshStandardMaterial({ map: rightTreadTex, color: 0x888888 });
+  const leftTread = new THREE.Mesh(treadGeo, leftTreadMat);
+  leftTread.position.set(-TREAD_HALF_WIDTH, 0.16, 0);
+  leftTread.castShadow = true;
+  group.add(leftTread);
+  const rightTread = new THREE.Mesh(treadGeo, rightTreadMat);
+  rightTread.position.set(TREAD_HALF_WIDTH, 0.16, 0);
+  rightTread.castShadow = true;
+  group.add(rightTread);
+
   const pos = new THREE.Vector3(tank.position.x, tank.position.y, tank.position.z);
   group.position.copy(pos);
   scene.add(group);
 
   const tm: TankMesh = {
-    group, body, turretGroup, turret, barrel, state: tank,
+    group, body, turretGroup, turret, barrel,
+    leftTread, rightTread, leftTreadTex, rightTreadTex,
+    state: tank,
     prevPosition: pos.clone(),
     targetPosition: pos.clone(),
     prevBodyRotation: tank.bodyRotation,
     targetBodyRotation: tank.bodyRotation,
     interpTime: 0,
     interpDuration: SERVER_BROADCAST_INTERVAL,
+    lastX: pos.x,
+    lastZ: pos.z,
+    lastYaw: tank.bodyRotation,
   };
   tankMeshes.set(tank.playerId, tm);
   return tm;
@@ -190,6 +240,42 @@ export function removeTankMesh(playerId: string, scene: THREE.Scene): void {
 
 export function getAllTankMeshes(): Map<string, TankMesh> {
   return tankMeshes;
+}
+
+/**
+ * Scroll each tank's tread textures based on how far the tank moved this
+ * frame. Treats forward/backward motion as shared between both treads, and
+ * yaw change as an opposite offset between left and right (pivot in place).
+ */
+export function animateTreads(): void {
+  for (const tm of tankMeshes.values()) {
+    const x = tm.group.position.x;
+    const z = tm.group.position.z;
+    const yaw = tm.group.rotation.y;
+
+    const dx = x - tm.lastX;
+    const dz = z - tm.lastZ;
+    // Project displacement onto current forward direction to get signed speed.
+    const fwdX = Math.sin(yaw);
+    const fwdZ = Math.cos(yaw);
+    const forwardDelta = dx * fwdX + dz * fwdZ;
+
+    let dYaw = yaw - tm.lastYaw;
+    while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+    while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+
+    // Positive dYaw rotates forward toward +X (tank turns to its right), so the
+    // right tread rolls backward and the left tread rolls forward.
+    const leftDelta = forwardDelta + dYaw * TREAD_HALF_WIDTH;
+    const rightDelta = forwardDelta - dYaw * TREAD_HALF_WIDTH;
+
+    tm.leftTreadTex.offset.x -= leftDelta * TREAD_SCROLL_SCALE;
+    tm.rightTreadTex.offset.x -= rightDelta * TREAD_SCROLL_SCALE;
+
+    tm.lastX = x;
+    tm.lastZ = z;
+    tm.lastYaw = yaw;
+  }
 }
 
 /** Lerp between two angles, handling wraparound */
