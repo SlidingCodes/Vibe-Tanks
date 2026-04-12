@@ -88,6 +88,31 @@ export function setVirtualWeaponSlot(slot: number): void {
   pendingWeaponSlot = slot;
 }
 
+// ── World-space aim override (mobile aim joystick) ──
+// When set, main.ts uses this world-XZ point directly as the aim target and
+// skips the camera raycast. Cleared by mobileControls on touch release.
+let virtualAimWorld: { x: number; z: number } | null = null;
+export function setVirtualAimWorld(x: number, z: number): void {
+  virtualAimWorld = { x, z };
+}
+export function clearVirtualAimWorld(): void {
+  virtualAimWorld = null;
+}
+export function getVirtualAimWorld(): { x: number; z: number } | null {
+  return virtualAimWorld;
+}
+
+// Aim context: main.ts pushes the local tank's pose each frame so the
+// mobile aim joystick can translate its vector into a world-space target.
+interface AimContext { px: number; pz: number; py: number; bodyRot: number; }
+let aimContext: AimContext = { px: 0, pz: 0, py: 0, bodyRot: 0 };
+export function setAimContext(px: number, py: number, pz: number, bodyRot: number): void {
+  aimContext.px = px; aimContext.py = py; aimContext.pz = pz; aimContext.bodyRot = bodyRot;
+}
+export function getAimContext(): AimContext {
+  return aimContext;
+}
+
 // ── Pointer lock for seamless mouse control ──
 const canvas = document.querySelector('canvas');
 

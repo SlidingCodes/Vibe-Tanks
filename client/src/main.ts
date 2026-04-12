@@ -15,7 +15,10 @@ import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
-import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot, setVirtualWeaponSlot } from './ui/input';
+import {
+  getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
+  setVirtualWeaponSlot, getVirtualAimWorld, setAimContext,
+} from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
@@ -274,8 +277,19 @@ function animate(): void {
     // Update local tank mesh from predicted state
     updateLocalTankMesh(predictedState);
 
-    // ── Mouse aiming ──
-    const aimTarget = getAimTarget(camera, predictedState.position.y);
+    // Expose local tank pose to the mobile aim joystick.
+    setAimContext(
+      predictedState.position.x,
+      predictedState.position.y,
+      predictedState.position.z,
+      predictedState.bodyRotation,
+    );
+
+    // ── Aim: mobile virtual-world aim takes precedence over camera raycast ──
+    const worldAim = getVirtualAimWorld();
+    const aimTarget = worldAim
+      ? new THREE.Vector3(worldAim.x, predictedState.position.y, worldAim.z)
+      : getAimTarget(camera, predictedState.position.y);
     if (aimTarget) {
       const dx = aimTarget.x - predictedState.position.x;
       const dz = aimTarget.z - predictedState.position.z;

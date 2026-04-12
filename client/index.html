@@ -123,12 +123,12 @@
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
     #fullscreen-btn {
-      position: fixed; top: 10px; right: 10px; width: 36px; height: 36px;
+      position: fixed; top: 54px; right: 20px; width: 32px; height: 32px;
       background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.35);
-      border-radius: 4px; font-size: 20px; cursor: pointer; padding: 0; line-height: 1;
+      border-radius: 4px; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
       z-index: 30; font-family: sans-serif;
     }
-    #fullscreen-btn:hover { background: rgba(0,0,0,0.65); }
+    #fullscreen-btn:hover { background: rgba(0,0,0,0.75); }
     #minimap {
       position: fixed; bottom: 20px; right: 20px;
       width: 180px; height: 180px; border-radius: 50%;
@@ -158,14 +158,25 @@
       background: rgba(255,255,255,0.35); border: 2px solid rgba(255,255,255,0.6);
       pointer-events: none; transition: transform 0.05s linear;
     }
-    #mc-fire {
+    #mc-aim-base {
       position: absolute; right: 32px; bottom: 40px;
-      width: 110px; height: 110px; border-radius: 50%;
-      background: rgba(154,19,19,0.45); color: #fff; font-size: 16px; font-weight: bold;
-      letter-spacing: 2px; border: 2px solid rgba(255,255,255,0.4);
-      pointer-events: auto; touch-action: none; font-family: monospace;
+      width: 140px; height: 140px; border-radius: 50%;
+      background: rgba(154,19,19,0.18); border: 2px solid rgba(255,120,120,0.45);
+      pointer-events: auto; touch-action: none;
     }
-    #mc-fire.pressed { background: rgba(194,34,34,0.9); transform: scale(0.94); }
+    #mc-aim-base.active { background: rgba(194,34,34,0.28); border-color: rgba(255,160,160,0.85); }
+    #mc-aim-knob {
+      position: absolute; top: 50%; left: 50%; margin: -28px 0 0 -28px;
+      width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(255,120,120,0.45); border: 2px solid rgba(255,200,200,0.75);
+      pointer-events: none; transition: transform 0.05s linear;
+    }
+    #mc-aim-hint {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: rgba(255,230,230,0.7); font-family: monospace; font-size: 11px;
+      letter-spacing: 2px; pointer-events: none; user-select: none;
+    }
+    #mc-aim-base.active #mc-aim-hint { display: none; }
   </style>
 </head>
 <body>
@@ -195,7 +206,10 @@
   </div>
   <div id="mobile-controls">
     <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>
-    <button id="mc-fire" type="button">FIRE</button>
+    <div id="mc-aim-base">
+      <div id="mc-aim-knob"></div>
+      <div id="mc-aim-hint">AIM</div>
+    </div>
   </div>
   <button id="fullscreen-btn" type="button" title="Enter fullscreen">⤢</button>
   <script type="module" src="/src/main.ts"></script>
