@@ -158,6 +158,11 @@ socket.on('state_update', (tanks: TankState[]) => {
       createTankMesh(tankState, scene, myId);
     } else if (existing.state.alive && !tankState.alive) {
       spawnTankExplosion(existing.group.position, tankState.color, scene);
+      // Prevent re-triggering on subsequent state_updates while dead.
+      // (For the local tank, updateLocalTankMesh is skipped once dead, so
+      // existing.state would otherwise keep reporting alive=true.)
+      existing.state = tankState;
+      existing.group.visible = false;
     }
 
     if (tankState.playerId === myId) {
@@ -208,9 +213,14 @@ socket.on('state_update', (tanks: TankState[]) => {
   // Toggle the Dark-Souls-style death screen based on the alive flag edge.
   if (myTank) {
     if (!myTank.alive && !wasDead) {
-      hud.showDeathScreen(() => {
-        socket.emit('respawn_request');
-      });
+      // Let the explosion play before the overlay takes over the screen.
+      setTimeout(() => {
+        if (wasDead) {
+          hud.showDeathScreen(() => {
+            socket.emit('respawn_request');
+          });
+        }
+      }, 900);
       wasDead = true;
     } else if (myTank.alive && wasDead) {
       hud.hideDeathScreen();
