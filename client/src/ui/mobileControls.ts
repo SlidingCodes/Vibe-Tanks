@@ -19,6 +19,8 @@ const DIAGONAL_THRESHOLD = Math.cos(Math.PI / 8);
 
 const PITCH_MIN = -(10 * Math.PI) / 180;    // -10° so you can shoot downhill when tilted
 const PITCH_MAX = Math.PI / 2.2;            // ~81.8°, matches server solver cap
+const PITCH_CURVE = 2.1;                    // >1 biases bar travel toward low angles
+                                             // (half-bar ≈ 20°, three-quarters ≈ 45°)
 const YAW_RATE_MAX = Math.PI / 3;           // ~60°/s at bar edge — the bar is mainly a pitch meter,
                                              // yaw is just a nudge around aim-assist
 const YAW_RATE_CURVE = 1.6;                 // gentle near center, still tame at edges
@@ -162,7 +164,10 @@ export function setupMobileControls(): void {
   }
 
   function updateBarVisual(): void {
-    barFill.style.height = `${pitchT * 100}%`;
+    // Fill reflects the actual pitch (curved) so the gauge doesn't lie —
+    // low angles take up more bar travel than the raw finger position.
+    const curved = Math.pow(pitchT, PITCH_CURVE);
+    barFill.style.height = `${curved * 100}%`;
     const rect = bar.getBoundingClientRect();
     const knobY = (1 - pitchT) * rect.height - rect.height / 2;
     // Flip X back for the visual so the knob tracks the finger even
@@ -216,7 +221,7 @@ export function setupMobileControls(): void {
     }
 
     aimYaw = wrapAngle(aimYaw);
-    const pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * pitchT;
+    const pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * Math.pow(pitchT, PITCH_CURVE);
     setVirtualAimDirect(aimYaw, pitch);
   }
   requestAnimationFrame(tick);
