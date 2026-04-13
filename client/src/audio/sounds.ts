@@ -29,7 +29,7 @@ function ramp(param: AudioParam, from: number, to: number, start: number, end: n
 
 // ── SFX volume ──
 
-let sfxVolume = 0.5;
+let sfxVolume = 1.0;
 
 export function setVolume(v: number): void {
   sfxVolume = Math.max(0, Math.min(1, v));
