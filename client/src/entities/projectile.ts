@@ -735,6 +735,9 @@ export function isPlaying(): boolean {
 }
 
 export function flushShotAnimations(scene: THREE.Scene): void {
-  for (const step of shots) disposeStep(step, scene);
+  for (const step of shots) {
+    disposeStep(step, scene);
+    step.onComplete(step.terrainPatch);
+  }
   shots.length = 0;
 }
