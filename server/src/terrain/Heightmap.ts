@@ -15,48 +15,46 @@ export class Heightmap {
     this.generate();
   }
 
-  /** Generate gentle rolling hills */
+  /** Generate gentle rolling hills with a random phase per match. */
   private generate(): void {
+    const phaseX = Math.random() * Math.PI * 2;
+    const phaseZ = Math.random() * Math.PI * 2;
+    const phaseD = Math.random() * Math.PI * 2;
+    const freqX = 2 + Math.random() * 1.5;
+    const freqZ = 2.5 + Math.random() * 1.5;
     for (let z = 0; z < this.height; z++) {
       for (let x = 0; x < this.width; x++) {
         const nx = x / this.width;
         const nz = z / this.height;
         let h = 0;
-        h += Math.sin(nx * Math.PI * 2) * 2;
-        h += Math.sin(nz * Math.PI * 3) * 1.5;
-        h += Math.sin((nx + nz) * Math.PI * 4) * 0.5;
+        h += Math.sin(nx * Math.PI * freqX + phaseX) * 2;
+        h += Math.sin(nz * Math.PI * freqZ + phaseZ) * 1.5;
+        h += Math.sin((nx + nz) * Math.PI * 4 + phaseD) * 0.5;
         h += 2;
         this.data[z * this.width + x] = h;
       }
     }
   }
 
-  private sampleGrid(gx: number, gz: number): number {
-    const clampedX = Math.max(0, Math.min(this.width - 1, gx));
-    const clampedZ = Math.max(0, Math.min(this.height - 1, gz));
-    return this.data[clampedZ * this.width + clampedX];
+  regenerate(): void {
+    this.generate();
   }
 
+  /** Bilinear-interpolated terrain height (smooth everywhere, including craters). */
   getHeight(x: number, z: number): number {
-    const fx = x / this.cellSize;
-    const fz = z / this.cellSize;
-
-    const x0 = Math.max(0, Math.min(this.width - 2, Math.floor(fx)));
-    const z0 = Math.max(0, Math.min(this.height - 2, Math.floor(fz)));
-    const x1 = x0 + 1;
-    const z1 = z0 + 1;
-
-    const tx = Math.max(0, Math.min(1, fx - x0));
-    const tz = Math.max(0, Math.min(1, fz - z0));
-
-    const h00 = this.sampleGrid(x0, z0);
-    const h10 = this.sampleGrid(x1, z0);
-    const h01 = this.sampleGrid(x0, z1);
-    const h11 = this.sampleGrid(x1, z1);
-
-    const h0 = h00 + (h10 - h00) * tx;
-    const h1 = h01 + (h11 - h01) * tx;
-    return h0 + (h1 - h0) * tz;
+    const fx = Math.max(0, Math.min(this.width - 1, x / this.cellSize));
+    const fz = Math.max(0, Math.min(this.height - 1, z / this.cellSize));
+    const x0 = Math.floor(fx), z0 = Math.floor(fz);
+    const x1 = Math.min(this.width - 1, x0 + 1);
+    const z1 = Math.min(this.height - 1, z0 + 1);
+    const tx = fx - x0, tz = fz - z0;
+    const h00 = this.data[z0 * this.width + x0];
+    const h10 = this.data[z0 * this.width + x1];
+    const h01 = this.data[z1 * this.width + x0];
+    const h11 = this.data[z1 * this.width + x1];
+    const h0 = h00 * (1 - tx) + h10 * tx;
+    const h1 = h01 * (1 - tx) + h11 * tx;
+    return h0 * (1 - tz) + h1 * tz;
   }
 
   getSurfaceNormal(x: number, z: number): Vec3 {
@@ -127,8 +125,8 @@ export class Heightmap {
     };
   }
 
-  /** Apply a crater at a world position. Returns the terrain patch for networking. */
-  applyCrater(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {
+  /** Compute the crater patch without mutating. Caller applies via applyPatch. */
+  computeCraterPatch(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {
     const { gx: cx, gz: cz } = this.worldToGrid(impact.x, impact.z);
     const gridRadius = Math.ceil(blastRadius / this.cellSize);
 
@@ -140,25 +138,38 @@ export class Heightmap {
     const patchH = endZ - startZ + 1;
 
     const patchHeights: number[] = [];
-
     for (let z = startZ; z <= endZ; z++) {
       for (let x = startX; x <= endX; x++) {
         const dx = (x - cx) * this.cellSize;
         const dz = (z - cz) * this.cellSize;
         const dist = Math.sqrt(dx * dx + dz * dz);
-
+        const idx = z * this.width + x;
+        let h = this.data[idx];
         if (dist < blastRadius) {
           const t = dist / blastRadius;
           const falloff = 1 - t * t * (3 - 2 * t);
-          const idx = z * this.width + x;
-          this.data[idx] = this.data[idx] - terrainDamage * falloff;
+          h = h - terrainDamage * falloff;
         }
-
-        patchHeights.push(this.data[z * this.width + x]);
+        patchHeights.push(h);
       }
     }
-
     return { startX, startZ, width: patchW, height: patchH, heights: patchHeights };
+  }
+
+  applyPatch(patch: TerrainPatch): void {
+    for (let j = 0; j < patch.height; j++) {
+      for (let i = 0; i < patch.width; i++) {
+        this.data[(patch.startZ + j) * this.width + (patch.startX + i)] =
+          patch.heights[j * patch.width + i];
+      }
+    }
+  }
+
+  /** Convenience: compute the crater patch and apply it in one call. */
+  applyCrater(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {
+    const patch = this.computeCraterPatch(impact, blastRadius, terrainDamage);
+    this.applyPatch(patch);
+    return patch;
   }
 
   toConfig(): TerrainConfig {

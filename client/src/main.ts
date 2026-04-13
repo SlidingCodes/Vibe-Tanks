@@ -1,25 +1,48 @@
 import * as THREE from 'three';
-import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
+import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, getTerrainHeight } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
+  tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
-import { updateTrajectoryPreview, hideTrajectoryPreview } from './ui/trajectoryPreview';
+import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
 import { createCamera, followTank, overviewCamera } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
-import { getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot } from './ui/input';
+import { showLogin } from './ui/login';
+import {
+  getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
+  setVirtualWeaponSlot, getVirtualAimDirect, setAimContext, setEnemyPositions,
+} from './ui/input';
+import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
+import { setupFullscreenButton } from './ui/fullscreen';
+import { setupSettingsMenu } from './ui/settings';
+import { setupFeed, pushFeedEvent } from './ui/feed';
+import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
+import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
+import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
+import { stepTankPhysics } from '@shared/physics';
+import { computeMuzzle } from '@shared/muzzle';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 document.body.prepend(renderer.domElement);
+
+// CSS2D renderer overlays DOM elements (name labels) onto the 3D scene.
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(window.innerWidth, window.innerHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.prepend(labelRenderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
@@ -30,40 +53,70 @@ createLights(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
 });
 
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
+let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
+const predictedVel = { x: 0, z: 0 };
+// Tracks the alive→dead transition so the death screen only fades in once.
+let wasDead = false;
 
 function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
 }
 
-hud.setWeapons(WEAPONS, selectedWeaponId);
+// Tapping a chip sets the same pending-slot the digit keys do, so the
+// animate-loop handler picks it up uniformly.
+const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
+hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
 
+// Fullscreen button is always available (desktop + mobile).
+setupFullscreenButton();
+setupSettingsMenu();
+setupFeed();
+setupMatchTimer();
+
+// Activate touch controls on touch devices or when forced via ?mobile=1.
+if (isMobileDevice()) {
+  document.body.classList.add('mobile');
+  setupMobileControls();
+}
+
+// ── Networking ──
+// Block until the player has picked a name + color from the login overlay.
+const login = await showLogin();
 const socket = connect();
 
 socket.on('connect', () => {
   myId = socket.id!;
-  socket.emit('join_room', { playerName: `Player_${myId.slice(0, 4)}` });
+  socket.emit('join_room', { playerName: login.name, color: login.color });
   hud.showWaiting(true);
 });
 
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
+  latestTanks = snap.tanks;
 
   if (!scene.getObjectByName('__terrain_built')) {
     const t = createTerrain(snap.terrain, scene);
     t.name = '__terrain_built';
+    initMinimap(snap.terrain);
+  } else {
+    rebuildTerrain(snap.terrain);
+    initMinimap(snap.terrain);
   }
+
+  setMatchResetCountdown(snap.resetsInSeconds);
 
   const existingIds = new Set(getAllTankMeshes().keys());
   for (const tankState of snap.tanks) {
     if (!existingIds.has(tankState.playerId)) {
-      createTankMesh(tankState, scene);
+      createTankMesh(tankState, scene, myId);
     }
     updateTankMesh(tankState);
     existingIds.delete(tankState.playerId);
@@ -94,29 +147,47 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
 socket.on('state_update', (state: RoomStateUpdate) => {
   const { tanks, projectiles, hazards } = state;
+  latestTanks = tanks;
 
   for (const tankState of tanks) {
     const existing = getAllTankMeshes().get(tankState.playerId);
     if (!existing) {
-      createTankMesh(tankState, scene);
+      createTankMesh(tankState, scene, myId);
     }
 
     if (tankState.playerId === myId) {
       if (predictedState) {
+        const justRespawned = !predictedState.alive && tankState.alive;
+
         predictedState.hp = tankState.hp;
         predictedState.maxHp = tankState.maxHp;
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
+        predictedState.bodyPitch = tankState.bodyPitch;
+        predictedState.bodyRoll = tankState.bodyRoll;
 
-        const RECONCILE_RATE = 0.15;
-        predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
-        predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
-        predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-
-        let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
-        while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-        while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-        predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+        if (justRespawned) {
+          predictedState.position.x = tankState.position.x;
+          predictedState.position.y = tankState.position.y;
+          predictedState.position.z = tankState.position.z;
+          predictedState.bodyRotation = tankState.bodyRotation;
+          predictedState.bodyPitch = tankState.bodyPitch;
+          predictedState.bodyRoll = tankState.bodyRoll;
+          predictedState.turretRotation = tankState.turretRotation;
+          predictedState.barrelPitch = tankState.barrelPitch;
+          predictedVel.x = 0;
+          predictedVel.z = 0;
+          triggerRespawnAnim(myId);
+        } else {
+          const RECONCILE_RATE = 0.15;
+          predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
+          predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
+          predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
+          let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
+          while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+          while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+          predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+        }
       }
     } else {
       onServerStateReceived(tankState);
@@ -128,22 +199,58 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
+
+  // Toggle the Dark-Souls-style death screen based on the alive flag edge.
+  if (myTank) {
+    if (!myTank.alive && !wasDead) {
+      hud.showDeathScreen(() => {
+        socket.emit('respawn_request');
+      });
+      wasDead = true;
+    } else if (myTank.alive && wasDead) {
+      hud.hideDeathScreen();
+      wasDead = false;
+    }
+  }
 });
 
 socket.on('shot_resolved', (result) => {
   playShotAnimation(result, scene, (patch) => {
-    if (patch) applyTerrainPatch(patch);
+    if (patch) {
+      applyTerrainPatch(patch);
+      onMinimapPatch(patch);
+    }
   });
+
+  // Floating damage numbers at the moment of visual impact (matches the
+  // server's delayed HP/patch commit: startDelay + flight of the last step).
+  const SECONDS_PER_SAMPLE = 4 / 60;
+  let impactMs = 0;
+  for (const step of result.steps) {
+    if (step.eventType !== 'impact') continue;
+    const t = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECONDS_PER_SAMPLE;
+    if (t > impactMs) impactMs = t;
+  }
+  setTimeout(() => {
+    for (const d of result.damageDealt) {
+      const mesh = getAllTankMeshes().get(d.playerId);
+      if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
+    }
+  }, impactMs * 1000);
 });
 
 socket.on('player_spawned', (tank: TankState) => {
   if (!getAllTankMeshes().has(tank.playerId)) {
-    createTankMesh(tank, scene);
+    createTankMesh(tank, scene, myId);
   }
 });
 
 socket.on('player_left', ({ playerId }) => {
   removeTankMesh(playerId, scene);
+});
+
+socket.on('match_event', (ev) => {
+  pushFeedEvent(ev);
 });
 
 socket.on('game_over', ({ winnerId }) => {
@@ -171,7 +278,7 @@ function animate(): void {
     const weapon = WEAPONS[requestedWeaponSlot];
     if (weapon) {
       selectedWeaponId = weapon.id;
-      hud.setWeapons(WEAPONS, selectedWeaponId);
+      hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
     }
   }
 
@@ -189,84 +296,99 @@ function animate(): void {
       prevInput = { ...input };
     }
 
-    if (input.left) predictedState.bodyRotation += TANK_TURN_SPEED * dt;
-    if (input.right) predictedState.bodyRotation -= TANK_TURN_SPEED * dt;
-
-    let moveDir = 0;
-    if (input.forward) moveDir += 1;
-    if (input.backward) moveDir -= 1;
-
-    if (moveDir !== 0) {
-      const speed = TANK_SPEED * moveDir * dt;
-      const nx = predictedState.position.x + Math.sin(predictedState.bodyRotation) * speed;
-      const nz = predictedState.position.z + Math.cos(predictedState.bodyRotation) * speed;
-
-      const { w: mapW, h: mapH } = getMapBounds();
-      predictedState.position.x = Math.max(1, Math.min(mapW - 1, nx));
-      predictedState.position.z = Math.max(1, Math.min(mapH - 1, nz));
-      predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-    }
+    const { w: mapW, h: mapH } = getMapBounds();
+    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
 
     updateLocalTankMesh(predictedState);
 
-    const aimTarget = getAimTarget(camera, predictedState.position.y);
-    if (aimTarget) {
-      const dx = aimTarget.x - predictedState.position.x;
-      const dz = aimTarget.z - predictedState.position.z;
-      const turretRot = Math.atan2(dx, dz);
-
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const v = selectedWeapon.projectileSpeed;
-      const g = -GRAVITY;
-      const startY = predictedState.position.y + 1.5;
-      const dy = aimTarget.y - startY;
-      const a = (g * dist * dist) / (2 * v * v);
-      const disc = dist * dist - 4 * a * (dy + a);
-      let barrelPitch: number;
-      if (disc < 0 || !Number.isFinite(disc)) {
-        barrelPitch = Math.PI / 4;
-      } else {
-        const u = (dist - Math.sqrt(disc)) / (2 * a);
-        barrelPitch = Math.max(0.02, Math.min(Math.PI / 2.2, Math.atan(u)));
+    setAimContext(
+      predictedState.position.x,
+      predictedState.position.y,
+      predictedState.position.z,
+      predictedState.bodyRotation,
+    );
+    {
+      const enemies: { x: number; z: number }[] = [];
+      for (const [pid, mesh] of getAllTankMeshes()) {
+        if (pid === myId) continue;
+        const ts = latestTanks.find((t) => t.playerId === pid);
+        if (ts && !ts.alive) continue;
+        enemies.push({ x: mesh.group.position.x, z: mesh.group.position.z });
       }
+      setEnemyPositions(enemies);
+    }
 
-      socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
-
-      predictedState.turretRotation = turretRot;
-      predictedState.barrelPitch = barrelPitch;
+    const aimDirect = getVirtualAimDirect();
+    let aimPointForFire: THREE.Vector3 | null = null;
+    if (aimDirect) {
+      const v = selectedWeapon.projectileSpeed;
+      socket.emit('aim_update', {
+        turretRotation: aimDirect.yaw,
+        barrelPitch: aimDirect.pitch,
+      });
+      predictedState.turretRotation = aimDirect.yaw;
+      predictedState.barrelPitch = aimDirect.pitch;
       updateLocalTankMesh(predictedState);
-
-      const sx = predictedState.position.x + Math.sin(turretRot) * 1.2;
-      const sz = predictedState.position.z + Math.cos(turretRot) * 1.2;
+      const muzzle = computeMuzzle(predictedState);
       updateTrajectoryPreview(
         scene,
-        sx,
-        startY,
-        sz,
-        turretRot,
-        barrelPitch,
+        muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+        muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
         selectedWeapon,
-        { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
       );
-
-      if (consumeClick()) {
-        const timeSinceFire = now - lastFireTime;
-        if (timeSinceFire >= selectedWeapon.cooldown) {
-          socket.emit('fire_request', {
-            weaponId: selectedWeapon.id,
-            aimPoint: { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
-          });
-          lastFireTime = now;
-        }
-      }
     } else {
-      hideTrajectoryPreview();
-      if (consumeClick()) {
-        const timeSinceFire = now - lastFireTime;
-        if (timeSinceFire >= selectedWeapon.cooldown) {
-          socket.emit('fire_request', { weaponId: selectedWeapon.id, aimPoint: null });
-          lastFireTime = now;
+      const aimTarget = getAimTarget(camera, predictedState.position.y);
+      if (aimTarget) {
+        aimPointForFire = aimTarget;
+        const dx = aimTarget.x - predictedState.position.x;
+        const dz = aimTarget.z - predictedState.position.z;
+        const turretRot = Math.atan2(dx, dz);
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const v = selectedWeapon.projectileSpeed;
+        const g = -GRAVITY;
+        const startY = predictedState.position.y + 0.8;
+        const dy = aimTarget.y - startY;
+
+        let barrelPitch: number;
+        if (selectedWeapon.behavior === 'rail') {
+          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, Math.atan2(dy, Math.max(dist, 0.001))));
+        } else {
+          const a = (g * dist * dist) / (2 * v * v);
+          const disc = dist * dist - 4 * a * (dy + a);
+          if (disc < 0 || !Number.isFinite(disc)) {
+            barrelPitch = Math.PI / 4;
+          } else {
+            const u = (dist - Math.sqrt(disc)) / (2 * a);
+            barrelPitch = Math.max(-(10 * Math.PI) / 180, Math.min(Math.PI / 2.2, Math.atan(u)));
+          }
         }
+
+        socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
+        predictedState.turretRotation = turretRot;
+        predictedState.barrelPitch = barrelPitch;
+        updateLocalTankMesh(predictedState);
+
+        const muzzle = computeMuzzle(predictedState);
+        updateTrajectoryPreview(
+          scene,
+          muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+          muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+          selectedWeapon,
+          { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
+        );
+      } else {
+        hideTrajectoryPreview();
+      }
+    }
+
+    if (consumeClick()) {
+      const timeSinceFire = now - lastFireTime;
+      if (timeSinceFire >= selectedWeapon.cooldown) {
+        socket.emit('fire_request', {
+          weaponId: selectedWeapon.id,
+          aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
+        });
+        lastFireTime = now;
       }
     }
 
@@ -278,8 +400,22 @@ function animate(): void {
   }
 
   interpolateRemoteTanks(dt, myId);
+  tickTankEffects(dt);
   updateProjectileAnimation(scene, dt);
+
+  if (snapshot) {
+    const myPos = predictedState ? predictedState.position : null;
+    const myRot = predictedState ? predictedState.bodyRotation : 0;
+    const tanksForMap = latestTanks.length ? latestTanks : snapshot.tanks;
+    const meshPositions = new Map<string, { x: number; z: number }>();
+    for (const [pid, mesh] of getAllTankMeshes()) {
+      meshPositions.set(pid, { x: mesh.group.position.x, z: mesh.group.position.z });
+    }
+    updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints(), meshPositions);
+  }
+
   renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
 }
 
 animate();

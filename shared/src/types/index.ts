@@ -27,10 +27,13 @@ export interface MovementInput {
 // ── Tank ──
 export interface TankState {
   playerId: PlayerId;
+  playerName: string;
   position: Vec3;
-  bodyRotation: number;
-  turretRotation: number;
-  barrelPitch: number;
+  bodyRotation: number;   // tank body Y-rotation (yaw) in radians
+  bodyPitch: number;      // tank body X-rotation (pitch) in radians
+  bodyRoll: number;       // tank body Z-rotation (roll) in radians
+  turretRotation: number; // turret Y-rotation in radians (world space)
+  barrelPitch: number;    // barrel pitch in radians (0 = flat, positive = up)
   hp: number;
   maxHp: number;
   alive: boolean;
@@ -175,6 +178,8 @@ export interface MatchSnapshot {
   terrain: TerrainConfig;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  /** Seconds until the next match reset (terrain regen + score reset). */
+  resetsInSeconds: number;
 }
 
 // ── Shot result ──
@@ -197,11 +202,20 @@ export interface ShotResult {
 
 // ── Network events: client → server ──
 export interface ClientEvents {
-  join_room: (data: { playerName: string }) => void;
+  join_room: (data: { playerName: string; color?: string }) => void;
+  respawn_request: () => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
 }
+
+// ── Match events (server → client feed) ──
+export type MatchEvent =
+  | { kind: 'join'; name: string; color: string }
+  | { kind: 'leave'; name: string; color: string }
+  | { kind: 'kill'; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
+  | { kind: 'suicide'; name: string; color: string; weaponId: string }
+  | { kind: 'reset' };
 
 // ── Network events: server → client ──
 export interface ServerEvents {
@@ -210,5 +224,6 @@ export interface ServerEvents {
   shot_resolved: (result: ShotResult) => void;
   player_spawned: (tank: TankState) => void;
   player_left: (data: { playerId: PlayerId }) => void;
+  match_event: (event: MatchEvent) => void;
   game_over: (data: { winnerId: PlayerId; scores: { playerId: PlayerId; score: number }[] }) => void;
 }

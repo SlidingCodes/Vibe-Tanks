@@ -7,9 +7,14 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, '../shared/src'),
     },
   },
+  build: {
+    target: 'es2022',
+  },
   server: {
+    host: true,
     port: 3000,
     strictPort: true,
+    allowedHosts: true,
     proxy: {
       '/socket.io': {
         target: 'http://localhost:3001',

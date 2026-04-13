@@ -14,8 +14,8 @@ const mainRoom = new Room('main', io);
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
-  socket.on('join_room', (data: { playerName: string }) => {
-    mainRoom.addPlayer(socket, data.playerName);
+  socket.on('join_room', (data: { playerName: string; color?: string }) => {
+    mainRoom.addPlayer(socket, data.playerName, data.color);
     console.log(`Player ${data.playerName} (${socket.id}) joined room`);
   });
 

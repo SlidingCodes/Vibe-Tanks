@@ -59,14 +59,6 @@ function cloneVec3(v: Vec3): Vec3 {
   return { x: v.x, y: v.y, z: v.z };
 }
 
-function createVelocity(turretRotation: number, barrelPitch: number, speed: number): Vec3 {
-  return {
-    x: Math.sin(turretRotation) * Math.cos(barrelPitch) * speed,
-    y: Math.sin(barrelPitch) * speed,
-    z: Math.cos(turretRotation) * Math.cos(barrelPitch) * speed,
-  };
-}
-
 function length(v: Vec3): number {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
@@ -240,8 +232,9 @@ export function updateTrajectoryPreview(
   startX: number,
   startY: number,
   startZ: number,
-  turretRotation: number,
-  barrelPitch: number,
+  vx: number,
+  vy: number,
+  vz: number,
   weapon: WeaponDefinition,
   aimTarget?: Vec3 | null,
 ): void {
@@ -252,7 +245,7 @@ export function updateTrajectoryPreview(
   marker.visible = false;
 
   const startPos = { x: startX, y: startY, z: startZ };
-  const startVel = createVelocity(turretRotation, barrelPitch, weapon.projectileSpeed);
+  const startVel: Vec3 = { x: vx, y: vy, z: vz };
 
   if (weapon.behavior === 'airburst') {
     parentMat.color.setHex(0xffaa55);
@@ -322,8 +315,12 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, segment.points);
 
     const horizontal = normalize({ x: segment.endVelocity.x, y: 0, z: segment.endVelocity.z });
-    const fallback = { x: Math.sin(turretRotation), y: 0, z: Math.cos(turretRotation) };
-    const direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+    const fallback = normalize({ x: startVel.x, y: 0, z: startVel.z });
+    const direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001
+      ? horizontal
+      : (Math.abs(fallback.x) + Math.abs(fallback.z)) > 0.001
+        ? fallback
+        : { x: 0, y: 0, z: 1 };
     const drillDistance = weapon.behaviorConfig?.drillDistance ?? 5;
     const burstPoint = {
       x: segment.endPoint.x + direction.x * drillDistance,
@@ -406,6 +403,14 @@ export function updateTrajectoryPreview(
   parentMat.color.setHex(0xffff66);
   const segment = simulateSegment(startPos, startVel);
   placePoints(parentDots, segment.points);
+}
+
+export function getTrajectoryXZPoints(): { x: number; z: number }[] {
+  const out: { x: number; z: number }[] = [];
+  if (!initialized) return out;
+  for (const d of parentDots) if (d.visible) out.push({ x: d.position.x, z: d.position.z });
+  for (const d of fragmentDots) if (d.visible) out.push({ x: d.position.x, z: d.position.z });
+  return out;
 }
 
 export function hideTrajectoryPreview(): void {

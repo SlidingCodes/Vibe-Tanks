@@ -14,16 +14,15 @@ import {
   Vec3,
 } from '../../../shared/src/types/index';
 import {
-  MAX_PLAYERS,
-  MIN_PLAYERS_TO_START,
-  SIM_TICK_RATE,
-  SPAWN_MIN_DISTANCE,
   TANK_MAX_HP,
-  TANK_SPEED,
-  TANK_TURN_SPEED,
+  MIN_PLAYERS_TO_START,
+  MAX_PLAYERS,
+  SPAWN_MIN_DISTANCE,
   TICK_RATE,
+  SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
+import { stepTankPhysics } from '../../../shared/src/physics';
 import { Heightmap } from '../terrain/Heightmap';
 import {
   DamageTotals,
@@ -40,11 +39,20 @@ import {
 } from '../game/Simulation';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
+const SPAWN_PROTECTION_SECONDS = 3;
+const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
+const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
 interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
+  velX: number;
+  velZ: number;
+  /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
+  spawnProtectionUntil: number;
+  /** Epoch seconds after which a respawn_request is honoured. */
+  respawnAllowedAt: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -97,14 +105,58 @@ export class Room {
   private nextProjectileId = 1;
   private nextHazardId = 1;
   private nextStrikeId = 1;
+  private resetTimeout: ReturnType<typeof setTimeout> | null = null;
+  private matchResetAt: number = 0; // epoch seconds
+  /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
+   *  so patches from the old terrain don't land on the regenerated map. */
+  private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
   constructor(id: string, io: Server) {
     this.id = id;
     this.io = io;
     this.heightmap = new Heightmap();
+    this.scheduleReset();
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string): void {
+  private scheduleReset(): void {
+    if (this.resetTimeout) clearTimeout(this.resetTimeout);
+    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
+    this.resetTimeout = setTimeout(() => this.resetMatch(), MATCH_DURATION_SECONDS * 1000);
+  }
+
+  private resetMatch(): void {
+    for (const t of this.pendingShotTimeouts) clearTimeout(t);
+    this.pendingShotTimeouts.clear();
+    this.activeProjectiles.clear();
+    this.activeHazards.clear();
+    this.scheduledStrikes = [];
+    this.simTime = 0;
+    this.heightmap.regenerate();
+    for (const [pid, tank] of this.tanks) {
+      const pos = this.findSpawnPosition();
+      tank.position = pos;
+      tank.hp = TANK_MAX_HP;
+      tank.alive = true;
+      tank.score = 0;
+      tank.bodyRotation = 0;
+      tank.bodyPitch = 0;
+      tank.bodyRoll = 0;
+      tank.turretRotation = 0;
+      tank.barrelPitch = 0.2;
+      const player = this.players.get(pid);
+      if (player) {
+        player.velX = 0;
+        player.velZ = 0;
+        player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+        player.respawnAllowedAt = 0;
+      }
+    }
+    this.scheduleReset();
+    this.io.to(this.id).emit('match_event', { kind: 'reset' });
+    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+  }
+
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
     if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
@@ -113,15 +165,22 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
+      velX: 0,
+      velZ: 0,
+      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      respawnAllowedAt: 0,
     });
 
-    this.spawnTank(playerId);
+    this.spawnTank(playerId, playerName, color);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
+    this.io.to(this.id).emit('match_event', {
+      kind: 'join', name: tank.playerName, color: tank.color,
+    });
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
       this.startMatch();
@@ -129,6 +188,7 @@ export class Room {
   }
 
   removePlayer(playerId: PlayerId): void {
+    const tank = this.tanks.get(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
 
@@ -146,6 +206,11 @@ export class Room {
 
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.ownerId !== playerId);
     this.io.to(this.id).emit('player_left', { playerId });
+    if (tank) {
+      this.io.to(this.id).emit('match_event', {
+        kind: 'leave', name: tank.playerName, color: tank.color,
+      });
+    }
 
     if (this.players.size === 0) {
       this.stopLoop();
@@ -154,23 +219,30 @@ export class Room {
       this.activeProjectiles.clear();
       this.activeHazards.clear();
       this.scheduledStrikes = [];
+      for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
+      this.pendingShotTimeouts.clear();
     }
   }
 
-  private spawnTank(playerId: PlayerId): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
     const pos = this.findSpawnPosition();
-    const colorIndex = this.tanks.size % TANK_COLORS.length;
+    const fallback = TANK_COLORS[this.tanks.size % TANK_COLORS.length];
+    const safeColor = isValidHex(color) ? color! : fallback;
+    const safeName = sanitizeName(playerName);
     const tank: TankState = {
       playerId,
+      playerName: safeName,
       position: pos,
       bodyRotation: 0,
+      bodyPitch: 0,
+      bodyRoll: 0,
       turretRotation: 0,
       barrelPitch: 0.2,
       hp: TANK_MAX_HP,
       maxHp: TANK_MAX_HP,
       alive: true,
       score: 0,
-      color: TANK_COLORS[colorIndex],
+      color: safeColor,
     };
     this.tanks.set(playerId, tank);
   }
@@ -245,16 +317,121 @@ export class Room {
           this.fireMine(tank, weapon);
           break;
         default: {
-          const result = simulateShot(tank, weapon, this.heightmap, this.getTankList());
-          this.resolveShotResult(result);
+          const result = simulateShot(
+            tank,
+            weapon,
+            this.heightmap,
+            Array.from(this.tanks.values()),
+          );
+          this.scheduleShotResult(result, tank.playerId, weapon.id);
           break;
         }
       }
     });
 
+    socket.on('respawn_request', () => {
+      const player = this.players.get(socket.id);
+      const tank = this.tanks.get(socket.id);
+      if (!player || !tank) return;
+      if (tank.alive) return; // already alive
+      if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
+      this.respawnTank(socket.id);
+    });
+
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  private getStepFlightSeconds(step: ShotResult['steps'][number]): number {
+    const sampleDt = 4 / 60;
+    return step.startDelay + Math.max(0, (step.trajectory.length - 1) * sampleDt);
+  }
+
+  private scheduleShotResult(result: ShotResult, ownerId: PlayerId, weaponId: string): number {
+    this.io.to(this.id).emit('shot_resolved', result);
+
+    let lastImpactSeconds = 0;
+    for (const step of result.steps) {
+      const flightSeconds = this.getStepFlightSeconds(step);
+      lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
+      const patch = step.terrainPatch;
+      if (!patch) continue;
+      const timeout = setTimeout(() => {
+        this.pendingShotTimeouts.delete(timeout);
+        this.heightmap.applyPatch(patch);
+        this.regroundAliveTanks();
+      }, flightSeconds * 1000);
+      this.pendingShotTimeouts.add(timeout);
+    }
+
+    const damageTimeout = setTimeout(() => {
+      this.pendingShotTimeouts.delete(damageTimeout);
+      this.applyResolvedDamage(ownerId, weaponId, result.damageDealt);
+    }, lastImpactSeconds * 1000);
+    this.pendingShotTimeouts.add(damageTimeout);
+
+    return lastImpactSeconds;
+  }
+
+  private emitShotResultNow(result: ShotResult, ownerId: PlayerId, weaponId: string): void {
+    this.io.to(this.id).emit('shot_resolved', result);
+
+    let appliedPatch = false;
+    for (const step of result.steps) {
+      if (!step.terrainPatch) continue;
+      this.heightmap.applyPatch(step.terrainPatch);
+      appliedPatch = true;
+    }
+    if (appliedPatch) this.regroundAliveTanks();
+
+    this.applyResolvedDamage(ownerId, weaponId, result.damageDealt);
+  }
+
+  private applyResolvedDamage(ownerId: PlayerId, weaponId: string, damageDealt: ShotResult['damageDealt']): void {
+    const owner = this.tanks.get(ownerId);
+    const nowSec = Date.now() / 1000;
+
+    for (const dmg of damageDealt) {
+      const victim = this.tanks.get(dmg.playerId);
+      const victimPlayer = this.players.get(dmg.playerId);
+      if (!victim || !victim.alive) continue;
+      if (victimPlayer && nowSec < victimPlayer.spawnProtectionUntil) continue;
+
+      victim.hp = Math.max(0, victim.hp - dmg.damage);
+      const killed = victim.hp <= 0;
+      if (killed) {
+        victim.alive = false;
+        if (victimPlayer) {
+          victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+        }
+        if (owner) {
+          if (dmg.playerId === ownerId) {
+            this.io.to(this.id).emit('match_event', {
+              kind: 'suicide',
+              name: victim.playerName,
+              color: victim.color,
+              weaponId,
+            });
+          } else {
+            this.io.to(this.id).emit('match_event', {
+              kind: 'kill',
+              killerName: owner.playerName,
+              killerColor: owner.color,
+              victimName: victim.playerName,
+              victimColor: victim.color,
+              damage: Math.round(dmg.damage),
+              weaponId,
+            });
+          }
+        }
+      }
+
+      if (owner && dmg.playerId !== ownerId) {
+        owner.score += dmg.damage;
+        if (killed) owner.score += 50;
+      }
+    }
   }
 
   private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
@@ -279,7 +456,7 @@ export class Room {
   }
 
   private fireNapalm(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank);
+    const startPos = createMuzzlePosition(tank, this.heightmap);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const segment = simulateSegment(startPos, startVel, this.heightmap);
     const damageTotals: DamageTotals = new Map();
@@ -295,36 +472,40 @@ export class Room {
     const result = createShotResult(tank.playerId, weapon.id, [
       makeStep(0, segment.trajectory, segment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'napalm_shell'),
     ], damageTotals);
-    this.resolveShotResult(result);
+    this.scheduleShotResult(result, tank.playerId, weapon.id);
 
     if (segment.reason === 'impact') {
       const radius = weapon.behaviorConfig?.burnRadius ?? 4;
       const duration = weapon.behaviorConfig?.burnDuration ?? 5;
       const tickInterval = weapon.behaviorConfig?.burnTickInterval ?? 0.5;
       const tickDamage = weapon.behaviorConfig?.burnTickDamage ?? 6;
-      const hazardId = `hazard_${this.nextHazardId++}`;
-      this.activeHazards.set(hazardId, {
-        hazardId,
-        ownerId: tank.playerId,
-        weaponId: weapon.id,
-        type: 'napalm',
-        position: segment.endPoint,
-        radius,
-        armed: true,
-        timeRemaining: duration,
-        damage: tickDamage,
-        tickInterval,
-        tickTimer: tickInterval,
-        triggerRadius: radius,
-        blastRadius: radius,
-        terrainDamage: 0,
-      });
+      const timeout = setTimeout(() => {
+        this.pendingShotTimeouts.delete(timeout);
+        const hazardId = `hazard_${this.nextHazardId++}`;
+        this.activeHazards.set(hazardId, {
+          hazardId,
+          ownerId: tank.playerId,
+          weaponId: weapon.id,
+          type: 'napalm',
+          position: segment.endPoint,
+          radius,
+          armed: true,
+          timeRemaining: duration,
+          damage: tickDamage,
+          tickInterval,
+          tickTimer: tickInterval,
+          triggerRadius: radius,
+          blastRadius: radius,
+          terrainDamage: 0,
+        });
+      }, segment.elapsed * 1000);
+      this.pendingShotTimeouts.add(timeout);
     }
   }
 
   private fireSeeker(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const projectileId = `proj_${this.nextProjectileId++}`;
-    const position = createMuzzlePosition(tank);
+    const position = createMuzzlePosition(tank, this.heightmap);
     const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
     const projectile: ActiveProjectileRuntime = {
       projectileId,
@@ -346,7 +527,7 @@ export class Room {
   }
 
   private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
-    const startPos = createMuzzlePosition(tank);
+    const startPos = createMuzzlePosition(tank, this.heightmap);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const fallback = simulateSegment(startPos, startVel, this.heightmap).endPoint;
     const center = aimPoint
@@ -403,7 +584,7 @@ export class Room {
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank);
+    const startPos = createMuzzlePosition(tank, this.heightmap);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const segment = simulateSegment(startPos, startVel, this.heightmap);
 
@@ -413,24 +594,46 @@ export class Room {
     this.io.to(this.id).emit('shot_resolved', result);
 
     if (segment.reason === 'impact') {
-      const hazardId = `hazard_${this.nextHazardId++}`;
-      this.activeHazards.set(hazardId, {
-        hazardId,
-        ownerId: tank.playerId,
-        weaponId: weapon.id,
-        type: 'mine',
-        position: segment.endPoint,
-        radius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
-        armed: false,
-        timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 12,
-        damage: weapon.behaviorConfig?.mineDamage ?? weapon.damage,
-        tickInterval: 0,
-        tickTimer: weapon.behaviorConfig?.mineArmTime ?? 0.8,
-        triggerRadius: weapon.behaviorConfig?.mineTriggerRadius ?? 2.5,
-        blastRadius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
-        terrainDamage: weapon.behaviorConfig?.mineTerrainDamage ?? weapon.terrainDamage,
-      });
+      const timeout = setTimeout(() => {
+        this.pendingShotTimeouts.delete(timeout);
+        const hazardId = `hazard_${this.nextHazardId++}`;
+        this.activeHazards.set(hazardId, {
+          hazardId,
+          ownerId: tank.playerId,
+          weaponId: weapon.id,
+          type: 'mine',
+          position: segment.endPoint,
+          radius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
+          armed: false,
+          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 12,
+          damage: weapon.behaviorConfig?.mineDamage ?? weapon.damage,
+          tickInterval: 0,
+          tickTimer: weapon.behaviorConfig?.mineArmTime ?? 0.8,
+          triggerRadius: weapon.behaviorConfig?.mineTriggerRadius ?? 2.5,
+          blastRadius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
+          terrainDamage: weapon.behaviorConfig?.mineTerrainDamage ?? weapon.terrainDamage,
+        });
+      }, segment.elapsed * 1000);
+      this.pendingShotTimeouts.add(timeout);
     }
+  }
+
+  private respawnTank(playerId: PlayerId): void {
+    const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+    if (!tank || !player) return;
+    const pos = this.findSpawnPosition();
+    tank.position = pos;
+    tank.hp = TANK_MAX_HP;
+    tank.alive = true;
+    tank.bodyRotation = 0;
+    tank.bodyPitch = 0;
+    tank.bodyRoll = 0;
+    tank.turretRotation = 0;
+    tank.barrelPitch = 0.2;
+    player.velX = 0;
+    player.velZ = 0;
+    player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
   }
 
   private startMatch(): void {
@@ -465,33 +668,16 @@ export class Room {
   private tickMovement(dt: number): void {
     const mapW = this.heightmap.width * this.heightmap.cellSize;
     const mapH = this.heightmap.height * this.heightmap.cellSize;
+    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
 
-      const input = player.input;
-
-      if (input.left) tank.bodyRotation += TANK_TURN_SPEED * dt;
-      if (input.right) tank.bodyRotation -= TANK_TURN_SPEED * dt;
-
-      let moveDir = 0;
-      if (input.forward) moveDir += 1;
-      if (input.backward) moveDir -= 1;
-
-      if (moveDir !== 0) {
-        const speed = TANK_SPEED * moveDir * dt;
-        const nx = tank.position.x + Math.sin(tank.bodyRotation) * speed;
-        const nz = tank.position.z + Math.cos(tank.bodyRotation) * speed;
-
-        const cx = Math.max(1, Math.min(mapW - 1, nx));
-        const cz = Math.max(1, Math.min(mapH - 1, nz));
-
-        tank.position.x = cx;
-        tank.position.z = cz;
-      }
-
-      tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
+      const vel = { x: player.velX, z: player.velZ };
+      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
+      player.velX = vel.x;
+      player.velZ = vel.z;
     }
   }
 
@@ -603,7 +789,7 @@ export class Room {
           makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', terrainPatch, projectile.blastRadius, 'seeker'),
         ], damageTotals);
         this.activeProjectiles.delete(projectileId);
-        this.resolveShotResult(result);
+        this.emitShotResultNow(result, projectile.ownerId, projectile.weaponId);
       }
     }
   }
@@ -616,7 +802,7 @@ export class Room {
         hazard.tickTimer -= dt;
         if (hazard.tickTimer <= 0) {
           hazard.tickTimer += hazard.tickInterval;
-          this.applyFlatZoneDamage(hazard.ownerId, hazard.position, hazard.radius, hazard.damage);
+          this.applyFlatZoneDamage(hazard.ownerId, hazard.weaponId, hazard.position, hazard.radius, hazard.damage);
         }
       }
 
@@ -638,7 +824,7 @@ export class Room {
             }, this.heightmap, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', terrainPatch, damageTotals);
             this.activeHazards.delete(hazardId);
-            this.resolveShotResult(result);
+            this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
             continue;
           }
         }
@@ -673,33 +859,12 @@ export class Room {
         const result = createShotResult(strike.ownerId, strike.weaponId, [
           makeStep(0, trajectory, strike.position, 'impact', terrainPatch, strike.blastRadius, 'mortar_shell'),
         ], damageTotals);
-        this.resolveShotResult(result);
+        this.scheduleShotResult(result, strike.ownerId, strike.weaponId);
         continue;
       }
 
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, terrainPatch, damageTotals);
-      this.resolveShotResult(result);
-    }
-  }
-
-  private resolveShotResult(result: ShotResult): void {
-    this.awardScore(result.shooterId, result.damageDealt);
-    this.io.to(this.id).emit('shot_resolved', result);
-
-    if (result.steps.some((step) => step.terrainPatch)) {
-      this.regroundAliveTanks();
-    }
-  }
-
-  private awardScore(ownerId: PlayerId, damageDealt: ShotResult['damageDealt']): void {
-    const owner = this.tanks.get(ownerId);
-    if (!owner) return;
-
-    for (const dmg of damageDealt) {
-      if (dmg.playerId !== ownerId) {
-        owner.score += dmg.damage;
-        if (dmg.killed) owner.score += 50;
-      }
+      this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
   }
 
@@ -711,24 +876,19 @@ export class Room {
     }
   }
 
-  private applyFlatZoneDamage(ownerId: PlayerId, point: Vec3, radius: number, damage: number): void {
+  private applyFlatZoneDamage(ownerId: PlayerId, weaponId: string, point: Vec3, radius: number, damage: number): void {
     if (damage <= 0) return;
 
-    const owner = this.tanks.get(ownerId);
     for (const tank of this.tanks.values()) {
       if (!tank.alive) continue;
       const dx = tank.position.x - point.x;
       const dz = tank.position.z - point.z;
-      if (Math.sqrt(dx * dx + dz * dz) <= radius) {
-        tank.hp = Math.max(0, tank.hp - damage);
-        const killed = tank.hp <= 0;
-        if (killed) tank.alive = false;
-
-        if (owner && tank.playerId !== ownerId) {
-          owner.score += damage;
-          if (killed) owner.score += 50;
-        }
-      }
+      if (Math.sqrt(dx * dx + dz * dz) > radius) continue;
+      this.applyResolvedDamage(ownerId, weaponId, [{
+        playerId: tank.playerId,
+        damage,
+        killed: false,
+      }]);
     }
   }
 
@@ -801,13 +961,24 @@ export class Room {
   }
 
   getSnapshot(): MatchSnapshot {
+    const state = this.getStateUpdate();
     return {
       roomId: this.id,
       phase: this.phase,
-      tanks: this.getTankList(),
+      tanks: state.tanks,
       terrain: this.heightmap.toConfig(),
-      projectiles: this.getStateUpdate().projectiles,
-      hazards: this.getStateUpdate().hazards,
+      projectiles: state.projectiles,
+      hazards: state.hazards,
+      resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
     };
   }
+}
+
+function isValidHex(c?: string): boolean {
+  return typeof c === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c);
+}
+
+function sanitizeName(raw: string): string {
+  const trimmed = (raw ?? '').trim().slice(0, 16);
+  return trimmed.length > 0 ? trimmed : 'Player';
 }
