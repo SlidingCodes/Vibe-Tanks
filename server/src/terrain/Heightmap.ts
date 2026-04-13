@@ -16,6 +16,11 @@ function smoothStep01(t: number): number {
   return clamped * clamped * (3 - 2 * clamped);
 }
 
+function smoothThreshold(value: number, threshold: number, softness: number): number {
+  const soft = Math.max(softness, 0.0001);
+  return smoothStep01((value - (threshold - soft)) / (soft * 2));
+}
+
 export function createRandomTerrainSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff);
 }
@@ -151,6 +156,14 @@ export class Heightmap {
     const detailPersistence = p.detailPersistence ?? 0.55;
     const detailLacunarity = p.detailLacunarity ?? 2.3;
     const ridgeOctaves = Math.max(1, p.ridgeOctaves ?? Math.max(2, p.macroOctaves - 1));
+    const peakWeight = Math.max(0, p.peakWeight ?? 0);
+    const mountainMaskScale = Math.max(0.0001, p.mountainMaskScale ?? Math.max(0.0001, p.macroScale * 0.55));
+    const mountainMaskThreshold = p.mountainMaskThreshold ?? 0.7;
+    const mountainMaskSoftness = p.mountainMaskSoftness ?? 0.1;
+    const peakScale = Math.max(0.0001, p.peakScale ?? Math.max(0.0001, p.ridgeScale * 1.15));
+    const peakOctaves = Math.max(1, p.peakOctaves ?? Math.max(2, ridgeOctaves + 1));
+    const peakSharpness = Math.max(1, p.peakSharpness ?? 2.4);
+    const peakPersistence = Math.min(0.9, Math.max(0.2, detailPersistence + 0.08));
 
     for (let z = 0; z < this.height; z++) {
       for (let x = 0; x < this.width; x++) {
@@ -165,7 +178,19 @@ export class Heightmap {
         const ridge = this.ridgedFbm(sampleX * p.ridgeScale, sampleZ * p.ridgeScale, ridgeOctaves, p.persistence, p.lacunarity, 431);
         const detail = this.fbm(sampleX * p.detailScale, sampleZ * p.detailScale, detailOctaves, detailPersistence, detailLacunarity, 617);
         const edgeFactor = this.edgeFlattenFactor(worldX, worldZ);
-        const shape = macro + ridge * p.ridgeWeight + detail * p.detailWeight;
+        const baseShape = macro + ridge * p.ridgeWeight + detail * p.detailWeight;
+        let shape = baseShape;
+
+        if (peakWeight > 0) {
+          const mountainMaskNoise = this.valueNoise(sampleX * mountainMaskScale, sampleZ * mountainMaskScale, 977);
+          const mountainMask = smoothThreshold(mountainMaskNoise, mountainMaskThreshold, mountainMaskSoftness);
+          if (mountainMask > 0) {
+            const peakNoise = this.ridgedFbm(sampleX * peakScale, sampleZ * peakScale, peakOctaves, peakPersistence, p.lacunarity, 1237);
+            const peakBase = clamp((peakNoise + 1) * 0.5, 0, 1);
+            const peakShape = Math.pow(peakBase, peakSharpness);
+            shape += mountainMask * peakShape * peakWeight;
+          }
+        }
 
         this.data[z * this.width + x] = p.baseHeight + p.heightScale * shape * edgeFactor;
       }

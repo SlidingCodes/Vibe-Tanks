@@ -151,6 +151,13 @@ export interface TerrainGenerationParams {
   warpStrength: number;
   edgeFlatMargin: number;
   edgeFlatStrength: number;
+  mountainMaskScale?: number;
+  mountainMaskThreshold?: number;
+  mountainMaskSoftness?: number;
+  peakScale?: number;
+  peakOctaves?: number;
+  peakWeight?: number;
+  peakSharpness?: number;
 }
 
 export interface TerrainSettings {
