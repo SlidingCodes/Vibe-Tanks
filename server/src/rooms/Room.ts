@@ -268,7 +268,7 @@ export class Room {
       kind: 'drill',
       ownerId: tank.playerId,
       weaponId: weapon.id,
-      triggerAt: this.simTime + plan.eruptionDelay,
+      triggerAt: this.simTime + plan.impactTime + plan.eruptionDelay,
       position: plan.eruptionPoint,
       blastRadius: plan.blastRadius,
       damage: plan.damage,

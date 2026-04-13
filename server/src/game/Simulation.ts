@@ -40,6 +40,7 @@ export type DamageTotals = Map<string, { damage: number; killed: boolean }>;
 export interface DrillPlan {
   entryResult: ShotResult;
   didImpact: boolean;
+  impactTime: number;
   eruptionDelay: number;
   eruptionPoint: Vec3;
   blastRadius: number;
@@ -566,6 +567,7 @@ export function planDrillShot(
   return {
     entryResult,
     didImpact,
+    impactTime: segment.elapsed,
     eruptionDelay: weapon.behaviorConfig?.drillDelay ?? 0.4,
     eruptionPoint,
     blastRadius: weapon.behaviorConfig?.drillBlastRadius ?? Math.max(weapon.blastRadius, 3.4),
