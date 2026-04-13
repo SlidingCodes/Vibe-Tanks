@@ -1,6 +1,6 @@
-// Standalone offline Rapier tank test. No server, no network — just
-// Three.js + @dimforge/rapier3d-compat running in the browser so we can
-// tune the vehicle controller feel in isolation.
+// Standalone offline Rapier tank test. WASD to drive, R to respawn.
+// Press D key logs for diagnostic info. Cubes are dropped next to the tank
+// so we can see whether Rapier agrees with the visual terrain mesh.
 
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
@@ -8,12 +8,10 @@ import RAPIER from '@dimforge/rapier3d-compat';
 const TICK_RATE = 60;
 const DT = 1 / TICK_RATE;
 
-// Terrain
 const GRID = 64;
 const CELL = 1.0;
 const WORLD = GRID * CELL;
 
-// Tank
 const HULL_HALF = { x: 1.1, y: 0.35, z: 1.4 };
 const HULL_MASS = 900;
 const WHEEL_RADIUS = 0.35;
@@ -36,12 +34,11 @@ const hud = document.getElementById('hud')!;
 
 async function main() {
   await RAPIER.init();
-  hud.textContent = 'rapier ready — WASD to drive';
+  hud.textContent = 'rapier ready — WASD drive, R respawn, B drop box';
 
-  // ── Three.js scene ────────────────────────────────────────────
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1b2233);
-  scene.fog = new THREE.Fog(0x1b2233, 30, 120);
+  scene.fog = new THREE.Fog(0x1b2233, 40, 140);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
@@ -49,8 +46,6 @@ async function main() {
   document.body.appendChild(renderer.domElement);
 
   const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 500);
-  camera.position.set(WORLD / 2, 20, WORLD / 2 + 25);
-  camera.lookAt(WORLD / 2, 0, WORLD / 2);
 
   window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -63,61 +58,107 @@ async function main() {
   sun.position.set(30, 50, 20);
   scene.add(sun);
 
-  // ── Heightmap ────────────────────────────────────────────────
+  // ── Heightmap (source of truth) ─────────────────────────────
+  // Stored row-major as data[z*GRID + x] = height at grid (x, z).
   const heights = new Float32Array(GRID * GRID);
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
-      const nx = i / GRID, nz = j / GRID;
-      let h = 0;
+  for (let z = 0; z < GRID; z++) {
+    for (let x = 0; x < GRID; x++) {
+      const nx = x / GRID, nz = z / GRID;
+      let h = 2;
       h += Math.sin(nx * Math.PI * 3) * 2;
       h += Math.sin(nz * Math.PI * 3.5) * 1.5;
       h += Math.sin((nx + nz) * Math.PI * 4) * 0.5;
-      h += 2;
-      heights[j * GRID + i] = h;
+      heights[z * GRID + x] = h;
     }
   }
 
-  // Three.js terrain mesh
-  const terrainGeo = new THREE.PlaneGeometry(WORLD, WORLD, GRID - 1, GRID - 1);
-  terrainGeo.rotateX(-Math.PI / 2);
-  const pos = terrainGeo.attributes.position as THREE.BufferAttribute;
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
-      pos.setY(j * GRID + i, heights[j * GRID + i]);
+  const cellSpan = CELL; // 1 unit per cell
+  const fieldSize = (GRID - 1) * cellSpan; // total world span covered by the heightfield
+
+  // ── Three.js terrain mesh, built vertex-by-vertex so it aligns
+  //    exactly with the Rapier heightfield instead of relying on
+  //    PlaneGeometry's stretched spacing. Grid spans world [0, 63]
+  //    in both X and Z (same as the heightfield centered at (31.5, 31.5)
+  //    with scale 63 and body translation (31.5, 0, 31.5)).
+  const terrainGeo = new THREE.BufferGeometry();
+  const positions = new Float32Array(GRID * GRID * 3);
+  for (let z = 0; z < GRID; z++) {
+    for (let x = 0; x < GRID; x++) {
+      const idx = (z * GRID + x) * 3;
+      positions[idx    ] = x * cellSpan;
+      positions[idx + 1] = heights[z * GRID + x];
+      positions[idx + 2] = z * cellSpan;
     }
   }
-  pos.needsUpdate = true;
+  terrainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const indices: number[] = [];
+  for (let z = 0; z < GRID - 1; z++) {
+    for (let x = 0; x < GRID - 1; x++) {
+      const a = z * GRID + x;
+      const b = z * GRID + x + 1;
+      const c = (z + 1) * GRID + x;
+      const d = (z + 1) * GRID + x + 1;
+      indices.push(a, c, b,  b, c, d);
+    }
+  }
+  terrainGeo.setIndex(indices);
   terrainGeo.computeVertexNormals();
   const terrainMesh = new THREE.Mesh(
     terrainGeo,
     new THREE.MeshStandardMaterial({ color: 0x3b6b3a, flatShading: true }),
   );
-  terrainMesh.position.set(WORLD / 2, 0, WORLD / 2);
   scene.add(terrainMesh);
 
-  // ── Rapier world ─────────────────────────────────────────────
+  // Wireframe overlay so we can see the exact triangulation Rapier uses.
+  scene.add(new THREE.Mesh(
+    terrainGeo.clone(),
+    new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.15 }),
+  ));
+
+  // ── Rapier world ────────────────────────────────────────────
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 
-  // Heightfield collider (column-major, same layout as Heightmap.data).
+  // Column-major heights: heights[row + (nrows+1) * col] where row is the
+  // X sample index and col is the Z sample index. Our source is already
+  // laid out as `heights[z*GRID + x]` which, substituting (row=x, col=z),
+  // equals `flat[x + GRID * z]`. So a direct index match works.
   const flat = new Float32Array(GRID * GRID);
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
-      flat[i + GRID * j] = heights[j * GRID + i];
+  for (let z = 0; z < GRID; z++) {
+    for (let x = 0; x < GRID; x++) {
+      flat[x + GRID * z] = heights[z * GRID + x];
     }
   }
+
   const terrainBody = world.createRigidBody(
-    RAPIER.RigidBodyDesc.fixed().setTranslation(WORLD / 2, 0, WORLD / 2),
+    RAPIER.RigidBodyDesc.fixed().setTranslation(fieldSize * 0.5, 0, fieldSize * 0.5),
   );
   world.createCollider(
-    RAPIER.ColliderDesc.heightfield(GRID - 1, GRID - 1, flat, { x: WORLD - CELL, y: 1, z: WORLD - CELL })
+    RAPIER.ColliderDesc.heightfield(GRID - 1, GRID - 1, flat, { x: fieldSize, y: 1, z: fieldSize })
       .setFriction(1.0),
     terrainBody,
   );
 
-  // ── Tank ─────────────────────────────────────────────────────
-  const spawnX = WORLD / 2;
-  const spawnZ = WORLD / 2;
-  const spawnY = sampleHeight(spawnX, spawnZ) + SUSPENSION_REST + HULL_HALF.y + 1;
+  // Debug: spheres showing where Rapier believes each height sample is.
+  const debugGroup = new THREE.Group();
+  debugGroup.visible = false;
+  scene.add(debugGroup);
+  const sphereGeo = new THREE.SphereGeometry(0.06, 6, 6);
+  const sphereMat = new THREE.MeshBasicMaterial({ color: 0xff5555 });
+  for (let z = 0; z < GRID; z++) {
+    for (let x = 0; x < GRID; x++) {
+      const s = new THREE.Mesh(sphereGeo, sphereMat);
+      // Rapier sample (row=x, col=z) at local (x/nrows * scale - scale/2, h, z/ncols * scale - scale/2)
+      const lx = (x / (GRID - 1)) * fieldSize - fieldSize * 0.5;
+      const lz = (z / (GRID - 1)) * fieldSize - fieldSize * 0.5;
+      s.position.set(lx + fieldSize * 0.5, heights[z * GRID + x], lz + fieldSize * 0.5);
+      debugGroup.add(s);
+    }
+  }
+
+  // ── Tank ────────────────────────────────────────────────────
+  const spawnX = fieldSize * 0.5;
+  const spawnZ = fieldSize * 0.5;
+  const spawnY = sampleHeight(spawnX, spawnZ) + SUSPENSION_REST + HULL_HALF.y + 0.8;
 
   const tankBody = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
@@ -148,13 +189,11 @@ async function main() {
     vehicle.setWheelSideFrictionStiffness(i, 1.0);
   });
 
-  // ── Tank mesh ────────────────────────────────────────────────
   const tankGroup = new THREE.Group();
-  const hull = new THREE.Mesh(
+  tankGroup.add(new THREE.Mesh(
     new THREE.BoxGeometry(HULL_HALF.x * 2, HULL_HALF.y * 2, HULL_HALF.z * 2),
     new THREE.MeshStandardMaterial({ color: 0x4466aa }),
-  );
-  tankGroup.add(hull);
+  ));
   const turret = new THREE.Mesh(
     new THREE.CylinderGeometry(0.5, 0.5, 0.4, 12),
     new THREE.MeshStandardMaterial({ color: 0x222222 }),
@@ -179,28 +218,49 @@ async function main() {
     return m;
   });
 
-  // ── Input ────────────────────────────────────────────────────
+  // ── Debug drop cubes: sanity check whether the heightfield stops
+  //    a plain dynamic box (vehicle-agnostic).
+  const debugBoxes: Array<{ body: RAPIER.RigidBody; mesh: THREE.Mesh }> = [];
+  function dropBox() {
+    const bx = spawnX + (Math.random() - 0.5) * 6;
+    const bz = spawnZ + (Math.random() - 0.5) * 6;
+    const body = world.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(bx, 20, bz).setCcdEnabled(true),
+    );
+    world.createCollider(RAPIER.ColliderDesc.cuboid(0.3, 0.3, 0.3).setDensity(400), body);
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.6, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0xffaa33 }),
+    );
+    scene.add(mesh);
+    debugBoxes.push({ body, mesh });
+  }
+
+  // ── Input ──────────────────────────────────────────────────
   const keys = { w: false, a: false, s: false, d: false };
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'w' || e.key === 'ArrowUp')    keys.w = true;
-    if (e.key === 's' || e.key === 'ArrowDown')  keys.s = true;
-    if (e.key === 'a' || e.key === 'ArrowLeft')  keys.a = true;
-    if (e.key === 'd' || e.key === 'ArrowRight') keys.d = true;
-    if (e.key === 'r') {
+    const k = e.key.toLowerCase();
+    if (k === 'w' || e.key === 'ArrowUp')    keys.w = true;
+    if (k === 's' || e.key === 'ArrowDown')  keys.s = true;
+    if (k === 'a' || e.key === 'ArrowLeft')  keys.a = true;
+    if (k === 'd' || e.key === 'ArrowRight') keys.d = true;
+    if (k === 'r') {
       tankBody.setTranslation({ x: spawnX, y: spawnY, z: spawnZ }, true);
       tankBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
       tankBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
       tankBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     }
+    if (k === 'b') dropBox();
+    if (k === 'g') debugGroup.visible = !debugGroup.visible;
   });
   window.addEventListener('keyup', (e) => {
-    if (e.key === 'w' || e.key === 'ArrowUp')    keys.w = false;
-    if (e.key === 's' || e.key === 'ArrowDown')  keys.s = false;
-    if (e.key === 'a' || e.key === 'ArrowLeft')  keys.a = false;
-    if (e.key === 'd' || e.key === 'ArrowRight') keys.d = false;
+    const k = e.key.toLowerCase();
+    if (k === 'w' || e.key === 'ArrowUp')    keys.w = false;
+    if (k === 's' || e.key === 'ArrowDown')  keys.s = false;
+    if (k === 'a' || e.key === 'ArrowLeft')  keys.a = false;
+    if (k === 'd' || e.key === 'ArrowRight') keys.d = false;
   });
 
-  // ── Sim step ─────────────────────────────────────────────────
   function applyInput() {
     const linvel = tankBody.linvel();
     const rot = tankBody.rotation();
@@ -212,15 +272,10 @@ async function main() {
     if (keys.s) throttle -= 1;
 
     let engine = 0, brake = 0;
-    if (throttle === 0) {
-      brake = BRAKE_FORCE * 0.25;
-    } else if (throttle > 0 && fwdSpeed < -0.3) {
-      brake = BRAKE_FORCE;
-    } else if (throttle < 0 && fwdSpeed > 0.3) {
-      brake = BRAKE_FORCE;
-    } else if (Math.abs(fwdSpeed) < TOP_SPEED) {
-      engine = ENGINE_FORCE * throttle;
-    }
+    if (throttle === 0) brake = BRAKE_FORCE * 0.25;
+    else if (throttle > 0 && fwdSpeed < -0.3) brake = BRAKE_FORCE;
+    else if (throttle < 0 && fwdSpeed > 0.3)  brake = BRAKE_FORCE;
+    else if (Math.abs(fwdSpeed) < TOP_SPEED)  engine = ENGINE_FORCE * throttle;
 
     for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
       vehicle.setWheelEngineForce(i, engine);
@@ -239,7 +294,6 @@ async function main() {
     return { engine, brake, fwdSpeed };
   }
 
-  // ── Render loop ──────────────────────────────────────────────
   function syncMeshes() {
     const t = tankBody.translation();
     const q = tankBody.rotation();
@@ -247,21 +301,23 @@ async function main() {
     tankGroup.quaternion.set(q.x, q.y, q.z, q.w);
 
     for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
-      const wt = vehicle.wheelChassisConnectionPointCs(i);
-      const wq = tankBody.rotation();
-      if (!wt) continue;
-      // Position wheel at connection point minus current suspension length.
+      const conn = vehicle.wheelChassisConnectionPointCs(i);
+      if (!conn) continue;
       const sus = vehicle.wheelSuspensionLength(i) ?? SUSPENSION_REST;
-      const localY = wt.y - sus;
-      const local = { x: wt.x, y: localY, z: wt.z };
-      const world = rotateVec(local, wq);
-      wheelMeshes[i].position.set(t.x + world.x, t.y + world.y, t.z + world.z);
+      const local = { x: conn.x, y: conn.y - sus, z: conn.z };
+      const rotated = rotateVec(local, q);
+      wheelMeshes[i].position.set(t.x + rotated.x, t.y + rotated.y, t.z + rotated.z);
       const spin = vehicle.wheelRotation(i) ?? 0;
-      wheelMeshes[i].rotation.set(0, 0, Math.PI / 2);
+      wheelMeshes[i].quaternion.copy(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+      wheelMeshes[i].rotateZ(Math.PI / 2);
       wheelMeshes[i].rotateX(spin);
-      // Inherit hull yaw so wheels orient with the tank.
-      const e = eulerYXZ(wq);
-      wheelMeshes[i].rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), e.y);
+    }
+
+    for (const b of debugBoxes) {
+      const bt = b.body.translation();
+      const bq = b.body.rotation();
+      b.mesh.position.set(bt.x, bt.y, bt.z);
+      b.mesh.quaternion.set(bq.x, bq.y, bq.z, bq.w);
     }
   }
 
@@ -271,28 +327,31 @@ async function main() {
     const now = performance.now();
     acc += (now - last) / 1000;
     last = now;
+    let info = { engine: 0, brake: 0, fwdSpeed: 0 };
     while (acc >= DT) {
-      const info = applyInput();
+      info = applyInput();
       vehicle.updateVehicle(DT);
       world.step();
       acc -= DT;
-      const t = tankBody.translation();
-      hud.textContent =
-        `pos: ${t.x.toFixed(1)}, ${t.y.toFixed(1)}, ${t.z.toFixed(1)}\n` +
-        `fwd speed: ${info.fwdSpeed.toFixed(2)}\n` +
-        `engine: ${info.engine.toFixed(0)}  brake: ${info.brake.toFixed(0)}\n` +
-        `WASD = drive, R = respawn`;
     }
     syncMeshes();
 
-    // Follow cam
     const t = tankBody.translation();
-    const target = new THREE.Vector3(t.x, t.y + 1, t.z);
     const q = tankBody.rotation();
     const fwd = rotateVec({ x: 0, y: 0, z: 1 }, q);
-    const back = new THREE.Vector3(fwd.x, fwd.y, fwd.z).normalize().multiplyScalar(-9);
-    camera.position.lerp(new THREE.Vector3(t.x + back.x, t.y + 5, t.z + back.z), 0.1);
-    camera.lookAt(target);
+    const backLen = 9;
+    const camPos = new THREE.Vector3(t.x - fwd.x * backLen, t.y + 5, t.z - fwd.z * backLen);
+    camera.position.lerp(camPos, 0.12);
+    camera.lookAt(t.x, t.y + 1, t.z);
+
+    const terrainY = sampleHeight(t.x, t.z);
+    hud.textContent =
+      `tank  xyz: ${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)}\n` +
+      `terrainY: ${terrainY.toFixed(2)}   Δ: ${(t.y - terrainY).toFixed(2)}\n` +
+      `fwd speed: ${info.fwdSpeed.toFixed(2)}\n` +
+      `engine: ${info.engine.toFixed(0)}  brake: ${info.brake.toFixed(0)}\n` +
+      `boxes: ${debugBoxes.length}\n` +
+      `WASD drive, R respawn, B drop test box, G toggle rapier-sample markers`;
 
     renderer.render(scene, camera);
     requestAnimationFrame(tick);
@@ -301,8 +360,8 @@ async function main() {
   requestAnimationFrame(tick);
 
   function sampleHeight(x: number, z: number): number {
-    const fx = Math.max(0, Math.min(GRID - 1, x / CELL));
-    const fz = Math.max(0, Math.min(GRID - 1, z / CELL));
+    const fx = Math.max(0, Math.min(GRID - 1, x / cellSpan));
+    const fz = Math.max(0, Math.min(GRID - 1, z / cellSpan));
     const x0 = Math.floor(fx), z0 = Math.floor(fz);
     const x1 = Math.min(GRID - 1, x0 + 1);
     const z1 = Math.min(GRID - 1, z0 + 1);
@@ -325,24 +384,6 @@ function rotateVec(v: { x: number; y: number; z: number }, q: { x: number; y: nu
     y: iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z,
     z: iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x,
   };
-}
-
-function eulerYXZ(q: { x: number; y: number; z: number; w: number }) {
-  const m13 = 2 * (q.x * q.z + q.w * q.y);
-  const m11 = 1 - 2 * (q.y * q.y + q.z * q.z);
-  const m22 = 1 - 2 * (q.x * q.x + q.z * q.z);
-  const m32 = 2 * (q.y * q.z + q.w * q.x);
-  const m33 = 1 - 2 * (q.x * q.x + q.y * q.y);
-  const x = Math.asin(Math.max(-1, Math.min(1, m32)));
-  let y: number, z: number;
-  if (Math.abs(m32) < 0.99999) {
-    y = Math.atan2(-(2 * (q.x * q.z - q.w * q.y)), m33);
-    z = Math.atan2(-(2 * (q.x * q.y - q.w * q.z)), m22);
-  } else {
-    y = Math.atan2(m13, m11);
-    z = 0;
-  }
-  return { x, y, z };
 }
 
 main().catch((e) => { hud.textContent = 'error: ' + e.message; console.error(e); });
