@@ -57,6 +57,66 @@ export class Heightmap {
     return h0 * (1 - tz) + h1 * tz;
   }
 
+  getSurfaceNormal(x: number, z: number): Vec3 {
+    const step = this.cellSize;
+    const hx0 = this.getHeight(x - step, z);
+    const hx1 = this.getHeight(x + step, z);
+    const hz0 = this.getHeight(x, z - step);
+    const hz1 = this.getHeight(x, z + step);
+
+    const nx = hx0 - hx1;
+    const ny = 2 * step;
+    const nz = hz0 - hz1;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+
+    return {
+      x: nx / len,
+      y: ny / len,
+      z: nz / len,
+    };
+  }
+
+  traceSegmentToTerrain(start: Vec3, end: Vec3, steps = 32): { hit: boolean; point: Vec3; normal: Vec3 } {
+    let prev = { ...start };
+    let prevDelta = start.y - this.getHeight(start.x, start.z);
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const point = {
+        x: start.x + (end.x - start.x) * t,
+        y: start.y + (end.y - start.y) * t,
+        z: start.z + (end.z - start.z) * t,
+      };
+      const terrainY = this.getHeight(point.x, point.z);
+      const delta = point.y - terrainY;
+
+      if (delta <= 0) {
+        const span = prevDelta - delta;
+        const blend = span !== 0 ? prevDelta / span : 0;
+        const hitPoint = {
+          x: prev.x + (point.x - prev.x) * blend,
+          y: prev.y + (point.y - prev.y) * blend,
+          z: prev.z + (point.z - prev.z) * blend,
+        };
+        hitPoint.y = this.getHeight(hitPoint.x, hitPoint.z);
+        return {
+          hit: true,
+          point: hitPoint,
+          normal: this.getSurfaceNormal(hitPoint.x, hitPoint.z),
+        };
+      }
+
+      prev = point;
+      prevDelta = delta;
+    }
+
+    return {
+      hit: false,
+      point: { ...end },
+      normal: this.getSurfaceNormal(end.x, end.z),
+    };
+  }
+
   /** World position to grid index */
   worldToGrid(wx: number, wz: number): { gx: number; gz: number } {
     return {

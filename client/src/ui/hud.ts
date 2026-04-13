@@ -96,10 +96,28 @@ function getWeaponRoleLabel(weapon: WeaponDefinition): string {
       return 'Airburst';
     case 'split':
       return 'Cluster';
+    case 'bounce':
+      return 'Bank Shot';
+    case 'drill':
+      return 'Burrow';
+    case 'napalm':
+      return 'Area Denial';
+    case 'seeker':
+      return 'Homing';
+    case 'rail':
+      return 'Beam';
+    case 'mortar':
+      return 'Barrage';
+    case 'mine':
+      return 'Trap';
     case 'standard':
     default:
       return 'Precision';
   }
+}
+
+function getWeaponSlotLabel(index: number): string {
+  return index === 9 ? '0' : String(index + 1);
 }
 
 export function setWeapons(
@@ -112,10 +130,10 @@ export function setWeapons(
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-    chip.title = `[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
+    chip.title = `[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
     const slot = document.createElement('span');
     slot.className = 'weapon-slot';
-    slot.textContent = `${index + 1}`;
+    slot.textContent = getWeaponSlotLabel(index);
     chip.appendChild(slot);
     const icon = document.createElement('img');
     icon.src = `/weapons/${weapon.id}.svg`;
@@ -124,7 +142,6 @@ export function setWeapons(
     chip.appendChild(icon);
     if (onSelect) {
       chip.addEventListener('click', () => onSelect(index));
-      // Mobile: touch-action keeps a tap instant instead of waiting for click.
       chip.addEventListener('touchstart', (e) => { e.preventDefault(); onSelect(index); }, { passive: false });
     }
     weaponHud.appendChild(chip);

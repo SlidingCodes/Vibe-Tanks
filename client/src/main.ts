@@ -8,7 +8,7 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
-import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
+import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
@@ -27,11 +27,10 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { MatchPhase, MatchSnapshot, PlayerId, TankState } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
 
-// ── Scene setup ──
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -58,14 +57,11 @@ window.addEventListener('resize', () => {
   labelRenderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ── Game state ──
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
 let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
-
-// Client-side predicted state for local tank
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
 // Tracks the alive→dead transition so the death screen only fades in once.
@@ -105,6 +101,7 @@ socket.on('connect', () => {
 
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
+  latestTanks = snap.tanks;
 
   if (!scene.getObjectByName('__terrain_built')) {
     const t = createTerrain(snap.terrain, scene);
@@ -117,7 +114,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   setMatchResetCountdown(snap.resetsInSeconds);
 
-  // Sync tanks
   const existingIds = new Set(getAllTankMeshes().keys());
   for (const tankState of snap.tanks) {
     if (!existingIds.has(tankState.playerId)) {
@@ -126,7 +122,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     updateTankMesh(tankState);
     existingIds.delete(tankState.playerId);
 
-    // Initialize predicted state for local tank
     if (tankState.playerId === myId) {
       predictedState = { ...tankState, position: { ...tankState.position } };
     }
@@ -135,6 +130,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     removeTankMesh(id, scene);
   }
 
+  syncActiveCombatState(scene, snap.projectiles, snap.hazards);
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -150,8 +146,10 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 });
 
-socket.on('state_update', (tanks: TankState[]) => {
+socket.on('state_update', (state: RoomStateUpdate) => {
+  const { tanks, projectiles, hazards } = state;
   latestTanks = tanks;
+
   for (const tankState of tanks) {
     const existing = getAllTankMeshes().get(tankState.playerId);
     if (!existing) {
@@ -166,28 +164,29 @@ socket.on('state_update', (tanks: TankState[]) => {
     }
 
     if (tankState.playerId === myId) {
-      // Server reconciliation: gently correct predicted state toward server
       if (predictedState) {
-        // Respawn: snap hard instead of blending from the death position.
         const justRespawned = !predictedState.alive && tankState.alive;
 
         predictedState.hp = tankState.hp;
         predictedState.maxHp = tankState.maxHp;
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
+        predictedState.bodyPitch = tankState.bodyPitch;
+        predictedState.bodyRoll = tankState.bodyRoll;
 
         if (justRespawned) {
           predictedState.position.x = tankState.position.x;
           predictedState.position.y = tankState.position.y;
           predictedState.position.z = tankState.position.z;
           predictedState.bodyRotation = tankState.bodyRotation;
+          predictedState.bodyPitch = tankState.bodyPitch;
+          predictedState.bodyRoll = tankState.bodyRoll;
           predictedState.turretRotation = tankState.turretRotation;
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
           triggerRespawnAnim(myId);
         } else {
-          // Blend position toward server (soft correction)
           const RECONCILE_RATE = 0.15;
           predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
           predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
@@ -196,16 +195,15 @@ socket.on('state_update', (tanks: TankState[]) => {
           while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
           while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
           predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
-          // pitch/roll are recomputed every frame from the local heightmap.
         }
       }
     } else {
-      // Remote tank: feed into interpolation system
       onServerStateReceived(tankState);
     }
   }
 
-  // Update HUD
+  syncActiveCombatState(scene, projectiles, hazards);
+
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
@@ -272,11 +270,9 @@ socket.on('game_over', ({ winnerId }) => {
   hud.showGameOver(winnerId);
 });
 
-// ── Clock ──
 const clock = new THREE.Clock();
 let prevInput = { forward: false, backward: false, left: false, right: false };
 
-// ── Terrain bounds (set after snapshot) ──
 function getMapBounds(): { w: number; h: number } {
   if (!snapshot) return { w: 64, h: 64 };
   return {
@@ -285,7 +281,6 @@ function getMapBounds(): { w: number; h: number } {
   };
 }
 
-// ── Render loop ──
 function animate(): void {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -305,22 +300,20 @@ function animate(): void {
   if (myTankMesh && predictedState && predictedState.alive) {
     const selectedWeapon = getSelectedWeapon();
 
-    // ── Send movement input ──
     const input = getMovementInput();
-    if (input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
-        input.left !== prevInput.left || input.right !== prevInput.right) {
+    if (
+      input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
+      input.left !== prevInput.left || input.right !== prevInput.right
+    ) {
       socket.emit('movement_input', input);
       prevInput = { ...input };
     }
 
-    // ── Client-side prediction: share the server's physics step ──
     const { w: mapW, h: mapH } = getMapBounds();
     stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
 
-    // Update local tank mesh from predicted state
     updateLocalTankMesh(predictedState);
 
-    // Expose local tank pose + enemy positions to the mobile aim bar.
     setAimContext(
       predictedState.position.x,
       predictedState.position.y,
@@ -338,8 +331,8 @@ function animate(): void {
       setEnemyPositions(enemies);
     }
 
-    // ── Aim: mobile direct (yaw, pitch) bypasses the ballistic solver ──
     const aimDirect = getVirtualAimDirect();
+    let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
       const v = selectedWeapon.projectileSpeed;
       socket.emit('aim_update', {
@@ -356,74 +349,72 @@ function animate(): void {
         muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
         selectedWeapon,
       );
-    } else { const aimTarget = getAimTarget(camera, predictedState.position.y);
-    if (aimTarget) {
-      const dx = aimTarget.x - predictedState.position.x;
-      const dz = aimTarget.z - predictedState.position.z;
-      const turretRot = Math.atan2(dx, dz);
-
-      // Ballistic solve: approximate the muzzle height by the turret pivot
-      // (body tilt shifts it slightly, but the solver is only a pitch estimate
-      // — the preview below uses the true muzzle transform).
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const v = selectedWeapon.projectileSpeed;
-      const g = -GRAVITY;
-      const startY = predictedState.position.y + 0.8;
-      const dy = aimTarget.y - startY;
-      const a = (g * dist * dist) / (2 * v * v);
-      const disc = dist * dist - 4 * a * (dy + a);
-      let barrelPitch: number;
-      if (disc < 0) {
-        barrelPitch = Math.PI / 4; // out of range: max range
-      } else {
-        const u = (dist - Math.sqrt(disc)) / (2 * a);
-        barrelPitch = Math.max(-(10 * Math.PI) / 180, Math.min(Math.PI / 2.2, Math.atan(u)));
-      }
-
-      socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
-
-      predictedState.turretRotation = turretRot;
-      predictedState.barrelPitch = barrelPitch;
-      updateLocalTankMesh(predictedState);
-
-      // Preview uses the exact same muzzle transform the server will fire from,
-      // and picks the behavior variant (standard / split / airburst) from the weapon.
-      const muzzle = computeMuzzle(predictedState);
-      updateTrajectoryPreview(
-        scene,
-        muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
-        muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
-        selectedWeapon,
-      );
     } else {
-      hideTrajectoryPreview();
-    }
+      const aimTarget = getAimTarget(camera, predictedState.position.y);
+      if (aimTarget) {
+        aimPointForFire = aimTarget;
+        const dx = aimTarget.x - predictedState.position.x;
+        const dz = aimTarget.z - predictedState.position.z;
+        const turretRot = Math.atan2(dx, dz);
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const v = selectedWeapon.projectileSpeed;
+        const g = -GRAVITY;
+        const startY = predictedState.position.y + 0.8;
+        const dy = aimTarget.y - startY;
+
+        let barrelPitch: number;
+        if (selectedWeapon.behavior === 'rail') {
+          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, Math.atan2(dy, Math.max(dist, 0.001))));
+        } else {
+          const a = (g * dist * dist) / (2 * v * v);
+          const disc = dist * dist - 4 * a * (dy + a);
+          if (disc < 0 || !Number.isFinite(disc)) {
+            barrelPitch = Math.PI / 4;
+          } else {
+            const u = (dist - Math.sqrt(disc)) / (2 * a);
+            barrelPitch = Math.max(-(10 * Math.PI) / 180, Math.min(Math.PI / 2.2, Math.atan(u)));
+          }
+        }
+
+        socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
+        predictedState.turretRotation = turretRot;
+        predictedState.barrelPitch = barrelPitch;
+        updateLocalTankMesh(predictedState);
+
+        const muzzle = computeMuzzle(predictedState);
+        updateTrajectoryPreview(
+          scene,
+          muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+          muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+          selectedWeapon,
+          { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
+        );
+      } else {
+        hideTrajectoryPreview();
+      }
     }
 
-    // ── Click to fire ──
     if (consumeClick()) {
       const timeSinceFire = now - lastFireTime;
       if (timeSinceFire >= selectedWeapon.cooldown) {
-        socket.emit('fire_request', { weaponId: selectedWeapon.id });
+        socket.emit('fire_request', {
+          weaponId: selectedWeapon.id,
+          aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
+        });
         lastFireTime = now;
       }
     }
 
-    // ── Cooldown bar ──
     const cooldownProgress = Math.min(1, (now - lastFireTime) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
-
-    // ── Third-person camera follows predicted position ──
     followTank(myTankMesh.group.position, predictedState.bodyRotation, dt);
   } else {
     hideTrajectoryPreview();
   }
 
-  // Interpolate remote tanks smoothly
   interpolateRemoteTanks(dt, myId);
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
-
   updateProjectileAnimation(scene, dt);
 
   if (snapshot) {
