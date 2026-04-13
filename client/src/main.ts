@@ -29,6 +29,7 @@ import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker } from './audio/sounds';
+import { startMusic } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -94,6 +95,7 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
+startMusic();
 const socket = connect();
 
 socket.on('connect', () => {

@@ -59,8 +59,10 @@ client/src/
   ui/fullscreen.ts        Fullscreen toggle button (with WebKit fallbacks)
   ui/audioToggle.ts       Sound on/off toggle (top-right, persists in localStorage)
   ui/trajectoryPreview.ts Per-weapon preview dots for the selected shot
-  audio/sounds.ts         Procedural Web Audio API sounds (shoot, explosion,
+  audio/sounds.ts         Procedural Web Audio API SFX (shoot, explosion,
                           death, respawn, weapon switch, hit marker)
+  audio/music.ts          Procedural chiptune background music loop (melody,
+                          bass, drums — all synthesized, no files)
 server/src/
   index.ts             HTTP + Socket.IO server bootstrap, single room
   rooms/Room.ts        Real-time game loop: movement tick (60hz), state
@@ -92,7 +94,7 @@ scripts/
   - Desktop: WASD to move, mouse to aim (ground-plane raycast), left-click to fire, digits 1–3 or chip click to switch weapon.
   - Mobile (`body.mobile`, toggled by touch detection or `?mobile=1`): virtual joystick (bottom-left) feeds the same WASD booleans via `setVirtualKey`; any touch outside the joystick/fire/HUD updates the aim NDC via `setVirtualAim`; fire button (bottom-right) calls `triggerVirtualFire`; weapon chips are tappable. The existing desktop read path (`getMovementInput`, `getAimTarget`, `consumeClick`, `consumeWeaponSlot`) stays the single source of truth.
 - **Fullscreen**: top-right corner button toggles `document.requestFullscreen` with WebKit fallbacks; hides itself when the API is unavailable (iPhone Safari).
-- **Audio**: procedural sounds via Web Audio API (no external files). Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. Sounds: shoot, explosion (scaled by blast radius), tank death boom, local-player death/respawn jingles, weapon-switch click, hit-marker ting.
+- **Audio**: procedural sounds + music via Web Audio API (no external files). Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. SFX: shoot, explosion (scaled by blast radius), tank death boom, local-player death/respawn jingles, weapon-switch click, hit-marker ting. Background music: epic chiptune 8-bar march in D minor (sawtooth+square melody, triangle power-fifth bass, military double-kick drums at 128 BPM) starts after login, respects the same mute toggle.
 - **Third-person camera**: smoothed lerp follow behind the player's tank, offset rotates with tank body rotation.
 - **Shared tank physics**: `shared/src/physics.ts` exports `stepTankPhysics`, called identically by the server sim (authoritative) and the client prediction. No 3rd-party physics engine. Model:
   - Kinematic in XZ, y from bilinear heightmap sample, pitch/roll from terrain slope.

@@ -1,4 +1,5 @@
 import { getVolume, setVolume } from '../audio/sounds';
+import { setMusicMuted } from '../audio/music';
 
 const LS_KEY = 'vt.audioEnabled';
 
@@ -16,6 +17,7 @@ export function setupAudioToggle(): void {
   if (!enabled) {
     savedVolume = getVolume() || 0.5;
     setVolume(0);
+    setMusicMuted(true);
   }
 
   const btn = document.createElement('button');
@@ -34,9 +36,11 @@ export function setupAudioToggle(): void {
     btn.title = enabled ? 'Mute audio' : 'Unmute audio';
     if (enabled) {
       setVolume(savedVolume || 0.5);
+      setMusicMuted(false);
     } else {
       savedVolume = getVolume() || 0.5;
       setVolume(0);
+      setMusicMuted(true);
     }
   };
 
