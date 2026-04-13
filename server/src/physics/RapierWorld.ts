@@ -104,11 +104,16 @@ export class RapierWorld {
   ): { x: number; y: number; z: number } {
     const entry = this.tanks.get(playerId);
     if (!entry) return { x: desiredX, y: desiredY, z: desiredZ };
-    this.controller.computeColliderMovement(entry.collider, {
-      x: desiredX,
-      y: desiredY,
-      z: desiredZ,
-    });
+    // Exclude fixed bodies (the heightfield terrain). The bilinear-sampled
+    // terrain Y and Rapier's triangulated heightfield disagree at the cell
+    // diagonals, which causes jitter when the controller tries to resolve
+    // both. Terrain following is handled upstream by stepTankPhysics; we
+    // only want Rapier for tank-vs-tank resolution here.
+    this.controller.computeColliderMovement(
+      entry.collider,
+      { x: desiredX, y: desiredY, z: desiredZ },
+      RAPIER.QueryFilterFlags.EXCLUDE_FIXED,
+    );
     const m = this.controller.computedMovement();
     return { x: m.x, y: m.y, z: m.z };
   }
