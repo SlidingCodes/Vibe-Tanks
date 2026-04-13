@@ -242,6 +242,84 @@ export function playWeaponSwitch(): void {
 // ── Hit marker (your shot hit someone) ──
 // Quick metallic "ting".
 
+// ── Announcer — Metal-Slug-style "VIBE TANKS!" on game start ──
+// Uses SpeechSynthesis with low pitch + a reverb-like echo effect.
+
+export function playAnnouncer(): void {
+  if (!('speechSynthesis' in window)) return;
+
+  // Cancel any pending speech first.
+  speechSynthesis.cancel();
+
+  const utter = new SpeechSynthesisUtterance('VIBE TANKS!');
+  utter.rate = 0.6;   // slow and dramatic
+  utter.pitch = 0.4;  // deep, commanding voice
+  utter.volume = Math.min(1, masterVolume * 1.5); // a bit louder than SFX
+
+  // Try to pick a male English voice for the best effect.
+  const voices = speechSynthesis.getVoices();
+  const preferred = voices.find(
+    (v) => /male/i.test(v.name) && /en/i.test(v.lang),
+  ) ?? voices.find(
+    (v) => /en/i.test(v.lang),
+  );
+  if (preferred) utter.voice = preferred;
+
+  // Voices may load async — retry once if the list was empty.
+  if (voices.length === 0) {
+    speechSynthesis.addEventListener('voiceschanged', () => {
+      const v = speechSynthesis.getVoices();
+      const pick = v.find((x) => /male/i.test(x.name) && /en/i.test(x.lang))
+        ?? v.find((x) => /en/i.test(x.lang));
+      if (pick) utter.voice = pick;
+      speechSynthesis.speak(utter);
+    }, { once: true });
+  } else {
+    speechSynthesis.speak(utter);
+  }
+
+  // Accompany with an epic brass-like swell for the arcade feel.
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Low brass swell (two detuned sawtooths through lowpass)
+  for (const detune of [-6, 6]) {
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = 147; // D3
+    osc.detune.value = detune;
+    const filt = ac.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.setValueAtTime(400, now);
+    filt.frequency.linearRampToValueAtTime(1600, now + 0.6);
+    filt.frequency.linearRampToValueAtTime(600, now + 1.4);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.2, now + 0.3);
+    g.gain.setValueAtTime(0.2, now + 0.8);
+    g.gain.linearRampToValueAtTime(0, now + 1.5);
+    osc.connect(filt).connect(g).connect(out);
+    osc.start(now);
+    osc.stop(now + 1.55);
+  }
+
+  // Impact hit at the start
+  const noise = createNoise(ac, 0.15);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'lowpass';
+  nf.frequency.value = 800;
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0.35, now);
+  ng.gain.linearRampToValueAtTime(0, now + 0.15);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.16);
+}
+
+// ── Hit marker (your shot hit someone) ──
+// Quick metallic "ting".
+
 export function playHitMarker(): void {
   const ac = getCtx();
   const now = ac.currentTime;

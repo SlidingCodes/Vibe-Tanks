@@ -28,7 +28,7 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -95,7 +95,9 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
-startMusic();
+playAnnouncer();
+// Start music after the announcer voice has time to land.
+setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
 socket.on('connect', () => {
