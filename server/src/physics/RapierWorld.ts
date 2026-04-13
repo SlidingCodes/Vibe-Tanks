@@ -64,7 +64,7 @@ const PROJECTILE_COLLISION_GROUPS = interactionGroups(GROUP_PROJECTILE, GROUP_TE
 const DEBRIS_COLLISION_GROUPS = interactionGroups(GROUP_DEBRIS, GROUP_TERRAIN);
 
 // ── Debris tuning ──────────────────────────────────────────────────
-const DEBRIS_LIFETIME = 3.0;
+const DEBRIS_LIFETIME = 7.0;
 const DEBRIS_FADE_WINDOW = 0.6; // last seconds of lifetime, client uses for fade
 const DEBRIS_MIN_SIZE = 0.18;
 const DEBRIS_MAX_SIZE = 0.38;
