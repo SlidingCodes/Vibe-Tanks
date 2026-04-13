@@ -3,8 +3,11 @@ import { MovementInput } from '@shared/types/index';
 
 const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
+const MOVEMENT_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
 
 window.addEventListener('keydown', (e) => {
+  if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
+
   if (!keys[e.code] && e.code.startsWith('Digit')) {
     const digit = Number(e.code.slice(5));
     const slot = digit === 0 ? 9 : digit - 1;
@@ -15,7 +18,10 @@ window.addEventListener('keydown', (e) => {
 
   keys[e.code] = true;
 });
-window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+window.addEventListener('keyup', (e) => {
+  if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
+  keys[e.code] = false;
+});
 
 export function getMovementInput(): MovementInput {
   return {

@@ -26,8 +26,8 @@ export const TANK_MAX_SPEED = TANK_SPEED * 2.5;
 export type HeightSampler = (x: number, z: number) => number;
 
 /**
- * Advance a tank's kinematic+sliding state by dt. Mutates `tank` and `vel`.
- * Shared between server sim and client prediction so both stay in lockstep.
+ * Retired legacy tank solver from the pre-Rapier movement model.
+ * Gameplay no longer uses this path; server-authoritative Rapier now owns tank motion.
  */
 export function stepTankPhysics(
   tank: TankState,

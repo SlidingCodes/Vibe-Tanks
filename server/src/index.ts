@@ -4,18 +4,23 @@ import { ClientEvents, ServerEvents } from '../../shared/src/types/index';
 import { SERVER_PORT } from '../../shared/src/constants';
 import { getRandomTerrainPresetId } from '../../shared/src/terrain';
 import { Room } from './rooms/Room';
+import { initRapier } from './physics/RapierWorld';
 
 const httpServer = createServer();
 const io = new Server<ClientEvents, ServerEvents>(httpServer, {
   cors: { origin: '*' },
 });
 
-const mainRoom = new Room('main', io, getRandomTerrainPresetId());
+let mainRoom: Room;
+initRapier().then(() => {
+  mainRoom = new Room('main', io, getRandomTerrainPresetId());
+});
 
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
   socket.on('join_room', (data: { playerName: string; color?: string }) => {
+    if (!mainRoom) return;
     mainRoom.addPlayer(socket, data.playerName, data.color);
     console.log(`Player ${data.playerName} (${socket.id}) joined room`);
   });

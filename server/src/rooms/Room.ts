@@ -30,8 +30,8 @@ import {
   getTerrainSettingsForPreset,
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
+import { RapierWorld } from '../physics/RapierWorld';
 import {
   DamageTotals,
   applyImpact,
@@ -55,8 +55,6 @@ interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
-  velX: number;
-  velZ: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -103,6 +101,7 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
+  physics: RapierWorld;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -127,6 +126,8 @@ export class Room {
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
+    this.physics = new RapierWorld(this.heightmap);
+    this.heightmap.onChange = () => this.physics.rebuildTerrain();
     this.scheduleReset();
   }
 
@@ -157,10 +158,10 @@ export class Room {
       tank.bodyRoll = 0;
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
+      this.physics.removeTank(tank.playerId);
+      this.physics.addTank(tank);
       const player = this.players.get(pid);
       if (player) {
-        player.velX = 0;
-        player.velZ = 0;
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
       }
@@ -179,8 +180,6 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
-      velX: 0,
-      velZ: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
     });
@@ -205,6 +204,7 @@ export class Room {
     const tank = this.tanks.get(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
+    this.physics.removeTank(playerId);
 
     for (const [projectileId, projectile] of this.activeProjectiles) {
       if (projectile.ownerId === playerId) {
@@ -259,6 +259,7 @@ export class Room {
       color: safeColor,
     };
     this.tanks.set(playerId, tank);
+    this.physics.addTank(tank);
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -673,8 +674,8 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
-    player.velX = 0;
-    player.velZ = 0;
+    this.physics.removeTank(tank.playerId);
+    this.physics.addTank(tank);
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
   }
 
@@ -707,19 +708,15 @@ export class Room {
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
   }
 
-  private tickMovement(dt: number): void {
-    const mapW = this.heightmap.width * this.heightmap.cellSize;
-    const mapH = this.heightmap.height * this.heightmap.cellSize;
-    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
-
+  private tickMovement(_dt: number): void {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-
-      const vel = { x: player.velX, z: player.velZ };
-      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH, this.heightmap.cellSize);
-      player.velX = vel.x;
-      player.velZ = vel.z;
+      this.physics.applyInput(pid, player.input);
+    }
+    this.physics.step();
+    for (const tank of this.tanks.values()) {
+      if (tank.alive) this.physics.syncTankState(tank);
     }
   }
 
