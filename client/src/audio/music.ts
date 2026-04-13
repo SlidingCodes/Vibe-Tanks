@@ -370,6 +370,10 @@ export function isMusicPlaying(): boolean {
   return playing;
 }
 
+export function isMusicMuted(): boolean {
+  return muted;
+}
+
 /** Switch to the next track. Called on match reset. */
 export function nextTrack(): void {
   currentTrackIdx = (currentTrackIdx + 1) % TRACKS.length;
