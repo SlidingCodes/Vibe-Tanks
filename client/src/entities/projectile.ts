@@ -733,3 +733,8 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
 export function isPlaying(): boolean {
   return shots.length > 0;
 }
+
+export function flushShotAnimations(scene: THREE.Scene): void {
+  for (const step of shots) disposeStep(step, scene);
+  shots.length = 0;
+}

@@ -8,7 +8,7 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
-import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation, flushShotAnimations } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
@@ -69,6 +69,17 @@ let predictedState: TankState | null = null;
 let authoritativeState: TankState | null = null;
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+// Timeouts scheduled by shot_resolved. Cleared when the tab becomes visible
+// again so a backlog of background-queued shots doesn't all fire at once.
+const pendingShotTimeouts = new Set<ReturnType<typeof setTimeout>>();
+function scheduleShotTimeout(fn: () => void, ms: number): void {
+  const id = setTimeout(() => {
+    pendingShotTimeouts.delete(id);
+    fn();
+  }, ms);
+  pendingShotTimeouts.add(id);
+}
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
@@ -244,7 +255,7 @@ socket.on('shot_resolved', (result) => {
   for (const step of result.steps) {
     if (step.eventType !== 'impact') continue;
     const delay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
-    setTimeout(() => {
+    scheduleShotTimeout(() => {
       const scale = Math.min(1, step.blastRadius / 6);
       playExplosion(scale);
     }, delay * 1000);
@@ -259,7 +270,7 @@ socket.on('shot_resolved', (result) => {
     const t = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECONDS_PER_SAMPLE;
     if (t > impactMs) impactMs = t;
   }
-  setTimeout(() => {
+  scheduleShotTimeout(() => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
       if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
@@ -268,6 +279,13 @@ socket.on('shot_resolved', (result) => {
       playHitMarker();
     }
   }, impactMs * 1000);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  for (const id of pendingShotTimeouts) clearTimeout(id);
+  pendingShotTimeouts.clear();
+  flushShotAnimations(scene);
 });
 
 socket.on('player_spawned', (tank: TankState) => {
