@@ -70,13 +70,13 @@ function showIosHint(): void {
   overlay.id = 'ios-fs-hint';
   overlay.innerHTML = `
     <div class="ios-fs-panel">
-      <h2>Fullscreen su iPhone</h2>
-      <p>Safari non permette il fullscreen da pulsante.</p>
-      <p>Per giocare a tutto schermo:</p>
+      <h2>Fullscreen on iPhone</h2>
+      <p>Safari doesn't allow button-triggered fullscreen.</p>
+      <p>To play fullscreen:</p>
       <ol>
-        <li>tocca <b>Condividi</b> <span class="ios-fs-share">⬆︎</span> nella barra in basso</li>
-        <li>scegli <b>Aggiungi alla schermata Home</b></li>
-        <li>apri "Vibe Tanks" dall'icona sulla Home</li>
+        <li>tap <b>Share</b> <span class="ios-fs-share">⬆︎</span> in the bottom bar</li>
+        <li>choose <b>Add to Home Screen</b></li>
+        <li>open "Vibe Tanks" from the Home Screen icon</li>
       </ol>
       <button type="button">OK</button>
     </div>`;
