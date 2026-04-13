@@ -157,9 +157,16 @@ export function playTankExplosion(): void {
 }
 
 // ── Death (local player died) ──
-// Descending tone — ominous "wah-waaah".
+// Original descending "wah-waaah" + Dark Souls choir + "YOU DIED" voice.
 
 export function playDeath(): void {
+  // Original descending tone
+  playDeathWah();
+  // Dark Souls choir (slightly delayed so the wah hits first)
+  playDeathChoir();
+}
+
+function playDeathWah(): void {
   const ac = getCtx();
   const now = ac.currentTime;
   const out = masterGain(ac);
@@ -179,6 +186,86 @@ export function playDeath(): void {
   osc.connect(filt).connect(g).connect(out);
   osc.start(now);
   osc.stop(now + 0.95);
+}
+
+function playDeathChoir(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+  const DUR = 3.5;
+
+  // Dark Souls-style ominous choir chord: D2, A2, D3, F3 (D minor open)
+  const chordFreqs = [73.4, 110, 147, 175];
+  for (const freq of chordFreqs) {
+    // Each voice: detuned pair of sawtooths through lowpass for a choir/organ feel
+    for (const detune of [-8, 0, 8]) {
+      const osc = ac.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = detune;
+
+      const filt = ac.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 600 + freq * 0.5;
+      filt.Q.value = 0.7;
+
+      const g = ac.createGain();
+      // Slow swell in, long sustain, slow fade
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(0.06, now + 0.8);
+      g.gain.setValueAtTime(0.06, now + DUR - 1.2);
+      g.gain.linearRampToValueAtTime(0, now + DUR);
+
+      osc.connect(filt).connect(g).connect(out);
+      osc.start(now);
+      osc.stop(now + DUR + 0.05);
+    }
+  }
+
+  // Sub bass rumble
+  const sub = ac.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.value = 36.7; // D1
+  const sg = ac.createGain();
+  sg.gain.setValueAtTime(0, now);
+  sg.gain.linearRampToValueAtTime(0.25, now + 0.6);
+  sg.gain.setValueAtTime(0.25, now + DUR - 1.5);
+  sg.gain.linearRampToValueAtTime(0, now + DUR);
+  sub.connect(sg).connect(out);
+  sub.start(now);
+  sub.stop(now + DUR + 0.05);
+
+  // Impact noise at the very start — low thud
+  const noise = createNoise(ac, 0.4);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'lowpass';
+  nf.frequency.value = 400;
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0.3, now);
+  ng.gain.linearRampToValueAtTime(0, now + 0.4);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.45);
+
+  // "YOU DIED" voice via SpeechSynthesis
+  if ('speechSynthesis' in window) {
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance('YOU DIED');
+    utter.rate = 0.45;
+    utter.pitch = 0.1;
+    utter.volume = Math.min(1, masterVolume * 1.2);
+
+    const voices = speechSynthesis.getVoices();
+    const pick = voices.find(
+      (v) => /male/i.test(v.name) && /en/i.test(v.lang),
+    ) ?? voices.find(
+      (v) => /en/i.test(v.lang),
+    );
+    if (pick) utter.voice = pick;
+
+    // Slight delay so the chord hits first
+    setTimeout(() => speechSynthesis.speak(utter), 600);
+  }
 }
 
 // ── Respawn ──
@@ -237,6 +324,84 @@ export function playWeaponSwitch(): void {
   noise2.connect(filt2).connect(g2).connect(out);
   noise2.start(now + 0.035);
   noise2.stop(now + 0.07);
+}
+
+// ── Hit marker (your shot hit someone) ──
+// Quick metallic "ting".
+
+// ── Announcer — Metal-Slug-style "VIBE TANKS!" on game start ──
+// Uses SpeechSynthesis with low pitch + a reverb-like echo effect.
+
+export function playAnnouncer(): void {
+  if (!('speechSynthesis' in window)) return;
+
+  // Cancel any pending speech first.
+  speechSynthesis.cancel();
+
+  const utter = new SpeechSynthesisUtterance('VIBE TANKS!');
+  utter.rate = 0.6;   // slow and dramatic
+  utter.pitch = 0.4;  // deep, commanding voice
+  utter.volume = Math.min(1, masterVolume * 1.5); // a bit louder than SFX
+
+  // Try to pick a male English voice for the best effect.
+  const voices = speechSynthesis.getVoices();
+  const preferred = voices.find(
+    (v) => /male/i.test(v.name) && /en/i.test(v.lang),
+  ) ?? voices.find(
+    (v) => /en/i.test(v.lang),
+  );
+  if (preferred) utter.voice = preferred;
+
+  // Voices may load async — retry once if the list was empty.
+  if (voices.length === 0) {
+    speechSynthesis.addEventListener('voiceschanged', () => {
+      const v = speechSynthesis.getVoices();
+      const pick = v.find((x) => /male/i.test(x.name) && /en/i.test(x.lang))
+        ?? v.find((x) => /en/i.test(x.lang));
+      if (pick) utter.voice = pick;
+      speechSynthesis.speak(utter);
+    }, { once: true });
+  } else {
+    speechSynthesis.speak(utter);
+  }
+
+  // Accompany with an epic brass-like swell for the arcade feel.
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Low brass swell (two detuned sawtooths through lowpass)
+  for (const detune of [-6, 6]) {
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.value = 147; // D3
+    osc.detune.value = detune;
+    const filt = ac.createBiquadFilter();
+    filt.type = 'lowpass';
+    filt.frequency.setValueAtTime(400, now);
+    filt.frequency.linearRampToValueAtTime(1600, now + 0.6);
+    filt.frequency.linearRampToValueAtTime(600, now + 1.4);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.2, now + 0.3);
+    g.gain.setValueAtTime(0.2, now + 0.8);
+    g.gain.linearRampToValueAtTime(0, now + 1.5);
+    osc.connect(filt).connect(g).connect(out);
+    osc.start(now);
+    osc.stop(now + 1.55);
+  }
+
+  // Impact hit at the start
+  const noise = createNoise(ac, 0.15);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'lowpass';
+  nf.frequency.value = 800;
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0.35, now);
+  ng.gain.linearRampToValueAtTime(0, now + 0.15);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.16);
 }
 
 // ── Hit marker (your shot hit someone) ──
