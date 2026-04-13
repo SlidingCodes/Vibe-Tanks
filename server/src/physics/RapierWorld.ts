@@ -14,19 +14,22 @@ const HULL_HALF = { x: 0.85, y: 0.35, z: 1.0 };
 const HULL_MASS = 900;
 const WHEEL_RADIUS = 0.35;
 const SUSPENSION_REST = 0.3;
-const SUSPENSION_STIFF = 75;
-const SUSPENSION_DAMPING_COMPRESSION = 2.4;
-const SUSPENSION_DAMPING_RELAX = 1.8;
-const MAX_SUSPENSION_TRAVEL = 0.1;
-const MAX_SUSPENSION_FORCE = HULL_MASS * 40;
-const FRICTION_SLIP = 5.5;
-const BALLAST_MASS = HULL_MASS * 0.5;
-const BALLAST_OFFSET_Y = -0.28;
+const SUSPENSION_STIFF = 90;
+const SUSPENSION_DAMPING_COMPRESSION = 3.4;
+const SUSPENSION_DAMPING_RELAX = 2.8;
+const MAX_SUSPENSION_TRAVEL = 0.07;
+const MAX_SUSPENSION_FORCE = HULL_MASS * 45;
+const FRICTION_SLIP = 6.2;
+const WHEEL_SIDE_FRICTION = 0.25;
+const BALLAST_MASS = HULL_MASS * 1.0;
+const BALLAST_OFFSET_Y = -0.55;
 const EXTRA_ANGULAR_INERTIA = {
-  x: (HULL_MASS * (HULL_HALF.y * HULL_HALF.y + HULL_HALF.z * HULL_HALF.z)) / 2,
-  y: (HULL_MASS * (HULL_HALF.x * HULL_HALF.x + HULL_HALF.z * HULL_HALF.z)) / 12,
-  z: (HULL_MASS * (HULL_HALF.x * HULL_HALF.x + HULL_HALF.y * HULL_HALF.y)) / 2,
+  x: HULL_MASS * 5.5,
+  y: HULL_MASS * 0.03,
+  z: HULL_MASS * 2.0,
 };
+const IDLE_BRAKE_FACTOR = 0.12;
+const REVERSAL_BRAKE_FACTOR = 0.65;
 const ROOT_Y_FROM_BODY_CENTER = SUSPENSION_REST + HULL_HALF.y;
 // Rapier expects this to be the suspension hard-point on the chassis, not the
 // wheel center. With our spawn height, y=0 puts the wheel at ground contact at
@@ -34,19 +37,19 @@ const ROOT_Y_FROM_BODY_CENTER = SUSPENSION_REST + HULL_HALF.y;
 const WHEEL_Y = 0;
 // Wheel pin offsets (in hull-local space) — four corners, slightly inboard.
 const WHEEL_OFFSETS: Array<{ x: number; y: number; z: number }> = [
-  { x: HULL_HALF.x * 0.85, y: WHEEL_Y, z: HULL_HALF.z * 0.80 },
-  { x: -HULL_HALF.x * 0.85, y: WHEEL_Y, z: HULL_HALF.z * 0.80 },
-  { x: HULL_HALF.x * 0.85, y: WHEEL_Y, z: -HULL_HALF.z * 0.80 },
-  { x: -HULL_HALF.x * 0.85, y: WHEEL_Y, z: -HULL_HALF.z * 0.80 },
+  { x: HULL_HALF.x * 1.0, y: WHEEL_Y, z: HULL_HALF.z * 0.95 },
+  { x: -HULL_HALF.x * 1.0, y: WHEEL_Y, z: HULL_HALF.z * 0.95 },
+  { x: HULL_HALF.x * 1.0, y: WHEEL_Y, z: -HULL_HALF.z * 0.95 },
+  { x: -HULL_HALF.x * 1.0, y: WHEEL_Y, z: -HULL_HALF.z * 0.95 },
 ];
 const RIGHT_WHEEL_INDICES = [0, 2] as const;
 const LEFT_WHEEL_INDICES = [1, 3] as const;
 
 // Differential-drive tank control gains.
-const ENGINE_FORCE = HULL_MASS * 20; // N on each driving wheel at full throttle.
-const BRAKE_FORCE = HULL_MASS * 4;
+const ENGINE_FORCE = HULL_MASS * 13; // N on each driving wheel at full throttle.
+const BRAKE_FORCE = HULL_MASS * 2.2;
 const TOP_FORWARD_SPEED = TANK_SPEED;
-const TURN_MIX_MOVING = 45.5;
+const TURN_MIX_MOVING = 1.6;
 const TURN_MIX_PIVOT = 1.0;
 
 interface TankEntry {
@@ -117,8 +120,8 @@ export class RapierWorld {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(tank.position.x, yCenter, tank.position.z)
       .setRotation(quatFromEulerYXZ(0, tank.bodyRotation, 0))
-      .setLinearDamping(0.45)
-      .setAngularDamping(2.2)
+      .setLinearDamping(0.65)
+      .setAngularDamping(1.35)
       .setAdditionalMassProperties(
         BALLAST_MASS,
         { x: 0, y: BALLAST_OFFSET_Y, z: 0 },
@@ -148,7 +151,7 @@ export class RapierWorld {
       vehicle.setWheelMaxSuspensionForce(i, MAX_SUSPENSION_FORCE);
       vehicle.setWheelMaxSuspensionTravel(i, MAX_SUSPENSION_TRAVEL);
       vehicle.setWheelFrictionSlip(i, FRICTION_SLIP);
-      vehicle.setWheelSideFrictionStiffness(i, 1.0);
+      vehicle.setWheelSideFrictionStiffness(i, WHEEL_SIDE_FRICTION);
     });
 
     this.tanks.set(tank.playerId, {
@@ -243,11 +246,11 @@ function driveCommandToForces(command: number, forwardSpeed: number, allowCounte
   let engine = 0;
   let brake = 0;
   if (command === 0) {
-    brake = BRAKE_FORCE * 0.25;
+    brake = BRAKE_FORCE * IDLE_BRAKE_FACTOR;
   } else if (!allowCounterDrive && command > 0 && forwardSpeed < -0.3) {
-    brake = BRAKE_FORCE;
+    brake = BRAKE_FORCE * REVERSAL_BRAKE_FACTOR;
   } else if (!allowCounterDrive && command < 0 && forwardSpeed > 0.3) {
-    brake = BRAKE_FORCE;
+    brake = BRAKE_FORCE * REVERSAL_BRAKE_FACTOR;
   } else if (Math.abs(forwardSpeed) < TOP_FORWARD_SPEED || allowCounterDrive) {
     engine = ENGINE_FORCE * command;
   }
