@@ -13,6 +13,11 @@ export interface MuzzleTransform {
   direction: Vec3;
 }
 
+export interface AimSolution {
+  turretRotation: number;
+  barrelPitch: number;
+}
+
 /**
  * World-space muzzle tip and barrel direction, applying the full tank
  * transform: body YXZ (yaw/pitch/roll), then turret Y, then barrel X.
@@ -48,6 +53,28 @@ export function computeMuzzle(tank: TankState): MuzzleTransform {
   };
 }
 
+export function solveAimAnglesForTarget(tank: TankState, target: Vec3): AimSolution {
+  const localTarget = inverseRotateYXZ(
+    target.x - tank.position.x,
+    target.y - tank.position.y,
+    target.z - tank.position.z,
+    tank.bodyRotation,
+    tank.bodyPitch,
+    tank.bodyRoll,
+  );
+
+  const offsetX = localTarget.x;
+  const offsetY = localTarget.y - TURRET_PIVOT_Y;
+  const offsetZ = localTarget.z;
+  const horizontal = Math.sqrt(offsetX * offsetX + offsetZ * offsetZ);
+  const turretLocalYaw = Math.atan2(offsetX, offsetZ);
+
+  return {
+    turretRotation: tank.bodyRotation + turretLocalYaw,
+    barrelPitch: Math.atan2(offsetY, Math.max(horizontal, 0.001)),
+  };
+}
+
 /** Apply three.js 'YXZ' Euler order: v' = Ry(yaw) * Rx(pitch) * Rz(roll) * v. */
 function rotateYXZ(
   x: number, y: number, z: number,
@@ -66,5 +93,25 @@ function rotateYXZ(
     x: x2 * cy + z2 * sy,
     y: y2,
     z: -x2 * sy + z2 * cy,
+  };
+}
+
+function inverseRotateYXZ(
+  x: number, y: number, z: number,
+  yaw: number, pitch: number, roll: number,
+): Vec3 {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const x1 = x * cy - z * sy;
+  const y1 = y;
+  const z1 = x * sy + z * cy;
+  const cx = Math.cos(pitch), sx = Math.sin(pitch);
+  const x2 = x1;
+  const y2 = y1 * cx + z1 * sx;
+  const z2 = -y1 * sx + z1 * cx;
+  const cz = Math.cos(roll), sz = Math.sin(roll);
+  return {
+    x: x2 * cz + y2 * sz,
+    y: -x2 * sz + y2 * cz,
+    z: z2,
   };
 }

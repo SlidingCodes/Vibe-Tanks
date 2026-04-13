@@ -28,7 +28,8 @@ import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { computeMuzzle } from '@shared/muzzle';
+import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
+import { resolveRailEndpoint } from '@shared/rail';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -349,9 +350,14 @@ function animate(): void {
         const startY = predictedState.position.y + 0.8;
         const dy = aimTarget.y - startY;
 
+        let nextTurretRotation = turretRot;
         let barrelPitch: number;
+        let railEndPoint: { x: number; y: number; z: number } | null = null;
+        let railStartPoint: { x: number; y: number; z: number } | null = null;
         if (selectedWeapon.behavior === 'rail') {
-          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, Math.atan2(dy, Math.max(dist, 0.001))));
+          const railAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
+          nextTurretRotation = railAim.turretRotation;
+          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, railAim.barrelPitch));
         } else {
           const a = (g * dist * dist) / (2 * v * v);
           const disc = dist * dist - 4 * a * (dy + a);
@@ -363,18 +369,28 @@ function animate(): void {
           }
         }
 
-        socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
-        predictedState.turretRotation = turretRot;
+        socket.emit('aim_update', { turretRotation: nextTurretRotation, barrelPitch });
+        predictedState.turretRotation = nextTurretRotation;
         predictedState.barrelPitch = barrelPitch;
         updateLocalTankMesh(predictedState);
 
+        if (selectedWeapon.behavior === 'rail') {
+          const railRange = selectedWeapon.behaviorConfig?.railRange ?? 50;
+          const railRadius = selectedWeapon.behaviorConfig?.railRadius ?? selectedWeapon.blastRadius;
+          const railTrace = resolveRailEndpoint(predictedState, railRange, railRadius, getTerrainHeight, latestTanks);
+          railStartPoint = railTrace.startPos;
+          railEndPoint = railTrace.hitPoint;
+        }
+
         const muzzle = computeMuzzle(predictedState);
+        const previewStart = railStartPoint ?? muzzle.origin;
         updateTrajectoryPreview(
           scene,
-          muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+          previewStart.x, previewStart.y, previewStart.z,
           muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
           selectedWeapon,
           { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
+          railEndPoint,
         );
       } else {
         hideTrajectoryPreview();
