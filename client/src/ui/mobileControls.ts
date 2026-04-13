@@ -154,9 +154,9 @@ export function setupMobileControls(): void {
     const relY = (clientY - rect.top) / rect.height;     // 0 top .. 1 bottom
     const relX = (clientX - rect.left) / rect.width - 0.5; // -0.5 .. 0.5
     pitchT = Math.max(0, Math.min(1, 1 - relY));
-    // Horizontal range within ±half-bar → trimT in [-1, 1]; the narrow
-    // ±20° cap (TRIM_MAX) is what makes the lateral response feel slow.
-    trimT = Math.max(-1, Math.min(1, relX * 2));
+    // Horizontal offset → yaw angular rate. Camera sits behind the tank
+    // so world +X is screen-LEFT: flip so dragging right pans right.
+    trimHx = Math.max(-1, Math.min(1, -relX * 2));
     updateBarVisual();
   }
 
@@ -164,38 +164,61 @@ export function setupMobileControls(): void {
     barFill.style.height = `${pitchT * 100}%`;
     const rect = bar.getBoundingClientRect();
     const knobY = (1 - pitchT) * rect.height - rect.height / 2;
-    const knobX = trimT * (rect.width * 0.35);
+    // Flip X back for the visual so the knob tracks the finger even
+    // though the trim sign is flipped for world aim.
+    const knobX = -trimHx * (rect.width * 0.35);
     barKnob.style.transform = `translate(${knobX}px, ${knobY}px)`;
   }
 
-  function pushAim(): void {
-    const ctx = getAimContext();
-    const enemies = getEnemyPositions();
-    let yaw: number;
-    if (enemies.length > 0) {
-      let best = enemies[0];
-      let bestD = (best.x - ctx.px) ** 2 + (best.z - ctx.pz) ** 2;
-      for (let i = 1; i < enemies.length; i++) {
-        const e = enemies[i];
-        const d = (e.x - ctx.px) ** 2 + (e.z - ctx.pz) ** 2;
-        if (d < bestD) { bestD = d; best = e; }
-      }
-      yaw = Math.atan2(best.x - ctx.px, best.z - ctx.pz);
-    } else {
-      yaw = ctx.bodyRot;
-    }
-    yaw += trimT * TRIM_MAX;
-    const pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * pitchT;
-    setVirtualAimDirect(yaw, pitch);
+  function wrapAngle(a: number): number {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
   }
 
-  // Re-emit every frame so the auto-aim keeps tracking the nearest enemy
-  // even when the player isn't touching the bar.
-  function tick(): void {
+  let lastTickMs = 0;
+  function tick(nowMs: number): void {
     requestAnimationFrame(tick);
-    pushAim();
+    const dt = lastTickMs ? Math.min(0.1, (nowMs - lastTickMs) / 1000) : 0;
+    lastTickMs = nowMs;
+
+    const ctx = getAimContext();
+    if (!yawInitialized) {
+      aimYaw = ctx.bodyRot;
+      yawInitialized = true;
+    }
+
+    // 1) User rate-control: finger off-center rotates the aim smoothly.
+    //    Quadratic-ish curve → gentle near the middle, fast at the edges.
+    const hx = trimHx;
+    const rate = Math.sign(hx) * Math.pow(Math.abs(hx), YAW_RATE_CURVE) * YAW_RATE_MAX;
+    aimYaw += rate * dt;
+
+    // 2) Aim-assist: softly pull aimYaw toward the enemy whose bearing is
+    //    closest to the current aim (only when within ASSIST_CONE). The
+    //    closer to center the capture cone, the stronger the pull —
+    //    assist adjusts yaw only, never pitch.
+    const enemies = getEnemyPositions();
+    if (enemies.length > 0) {
+      let bestYaw = 0;
+      let bestErr = Infinity;
+      for (const e of enemies) {
+        const eYaw = Math.atan2(e.x - ctx.px, e.z - ctx.pz);
+        const err = Math.abs(wrapAngle(eYaw - aimYaw));
+        if (err < bestErr) { bestErr = err; bestYaw = eYaw; }
+      }
+      if (bestErr < ASSIST_CONE) {
+        const softness = 1 - bestErr / ASSIST_CONE; // 0 at edge, 1 on target
+        const delta = wrapAngle(bestYaw - aimYaw);
+        aimYaw += delta * (1 - Math.exp(-ASSIST_RATE * softness * dt));
+      }
+    }
+
+    aimYaw = wrapAngle(aimYaw);
+    const pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * pitchT;
+    setVirtualAimDirect(aimYaw, pitch);
   }
-  tick();
+  requestAnimationFrame(tick);
   updateBarVisual();
 }
 
