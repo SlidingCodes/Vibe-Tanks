@@ -1,64 +1,144 @@
 import * as THREE from 'three';
 import { TerrainConfig, TerrainPatch } from '@shared/types/index';
 
-let terrainMesh: THREE.Mesh;
-let terrainGeometry: THREE.PlaneGeometry;
-let gridWidth: number;
-let gridHeight: number;
-let cellSize: number;
+let terrainMesh: THREE.Mesh | null = null;
+let terrainGeometry: THREE.PlaneGeometry | null = null;
+let terrainHeights: number[] = [];
+let gridWidth = 0;
+let gridHeight = 0;
+let cellSize = 1;
 
-export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.Mesh {
+const LOW_COLOR = new THREE.Color(0x7b7b7b);
+const MID_COLOR = new THREE.Color(0x7a5937);
+const HIGH_COLOR = new THREE.Color(0x5f9b45);
+const scratchColor = new THREE.Color();
+
+function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
+  const geometry = new THREE.PlaneGeometry(
+    nextGridWidth * nextCellSize,
+    nextGridHeight * nextCellSize,
+    nextGridWidth - 1,
+    nextGridHeight - 1,
+  );
+  geometry.rotateX(-Math.PI / 2);
+  return geometry;
+}
+
+function smoothStep01(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function applyColorsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]): void {
+  const positions = geometry.attributes.position;
+  let minHeight = Number.POSITIVE_INFINITY;
+  let maxHeight = Number.NEGATIVE_INFINITY;
+
+  for (const height of heights) {
+    if (height < minHeight) minHeight = height;
+    if (height > maxHeight) maxHeight = height;
+  }
+
+  const heightRange = Math.max(0.001, maxHeight - minHeight);
+  const colors = new Float32Array(positions.count * 3);
+
+  for (let i = 0; i < positions.count; i++) {
+    const height = heights[i] ?? minHeight;
+    const t = (height - minHeight) / heightRange;
+
+    if (t < 0.5) {
+      scratchColor.copy(LOW_COLOR).lerp(MID_COLOR, smoothStep01(t / 0.5));
+    } else {
+      scratchColor.copy(MID_COLOR).lerp(HIGH_COLOR, smoothStep01((t - 0.5) / 0.5));
+    }
+
+    const colorIndex = i * 3;
+    colors[colorIndex] = scratchColor.r;
+    colors[colorIndex + 1] = scratchColor.g;
+    colors[colorIndex + 2] = scratchColor.b;
+  }
+
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.attributes.color.needsUpdate = true;
+}
+
+function applyHeightsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]): void {
+  const positions = geometry.attributes.position;
+  for (let i = 0; i < positions.count; i++) {
+    positions.setY(i, heights[i] ?? 0);
+  }
+  positions.needsUpdate = true;
+  applyColorsToGeometry(geometry, heights);
+  geometry.computeVertexNormals();
+}
+
+function syncTerrainGeometry(config: TerrainConfig): void {
+  const dimsChanged =
+    gridWidth !== config.gridWidth ||
+    gridHeight !== config.gridHeight ||
+    cellSize !== config.cellSize ||
+    !terrainGeometry;
+
   gridWidth = config.gridWidth;
   gridHeight = config.gridHeight;
   cellSize = config.cellSize;
+  terrainHeights = config.heights.slice();
 
-  terrainGeometry = new THREE.PlaneGeometry(
-    gridWidth * cellSize,
-    gridHeight * cellSize,
-    gridWidth - 1,
-    gridHeight - 1,
-  );
+  if (dimsChanged) {
+    const nextGeometry = buildGeometry(gridWidth, gridHeight, cellSize);
+    applyHeightsToGeometry(nextGeometry, terrainHeights);
 
-  // Rotate plane to be horizontal (XZ)
-  terrainGeometry.rotateX(-Math.PI / 2);
+    if (terrainMesh && terrainGeometry) {
+      terrainGeometry.dispose();
+      terrainGeometry = nextGeometry;
+      terrainMesh.geometry = terrainGeometry;
+      terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
+      return;
+    }
 
-  // Apply heights
-  const positions = terrainGeometry.attributes.position;
-  for (let i = 0; i < positions.count; i++) {
-    positions.setY(i, config.heights[i]);
+    terrainGeometry = nextGeometry;
+    return;
   }
-  positions.needsUpdate = true;
-  terrainGeometry.computeVertexNormals();
 
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x5a8f3c,
-    flatShading: true,
-    side: THREE.DoubleSide,
-  });
+  if (!terrainGeometry) return;
+  applyHeightsToGeometry(terrainGeometry, terrainHeights);
+}
 
-  terrainMesh = new THREE.Mesh(terrainGeometry, material);
+export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.Mesh {
+  syncTerrainGeometry(config);
+
+  if (!terrainGeometry) {
+    throw new Error('Terrain geometry failed to initialize');
+  }
+
+  if (!terrainMesh) {
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      flatShading: true,
+      side: THREE.DoubleSide,
+    });
+
+    terrainMesh = new THREE.Mesh(terrainGeometry, material);
+    terrainMesh.receiveShadow = true;
+    scene.add(terrainMesh);
+  }
+
   terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
-  terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
-
   return terrainMesh;
 }
 
 /** Replace all vertex heights with a fresh config (used on match reset). */
 export function rebuildTerrain(config: TerrainConfig): void {
-  if (!terrainGeometry) return;
-  const positions = terrainGeometry.attributes.position;
-  for (let i = 0; i < positions.count; i++) {
-    positions.setY(i, config.heights[i]);
-  }
-  positions.needsUpdate = true;
-  terrainGeometry.computeVertexNormals();
+  if (!terrainMesh) return;
+  syncTerrainGeometry(config);
+  terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
 }
 
 export function applyTerrainPatch(patch: TerrainPatch): void {
-  if (!terrainGeometry) return;
+  if (!terrainGeometry || !terrainMesh) return;
 
   const positions = terrainGeometry.attributes.position;
+  let changed = false;
 
   for (let pz = 0; pz < patch.height; pz++) {
     for (let px = 0; px < patch.width; px++) {
@@ -68,23 +148,33 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
 
       const vertexIndex = gz * gridWidth + gx;
       const patchIndex = pz * patch.width + px;
-      positions.setY(vertexIndex, patch.heights[patchIndex]);
+      const delta = patch.heightDeltas[patchIndex] ?? 0;
+      if (!delta) continue;
+
+      terrainHeights[vertexIndex] = (terrainHeights[vertexIndex] ?? 0) + delta;
+      positions.setY(vertexIndex, terrainHeights[vertexIndex]);
+      changed = true;
     }
   }
 
+  if (!changed) return;
   positions.needsUpdate = true;
+  applyColorsToGeometry(terrainGeometry, terrainHeights);
   terrainGeometry.computeVertexNormals();
 }
 
-export function getTerrainMesh(): THREE.Mesh {
+export function getTerrainMesh(): THREE.Mesh | null {
   return terrainMesh;
 }
 
-/** Sample height from terrain geometry with bilinear interpolation for smooth movement */
-export function getTerrainHeight(x: number, z: number): number {
-  if (!terrainGeometry) return 0;
+export function getTerrainCellSize(): number {
+  return cellSize;
+}
 
-  const positions = terrainGeometry.attributes.position;
+/** Sample height from terrain data with bilinear interpolation for smooth movement */
+export function getTerrainHeight(x: number, z: number): number {
+  if (!terrainHeights.length || gridWidth <= 0 || gridHeight <= 0) return 0;
+
   const fx = x / cellSize;
   const fz = z / cellSize;
 
@@ -96,10 +186,10 @@ export function getTerrainHeight(x: number, z: number): number {
   const tx = fx - x0;
   const tz = fz - z0;
 
-  const h00 = positions.getY(z0 * gridWidth + x0);
-  const h10 = positions.getY(z0 * gridWidth + x1);
-  const h01 = positions.getY(z1 * gridWidth + x0);
-  const h11 = positions.getY(z1 * gridWidth + x1);
+  const h00 = terrainHeights[z0 * gridWidth + x0] ?? 0;
+  const h10 = terrainHeights[z0 * gridWidth + x1] ?? 0;
+  const h01 = terrainHeights[z1 * gridWidth + x0] ?? 0;
+  const h11 = terrainHeights[z1 * gridWidth + x1] ?? 0;
 
   const h0 = h00 + (h10 - h00) * tx;
   const h1 = h01 + (h11 - h01) * tx;

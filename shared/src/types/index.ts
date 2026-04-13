@@ -128,18 +128,56 @@ export interface WeaponDefinition {
 }
 
 // ── Terrain ──
+export type TerrainGeneratorId = 'layered_noise_v1';
+
+export type TerrainPresetId = 'default' | 'rolling' | 'craggy';
+
+export interface TerrainGenerationParams {
+  baseHeight: number;
+  heightScale: number;
+  macroScale: number;
+  macroOctaves: number;
+  persistence: number;
+  lacunarity: number;
+  ridgeScale: number;
+  ridgeOctaves: number;
+  ridgeWeight: number;
+  detailScale: number;
+  detailOctaves: number;
+  detailPersistence: number;
+  detailLacunarity: number;
+  detailWeight: number;
+  warpScale: number;
+  warpStrength: number;
+  edgeFlatMargin: number;
+  edgeFlatStrength: number;
+}
+
+export interface TerrainSettings {
+  gridWidth: number;
+  gridHeight: number;
+  cellSize: number;
+  generator: TerrainGeneratorId;
+  params: TerrainGenerationParams;
+}
+
 export interface TerrainPatch {
   startX: number;
   startZ: number;
   width: number;
   height: number;
-  heights: number[];
+  heightDeltas: number[];
 }
 
-export interface TerrainConfig {
-  gridWidth: number;
-  gridHeight: number;
-  cellSize: number;
+export interface TerrainPresetDefinition {
+  id: TerrainPresetId;
+  label: string;
+  description: string;
+  settings: TerrainSettings;
+}
+
+export interface TerrainConfig extends TerrainSettings {
+  seed: number;
   heights: number[];
 }
 

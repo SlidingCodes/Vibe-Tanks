@@ -135,8 +135,16 @@ export function requestPointerLock(): void {
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export function getAimTarget(camera: THREE.Camera, tankY: number): THREE.Vector3 | null {
+export function getAimTarget(camera: THREE.Camera, terrain: THREE.Object3D | null, tankY: number): THREE.Vector3 | null {
   raycaster.setFromCamera(mouse, camera);
+
+  if (terrain) {
+    const hits = raycaster.intersectObject(terrain, false);
+    if (hits.length > 0) {
+      return hits[0].point.clone();
+    }
+  }
+
   groundPlane.constant = -tankY;
   const target = new THREE.Vector3();
   const hit = raycaster.ray.intersectPlane(groundPlane, target);
