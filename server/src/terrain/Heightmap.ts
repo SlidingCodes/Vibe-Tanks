@@ -6,6 +6,8 @@ export class Heightmap {
   height: number;
   cellSize: number;
   data: Float32Array;
+  /** Subscribers notified whenever the height grid changes (regen or patch). */
+  onChange: (() => void) | null = null;
 
   constructor() {
     this.width = TERRAIN_GRID_WIDTH;
@@ -38,6 +40,7 @@ export class Heightmap {
 
   regenerate(): void {
     this.generate();
+    this.onChange?.();
   }
 
   /** Bilinear-interpolated terrain height (smooth everywhere, including craters). */
@@ -163,6 +166,7 @@ export class Heightmap {
           patch.heights[j * patch.width + i];
       }
     }
+    this.onChange?.();
   }
 
   /** Convenience: compute the crater patch and apply it in one call. */

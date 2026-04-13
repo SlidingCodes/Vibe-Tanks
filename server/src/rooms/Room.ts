@@ -22,8 +22,8 @@ import {
   SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { stepTankPhysics } from '../../../shared/src/physics';
 import { Heightmap } from '../terrain/Heightmap';
+import { RapierWorld } from '../physics/RapierWorld';
 import {
   DamageTotals,
   applyImpact,
@@ -95,6 +95,7 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
+  physics: RapierWorld;
   players: Map<PlayerId, PlayerState> = new Map();
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
@@ -115,6 +116,8 @@ export class Room {
     this.id = id;
     this.io = io;
     this.heightmap = new Heightmap();
+    this.physics = new RapierWorld(this.heightmap);
+    this.heightmap.onChange = () => this.physics.rebuildTerrain();
     this.scheduleReset();
   }
 
@@ -143,6 +146,7 @@ export class Room {
       tank.bodyRoll = 0;
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
+      this.physics.resetTank(tank);
       const player = this.players.get(pid);
       if (player) {
         player.velX = 0;
@@ -191,6 +195,7 @@ export class Room {
     const tank = this.tanks.get(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
+    this.physics.removeTank(playerId);
 
     for (const [projectileId, projectile] of this.activeProjectiles) {
       if (projectile.ownerId === playerId) {
@@ -245,6 +250,7 @@ export class Room {
       color: safeColor,
     };
     this.tanks.set(playerId, tank);
+    this.physics.addTank(tank);
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -631,6 +637,7 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
+    this.physics.resetTank(tank);
     player.velX = 0;
     player.velZ = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
@@ -665,19 +672,18 @@ export class Room {
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
   }
 
-  private tickMovement(dt: number): void {
-    const mapW = this.heightmap.width * this.heightmap.cellSize;
-    const mapH = this.heightmap.height * this.heightmap.cellSize;
-    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
-
+  private tickMovement(_dt: number): void {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-
-      const vel = { x: player.velX, z: player.velZ };
-      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
-      player.velX = vel.x;
-      player.velZ = vel.z;
+      this.physics.applyInput(pid, player.input);
+    }
+    this.physics.step();
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      this.physics.syncTankState(tank);
+      const player = this.players.get(pid);
+      if (player) { player.velX = 0; player.velZ = 0; }
     }
   }
 
