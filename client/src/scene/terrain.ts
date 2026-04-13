@@ -13,8 +13,8 @@ export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.
   cellSize = config.cellSize;
 
   terrainGeometry = new THREE.PlaneGeometry(
-    gridWidth * cellSize,
-    gridHeight * cellSize,
+    (gridWidth - 1) * cellSize,
+    (gridHeight - 1) * cellSize,
     gridWidth - 1,
     gridHeight - 1,
   );
@@ -37,7 +37,7 @@ export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.
   });
 
   terrainMesh = new THREE.Mesh(terrainGeometry, material);
-  terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
+  terrainMesh.position.set(((gridWidth - 1) * cellSize) / 2, 0, ((gridHeight - 1) * cellSize) / 2);
   terrainMesh.receiveShadow = true;
   scene.add(terrainMesh);
 

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -31,7 +31,6 @@ import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker } from './audio/sounds';
 import { startMusic } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
-import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -66,7 +65,7 @@ let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
-const predictedVel = { x: 0, z: 0 };
+let authoritativeState: TankState | null = null;
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
 
@@ -128,7 +127,8 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     existingIds.delete(tankState.playerId);
 
     if (tankState.playerId === myId) {
-      predictedState = { ...tankState, position: { ...tankState.position } };
+      predictedState = cloneTankState(tankState);
+      authoritativeState = cloneTankState(tankState);
     }
   }
   for (const id of existingIds) {
@@ -170,38 +170,22 @@ socket.on('state_update', (state: RoomStateUpdate) => {
     }
 
     if (tankState.playerId === myId) {
-      if (predictedState) {
-        const justRespawned = !predictedState.alive && tankState.alive;
+      authoritativeState = cloneTankState(tankState);
+      if (!predictedState) {
+        predictedState = cloneTankState(tankState);
+      }
 
-        predictedState.hp = tankState.hp;
-        predictedState.maxHp = tankState.maxHp;
-        predictedState.alive = tankState.alive;
-        predictedState.score = tankState.score;
-        predictedState.bodyPitch = tankState.bodyPitch;
-        predictedState.bodyRoll = tankState.bodyRoll;
+      const justRespawned = !predictedState.alive && tankState.alive;
+      predictedState.hp = tankState.hp;
+      predictedState.maxHp = tankState.maxHp;
+      predictedState.alive = tankState.alive;
+      predictedState.score = tankState.score;
 
-        if (justRespawned) {
-          predictedState.position.x = tankState.position.x;
-          predictedState.position.y = tankState.position.y;
-          predictedState.position.z = tankState.position.z;
-          predictedState.bodyRotation = tankState.bodyRotation;
-          predictedState.bodyPitch = tankState.bodyPitch;
-          predictedState.bodyRoll = tankState.bodyRoll;
-          predictedState.turretRotation = tankState.turretRotation;
-          predictedState.barrelPitch = tankState.barrelPitch;
-          predictedVel.x = 0;
-          predictedVel.z = 0;
-          triggerRespawnAnim(myId);
-        } else {
-          const RECONCILE_RATE = 0.15;
-          predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
-          predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
-          predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-          let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
-          while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-          while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-          predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
-        }
+      if (justRespawned) {
+        snapTankBody(predictedState, tankState);
+        predictedState.turretRotation = tankState.turretRotation;
+        predictedState.barrelPitch = tankState.barrelPitch;
+        triggerRespawnAnim(myId);
       }
     } else {
       onServerStateReceived(tankState);
@@ -294,13 +278,36 @@ socket.on('game_over', ({ winnerId }) => {
 
 const clock = new THREE.Clock();
 let prevInput = { forward: false, backward: false, left: false, right: false };
+const LOCAL_CHASSIS_SMOOTHING = 40;
 
-function getMapBounds(): { w: number; h: number } {
-  if (!snapshot) return { w: 64, h: 64 };
-  return {
-    w: snapshot.terrain.gridWidth * snapshot.terrain.cellSize,
-    h: snapshot.terrain.gridHeight * snapshot.terrain.cellSize,
-  };
+function cloneTankState(tank: TankState): TankState {
+  return { ...tank, position: { ...tank.position } };
+}
+
+function snapTankBody(target: TankState, source: TankState): void {
+  target.position.x = source.position.x;
+  target.position.y = source.position.y;
+  target.position.z = source.position.z;
+  target.bodyRotation = source.bodyRotation;
+  target.bodyPitch = source.bodyPitch;
+  target.bodyRoll = source.bodyRoll;
+}
+
+function smoothTankBody(target: TankState, source: TankState, dt: number): void {
+  const blend = 1 - Math.exp(-LOCAL_CHASSIS_SMOOTHING * dt);
+  target.position.x += (source.position.x - target.position.x) * blend;
+  target.position.y += (source.position.y - target.position.y) * blend;
+  target.position.z += (source.position.z - target.position.z) * blend;
+  target.bodyRotation = lerpAngle(target.bodyRotation, source.bodyRotation, blend);
+  target.bodyPitch += (source.bodyPitch - target.bodyPitch) * blend;
+  target.bodyRoll += (source.bodyRoll - target.bodyRoll) * blend;
+}
+
+function lerpAngle(a: number, b: number, t: number): number {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * t;
 }
 
 function animate(): void {
@@ -332,8 +339,9 @@ function animate(): void {
       prevInput = { ...input };
     }
 
-    const { w: mapW, h: mapH } = getMapBounds();
-    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
+    if (authoritativeState) {
+      smoothTankBody(predictedState, authoritativeState, dt);
+    }
 
     updateLocalTankMesh(predictedState);
 

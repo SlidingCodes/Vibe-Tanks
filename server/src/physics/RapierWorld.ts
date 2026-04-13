@@ -1,56 +1,69 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { MovementInput, PlayerId, TankState } from '../../../shared/src/types/index';
-import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
+import { GRAVITY, TANK_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
 let rapierReady: Promise<void> | null = null;
 export function initRapier(): Promise<void> {
   if (!rapierReady) rapierReady = RAPIER.init();
-  return rapierReady;
+  return rapierReady!;
 }
 
 // ── Tank tuning ────────────────────────────────────────────────────
-const HULL_HALF = { x: 1.1, y: 0.35, z: 1.4 };
+const HULL_HALF = { x: 0.85, y: 0.35, z: 1.0 };
 const HULL_MASS = 900;
 const WHEEL_RADIUS = 0.35;
 const SUSPENSION_REST = 0.3;
-const SUSPENSION_STIFF = 35;
-const SUSPENSION_DAMPING_COMPRESSION = 0.8;
-const SUSPENSION_DAMPING_RELAX = 0.4;
-const MAX_SUSPENSION_TRAVEL = 0.2;
-const MAX_SUSPENSION_FORCE = HULL_MASS * 30;
-const FRICTION_SLIP = 2.5;
-// Ride height: how far below the hull the wheel raycast origin sits. Must
-// leave room for suspension travel above the resting ground contact.
-const WHEEL_Y = -HULL_HALF.y + 0.05;
+const SUSPENSION_STIFF = 75;
+const SUSPENSION_DAMPING_COMPRESSION = 2.4;
+const SUSPENSION_DAMPING_RELAX = 1.8;
+const MAX_SUSPENSION_TRAVEL = 0.1;
+const MAX_SUSPENSION_FORCE = HULL_MASS * 40;
+const FRICTION_SLIP = 5.5;
+const BALLAST_MASS = HULL_MASS * 0.5;
+const BALLAST_OFFSET_Y = -0.28;
+const EXTRA_ANGULAR_INERTIA = {
+  x: (HULL_MASS * (HULL_HALF.y * HULL_HALF.y + HULL_HALF.z * HULL_HALF.z)) / 2,
+  y: (HULL_MASS * (HULL_HALF.x * HULL_HALF.x + HULL_HALF.z * HULL_HALF.z)) / 12,
+  z: (HULL_MASS * (HULL_HALF.x * HULL_HALF.x + HULL_HALF.y * HULL_HALF.y)) / 2,
+};
+const ROOT_Y_FROM_BODY_CENTER = SUSPENSION_REST + HULL_HALF.y;
+// Rapier expects this to be the suspension hard-point on the chassis, not the
+// wheel center. With our spawn height, y=0 puts the wheel at ground contact at
+// roughly suspension rest length.
+const WHEEL_Y = 0;
 // Wheel pin offsets (in hull-local space) — four corners, slightly inboard.
 const WHEEL_OFFSETS: Array<{ x: number; y: number; z: number }> = [
-  { x:  HULL_HALF.x * 0.85, y: WHEEL_Y, z:  HULL_HALF.z * 0.80 },
-  { x: -HULL_HALF.x * 0.85, y: WHEEL_Y, z:  HULL_HALF.z * 0.80 },
-  { x:  HULL_HALF.x * 0.85, y: WHEEL_Y, z: -HULL_HALF.z * 0.80 },
+  { x: HULL_HALF.x * 0.85, y: WHEEL_Y, z: HULL_HALF.z * 0.80 },
+  { x: -HULL_HALF.x * 0.85, y: WHEEL_Y, z: HULL_HALF.z * 0.80 },
+  { x: HULL_HALF.x * 0.85, y: WHEEL_Y, z: -HULL_HALF.z * 0.80 },
   { x: -HULL_HALF.x * 0.85, y: WHEEL_Y, z: -HULL_HALF.z * 0.80 },
 ];
+const RIGHT_WHEEL_INDICES = [0, 2] as const;
+const LEFT_WHEEL_INDICES = [1, 3] as const;
 
-// Arcade-tank control gains.
-const ENGINE_FORCE = HULL_MASS * 12;    // N on each driving wheel at full throttle
-const BRAKE_FORCE = HULL_MASS * 6;
+// Differential-drive tank control gains.
+const ENGINE_FORCE = HULL_MASS * 20; // N on each driving wheel at full throttle.
+const BRAKE_FORCE = HULL_MASS * 4;
 const TOP_FORWARD_SPEED = TANK_SPEED;
-const TURN_ANG_ACCEL = 12.0;            // rad/s² ramp toward target yaw rate
+const TURN_MIX_MOVING = 45.5;
+const TURN_MIX_PIVOT = 1.0;
 
 interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   vehicle: RAPIER.DynamicRayCastVehicleController;
-  engine: number;
-  brake: number;
-  targetYawRate: number;
+  leftEngine: number;
+  leftBrake: number;
+  rightEngine: number;
+  rightBrake: number;
 }
 
 /**
  * Server-side Rapier world modelled after the Needle CarPhysics sample:
  * hull = dynamic rigid body, locomotion = DynamicRayCastVehicleController
- * with four raycast wheels. Tank turning is arcade-style (angular velocity
- * along world-up), not front-wheel steering, since tanks pivot in place.
+ * with four raycast wheels. Tanks steer by differential left/right track
+ * drive, not front-wheel steering or manual yaw injection.
  */
 export class RapierWorld {
   world: RAPIER.World;
@@ -76,13 +89,13 @@ export class RapierWorld {
     const ncols = h - 1;
 
     const flat = new Float32Array(w * h);
-    for (let j = 0; j < h; j++) {
-      for (let i = 0; i < w; i++) {
-        flat[i + w * j] = this.heightmap.data[j * w + i];
+    for (let z = 0; z < h; z++) {
+      for (let x = 0; x < w; x++) {
+        flat[x * h + z] = this.heightmap.data[z * w + x];
       }
     }
 
-    const scale = { x: nrows * cell, y: 1.0, z: ncols * cell };
+    const scale = { x: (w - 1) * cell, y: 1.0, z: (h - 1) * cell };
     const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(
       (w - 1) * cell * 0.5, 0, (h - 1) * cell * 0.5,
     );
@@ -98,21 +111,27 @@ export class RapierWorld {
   addTank(tank: TankState): void {
     if (this.tanks.has(tank.playerId)) this.removeTank(tank.playerId);
 
-    // Spawn the hull a little above the ground so the suspension has room.
-    const ground = this.heightmap.getHeight(tank.position.x, tank.position.z);
-    const yCenter = ground + SUSPENSION_REST + HULL_HALF.y;
+    // TankState.position is the gameplay/render root, not the Rapier body center.
+    const yCenter = tank.position.y + ROOT_Y_FROM_BODY_CENTER;
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(tank.position.x, yCenter, tank.position.z)
       .setRotation(quatFromEulerYXZ(0, tank.bodyRotation, 0))
-      .setLinearDamping(0.2)
-      .setAngularDamping(1.0)
+      .setLinearDamping(0.45)
+      .setAngularDamping(2.2)
+      .setAdditionalMassProperties(
+        BALLAST_MASS,
+        { x: 0, y: BALLAST_OFFSET_Y, z: 0 },
+        EXTRA_ANGULAR_INERTIA,
+        { x: 0, y: 0, z: 0, w: 1 },
+      )
       .setCcdEnabled(true);
     const body = this.world.createRigidBody(bodyDesc);
 
     const colliderDesc = RAPIER.ColliderDesc.cuboid(HULL_HALF.x, HULL_HALF.y, HULL_HALF.z)
+      .setTranslation(0, -0.15, 0)
       .setDensity(HULL_MASS / (HULL_HALF.x * HULL_HALF.y * HULL_HALF.z * 8))
-      .setFriction(0.7);
+      .setFriction(0.9);
     const collider = this.world.createCollider(colliderDesc, body);
 
     const vehicle = this.world.createVehicleController(body);
@@ -133,8 +152,13 @@ export class RapierWorld {
     });
 
     this.tanks.set(tank.playerId, {
-      body, collider, vehicle,
-      engine: 0, brake: 0, targetYawRate: 0,
+      body,
+      collider,
+      vehicle,
+      leftEngine: 0,
+      leftBrake: 0,
+      rightEngine: 0,
+      rightBrake: 0,
     });
   }
 
@@ -163,45 +187,38 @@ export class RapierWorld {
     if (input.forward) throttle += 1;
     if (input.backward) throttle -= 1;
 
-    let engine = 0;
-    let brake = 0;
-    if (throttle === 0) {
-      brake = BRAKE_FORCE * 0.25;
-    } else if (throttle > 0 && fwdSpeed < -0.3) {
-      // Pressing forward while rolling backward → brake, not accelerate.
-      brake = BRAKE_FORCE;
-    } else if (throttle < 0 && fwdSpeed > 0.3) {
-      brake = BRAKE_FORCE;
-    } else if (Math.abs(fwdSpeed) < TOP_FORWARD_SPEED) {
-      engine = ENGINE_FORCE * throttle;
-    }
-
-    entry.engine = engine;
-    entry.brake = brake;
-
     let turn = 0;
     if (input.left) turn += 1;
     if (input.right) turn -= 1;
-    entry.targetYawRate = turn * TANK_TURN_SPEED;
+
+    const turnMix = throttle === 0 ? TURN_MIX_PIVOT : TURN_MIX_MOVING;
+    const allowCounterDrive = turn !== 0;
+    const leftCommand = clamp(throttle + turn * turnMix, -1, 1);
+    const rightCommand = clamp(throttle - turn * turnMix, -1, 1);
+    const leftDrive = driveCommandToForces(leftCommand, fwdSpeed, allowCounterDrive);
+    const rightDrive = driveCommandToForces(rightCommand, fwdSpeed, allowCounterDrive);
+
+    entry.leftEngine = leftDrive.engine;
+    entry.leftBrake = leftDrive.brake;
+    entry.rightEngine = rightDrive.engine;
+    entry.rightBrake = rightDrive.brake;
+
+    if (throttle !== 0 || turn !== 0) entry.body.wakeUp();
   }
 
   /** Advance the rapier world one fixed step (inputs must already be set). */
   step(): void {
     const dt = 1 / SIM_TICK_RATE;
     for (const entry of this.tanks.values()) {
-      // Write per-wheel engine/brake (all wheels drive on a tank).
-      for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
-        entry.vehicle.setWheelEngineForce(i, entry.engine);
-        entry.vehicle.setWheelBrake(i, entry.brake);
+      for (const wheelIndex of LEFT_WHEEL_INDICES) {
+        entry.vehicle.setWheelEngineForce(wheelIndex, entry.leftEngine);
+        entry.vehicle.setWheelBrake(wheelIndex, entry.leftBrake);
+      }
+      for (const wheelIndex of RIGHT_WHEEL_INDICES) {
+        entry.vehicle.setWheelEngineForce(wheelIndex, entry.rightEngine);
+        entry.vehicle.setWheelBrake(wheelIndex, entry.rightBrake);
       }
       entry.vehicle.updateVehicle(dt);
-
-      // Turn-in-place: blend angular velocity toward target yaw rate in
-      // world-up. Keep existing pitch/roll angular components from the sim.
-      const av = entry.body.angvel();
-      const blend = Math.min(1, TURN_ANG_ACCEL * dt);
-      const newY = av.y + (entry.targetYawRate - av.y) * blend;
-      entry.body.setAngvel({ x: av.x * 0.9, y: newY, z: av.z * 0.9 }, true);
     }
     this.world.step();
   }
@@ -214,13 +231,33 @@ export class RapierWorld {
     const q = entry.body.rotation();
     const e = eulerYXZFromQuat(q);
     tank.position.x = t.x;
-    tank.position.y = t.y - HULL_HALF.y;
+    tank.position.y = t.y - ROOT_Y_FROM_BODY_CENTER;
     tank.position.z = t.z;
     tank.bodyRotation = e.y;
     tank.bodyPitch = e.x;
     tank.bodyRoll = e.z;
   }
 }
+
+function driveCommandToForces(command: number, forwardSpeed: number, allowCounterDrive: boolean): { engine: number; brake: number } {
+  let engine = 0;
+  let brake = 0;
+  if (command === 0) {
+    brake = BRAKE_FORCE * 0.25;
+  } else if (!allowCounterDrive && command > 0 && forwardSpeed < -0.3) {
+    brake = BRAKE_FORCE;
+  } else if (!allowCounterDrive && command < 0 && forwardSpeed > 0.3) {
+    brake = BRAKE_FORCE;
+  } else if (Math.abs(forwardSpeed) < TOP_FORWARD_SPEED || allowCounterDrive) {
+    engine = ENGINE_FORCE * command;
+  }
+  return { engine, brake };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 
 // ── math helpers ───────────────────────────────────────────────────
 
@@ -239,16 +276,18 @@ function quatFromEulerYXZ(x: number, y: number, z: number): { x: number; y: numb
 function eulerYXZFromQuat(q: { x: number; y: number; z: number; w: number }): { x: number; y: number; z: number } {
   const m11 = 1 - 2 * (q.y * q.y + q.z * q.z);
   const m13 = 2 * (q.x * q.z + q.w * q.y);
+  const m21 = 2 * (q.x * q.y + q.w * q.z);
   const m22 = 1 - 2 * (q.x * q.x + q.z * q.z);
-  const m32 = 2 * (q.y * q.z + q.w * q.x);
+  const m23 = 2 * (q.y * q.z - q.w * q.x);
+  const m31 = 2 * (q.x * q.z - q.w * q.y);
   const m33 = 1 - 2 * (q.x * q.x + q.y * q.y);
-  const x = Math.asin(Math.max(-1, Math.min(1, m32)));
+  const x = Math.asin(Math.max(-1, Math.min(1, -m23)));
   let y: number, z: number;
-  if (Math.abs(m32) < 0.99999) {
-    y = Math.atan2(-(2 * (q.x * q.z - q.w * q.y)), m33);
-    z = Math.atan2(-(2 * (q.x * q.y - q.w * q.z)), m22);
+  if (Math.abs(m23) < 0.99999) {
+    y = Math.atan2(m13, m33);
+    z = Math.atan2(m21, m22);
   } else {
-    y = Math.atan2(m13, m11);
+    y = Math.atan2(-m31, m11);
     z = 0;
   }
   return { x, y, z };

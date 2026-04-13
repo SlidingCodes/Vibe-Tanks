@@ -28,10 +28,14 @@ export interface MovementInput {
 export interface TankState {
   playerId: PlayerId;
   playerName: string;
+  /** Tank render/gameplay root. Matches the client tank group origin and shared muzzle math. */
   position: Vec3;
-  bodyRotation: number;   // tank body Y-rotation (yaw) in radians
-  bodyPitch: number;      // tank body X-rotation (pitch) in radians
-  bodyRoll: number;       // tank body Z-rotation (roll) in radians
+  /** Tank body Y-rotation (yaw) in radians, applied at the render root. */
+  bodyRotation: number;
+  /** Tank body X-rotation (pitch) in radians, applied at the render root. */
+  bodyPitch: number;
+  /** Tank body Z-rotation (roll) in radians, applied at the render root. */
+  bodyRoll: number;
   turretRotation: number; // turret Y-rotation in radians (world space)
   barrelPitch: number;    // barrel pitch in radians (0 = flat, positive = up)
   hp: number;

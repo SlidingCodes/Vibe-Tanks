@@ -47,8 +47,6 @@ interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
-  velX: number;
-  velZ: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -150,8 +148,6 @@ export class Room {
       this.physics.addTank(tank);
       const player = this.players.get(pid);
       if (player) {
-        player.velX = 0;
-        player.velZ = 0;
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
       }
@@ -170,8 +166,6 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
-      velX: 0,
-      velZ: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
     });
@@ -640,8 +634,6 @@ export class Room {
     tank.barrelPitch = 0.2;
     this.physics.removeTank(tank.playerId);
     this.physics.addTank(tank);
-    player.velX = 0;
-    player.velZ = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
   }
 
