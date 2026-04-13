@@ -29,7 +29,7 @@ import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
-import { startMusic } from './audio/music';
+import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -288,6 +288,7 @@ socket.on('player_left', ({ playerId }) => {
 
 socket.on('match_event', (ev) => {
   pushFeedEvent(ev);
+  if (ev.kind === 'reset') nextTrack();
 });
 
 socket.on('game_over', ({ winnerId }) => {

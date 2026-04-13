@@ -157,9 +157,16 @@ export function playTankExplosion(): void {
 }
 
 // ── Death (local player died) ──
-// Descending tone — ominous "wah-waaah".
+// Original descending "wah-waaah" + Dark Souls choir + "YOU DIED" voice.
 
 export function playDeath(): void {
+  // Original descending tone
+  playDeathWah();
+  // Dark Souls choir (slightly delayed so the wah hits first)
+  playDeathChoir();
+}
+
+function playDeathWah(): void {
   const ac = getCtx();
   const now = ac.currentTime;
   const out = masterGain(ac);
@@ -179,6 +186,86 @@ export function playDeath(): void {
   osc.connect(filt).connect(g).connect(out);
   osc.start(now);
   osc.stop(now + 0.95);
+}
+
+function playDeathChoir(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+  const DUR = 3.5;
+
+  // Dark Souls-style ominous choir chord: D2, A2, D3, F3 (D minor open)
+  const chordFreqs = [73.4, 110, 147, 175];
+  for (const freq of chordFreqs) {
+    // Each voice: detuned pair of sawtooths through lowpass for a choir/organ feel
+    for (const detune of [-8, 0, 8]) {
+      const osc = ac.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = detune;
+
+      const filt = ac.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 600 + freq * 0.5;
+      filt.Q.value = 0.7;
+
+      const g = ac.createGain();
+      // Slow swell in, long sustain, slow fade
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(0.06, now + 0.8);
+      g.gain.setValueAtTime(0.06, now + DUR - 1.2);
+      g.gain.linearRampToValueAtTime(0, now + DUR);
+
+      osc.connect(filt).connect(g).connect(out);
+      osc.start(now);
+      osc.stop(now + DUR + 0.05);
+    }
+  }
+
+  // Sub bass rumble
+  const sub = ac.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.value = 36.7; // D1
+  const sg = ac.createGain();
+  sg.gain.setValueAtTime(0, now);
+  sg.gain.linearRampToValueAtTime(0.25, now + 0.6);
+  sg.gain.setValueAtTime(0.25, now + DUR - 1.5);
+  sg.gain.linearRampToValueAtTime(0, now + DUR);
+  sub.connect(sg).connect(out);
+  sub.start(now);
+  sub.stop(now + DUR + 0.05);
+
+  // Impact noise at the very start — low thud
+  const noise = createNoise(ac, 0.4);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'lowpass';
+  nf.frequency.value = 400;
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0.3, now);
+  ng.gain.linearRampToValueAtTime(0, now + 0.4);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.45);
+
+  // "YOU DIED" voice via SpeechSynthesis
+  if ('speechSynthesis' in window) {
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance('YOU DIED');
+    utter.rate = 0.45;
+    utter.pitch = 0.1;
+    utter.volume = Math.min(1, masterVolume * 1.2);
+
+    const voices = speechSynthesis.getVoices();
+    const pick = voices.find(
+      (v) => /male/i.test(v.name) && /en/i.test(v.lang),
+    ) ?? voices.find(
+      (v) => /en/i.test(v.lang),
+    );
+    if (pick) utter.voice = pick;
+
+    // Slight delay so the chord hits first
+    setTimeout(() => speechSynthesis.speak(utter), 600);
+  }
 }
 
 // ── Respawn ──

@@ -9,7 +9,7 @@ Real-time 3D multiplayer tank game with destructible terrain, built with Three.j
 - **Multiplayer first**: server owns game state; clients render and send inputs.
 - **Destructible terrain**: every shot reshapes the battlefield via heightmap craters.
 - **Weapon variety**: same input flow, different projectile and explosion behavior.
-- **Procedural audio**: all sounds and background music synthesized via Web Audio API — no asset files needed.
+- **Procedural audio**: all sounds and background music synthesized via Web Audio API — no asset files needed. Dark Souls-style "YOU DIED" on death, 3 rotating chiptune battle tracks.
 
 ## Controls
 
@@ -87,8 +87,8 @@ client/src/
   ui/input.ts         WASD keyboard, mouse NDC, ground-plane raycast aim
   ui/audioToggle.ts   Sound on/off toggle button (top-right corner)
   ui/trajectoryPreview.ts  Predicted shot arc rendered from current aim
-  audio/sounds.ts     Procedural Web Audio SFX (no external files)
-  audio/music.ts      Chiptune background music loop (synthesized)
+  audio/sounds.ts     Procedural Web Audio SFX incl. Dark Souls death choir
+  audio/music.ts      3 chiptune battle tracks, rotated on match reset
 server/src/
   index.ts            HTTP + Socket.IO bootstrap, single room
   rooms/Room.ts       Match lifecycle, real-time game loop, free-fire

@@ -1,66 +1,125 @@
-// Procedural chiptune background music — epic tank battle march.
+// Procedural chiptune background music — multiple tracks, rotated on match reset.
 // Uses Web Audio API oscillators scheduled in a loop. No external files.
-// Key: D minor, 128 BPM, heroic/military feel.
 
 import { getVolume } from './sounds';
 
-const BPM = 128;
-const BEAT = 60 / BPM;
 const MUSIC_VOL_RATIO = 0.35; // music is quieter than SFX
 
-// ── Note table (D minor: D E F G A Bb C) ──
+// ── Note table ──
 const N: Record<string, number> = {
-  D2: 73.4, F2: 87.3, G2: 98, A2: 110, Bb2: 116.5, C3: 131,
+  D2: 73.4, E2: 82.4, F2: 87.3, G2: 98, A2: 110, Bb2: 116.5, C3: 131,
   D3: 147, E3: 165, F3: 175, G3: 196, A3: 220, Bb3: 233, C4: 262,
   D4: 294, E4: 330, F4: 349, G4: 392, A4: 440, Bb4: 466, C5: 523,
-  D5: 587, F5: 698,
+  D5: 587, E5: 659, F5: 698,
   R: 0, // rest
 };
 
-// ── Melody (square wave) — 8-bar heroic march in D minor ──
-// [noteFreq, durationInBeats]
-const MELODY: [number, number][] = [
-  // Bar 1: commanding opening — dotted rhythm
-  [N.D4, 1], [N.D4, 0.5], [N.D4, 0.5], [N.F4, 1], [N.A4, 1],
-  // Bar 2: heroic descent
-  [N.Bb4, 1.5], [N.A4, 0.5], [N.G4, 1], [N.F4, 1],
-  // Bar 3: repeat with higher reach
-  [N.D4, 1], [N.D4, 0.5], [N.D4, 0.5], [N.F4, 1], [N.A4, 1],
-  // Bar 4: resolution to root
-  [N.Bb4, 0.5], [N.A4, 0.5], [N.G4, 0.5], [N.A4, 0.5], [N.D4, 2],
-  // Bar 5: B section — climbs higher, more intensity
-  [N.A4, 0.5], [N.A4, 0.5], [N.C5, 1], [N.D5, 1], [N.C5, 1],
-  // Bar 6: powerful descent
-  [N.Bb4, 1], [N.A4, 0.5], [N.G4, 0.5], [N.F4, 1], [N.E4, 1],
-  // Bar 7: tension build — marching upward
-  [N.F4, 0.5], [N.G4, 0.5], [N.A4, 1], [N.Bb4, 0.5], [N.A4, 0.5], [N.G4, 1],
-  // Bar 8: triumphant turnaround back to root
-  [N.A4, 1], [N.G4, 0.5], [N.F4, 0.5], [N.E4, 1], [N.D4, 1],
-];
+// ── Track definition ──
+interface Track {
+  bpm: number;
+  melody: [number, number][];
+  bass: [number, number][];
+  drums: ('k' | 's' | 'h' | null)[];
+}
 
-// ── Bass (triangle wave) — power-fifth root movement ──
-const BASS: [number, number][] = [
-  // Bar 1-2
-  [N.D2, 2], [N.A2, 2], [N.Bb2, 2], [N.F2, 2],
-  // Bar 3-4
-  [N.D2, 2], [N.A2, 2], [N.G2, 2], [N.D2, 2],
-  // Bar 5-6
-  [N.A2, 2], [N.C3, 2], [N.Bb2, 2], [N.C3, 2],
-  // Bar 7-8
-  [N.F2, 2], [N.G2, 2], [N.A2, 2], [N.D2, 2],
-];
-
-// ── Drums — military march: double kick for drive ──
-// 'k'=kick, 's'=snare, 'h'=hat. One entry per 8th note.
-function buildDrumPattern(): ('k' | 's' | 'h' | null)[] {
-  const bar: ('k' | 's' | 'h' | null)[] = [
-    'k', 'k', 's', 'h', 'k', 'k', 's', 'h',
-  ];
+// ── Track 1: Heroic March (D minor, 128 BPM) ──
+function buildDrumPattern(bar: ('k' | 's' | 'h' | null)[], bars: number): ('k' | 's' | 'h' | null)[] {
   const pattern: ('k' | 's' | 'h' | null)[] = [];
-  for (let i = 0; i < 8; i++) pattern.push(...bar);
+  for (let i = 0; i < bars; i++) pattern.push(...bar);
   return pattern;
 }
-const DRUMS = buildDrumPattern();
+
+const TRACK_1: Track = {
+  bpm: 128,
+  melody: [
+    // Bar 1: commanding opening — dotted rhythm
+    [N.D4, 1], [N.D4, 0.5], [N.D4, 0.5], [N.F4, 1], [N.A4, 1],
+    // Bar 2: heroic descent
+    [N.Bb4, 1.5], [N.A4, 0.5], [N.G4, 1], [N.F4, 1],
+    // Bar 3: repeat with higher reach
+    [N.D4, 1], [N.D4, 0.5], [N.D4, 0.5], [N.F4, 1], [N.A4, 1],
+    // Bar 4: resolution to root
+    [N.Bb4, 0.5], [N.A4, 0.5], [N.G4, 0.5], [N.A4, 0.5], [N.D4, 2],
+    // Bar 5: B section — climbs higher, more intensity
+    [N.A4, 0.5], [N.A4, 0.5], [N.C5, 1], [N.D5, 1], [N.C5, 1],
+    // Bar 6: powerful descent
+    [N.Bb4, 1], [N.A4, 0.5], [N.G4, 0.5], [N.F4, 1], [N.E4, 1],
+    // Bar 7: tension build — marching upward
+    [N.F4, 0.5], [N.G4, 0.5], [N.A4, 1], [N.Bb4, 0.5], [N.A4, 0.5], [N.G4, 1],
+    // Bar 8: triumphant turnaround back to root
+    [N.A4, 1], [N.G4, 0.5], [N.F4, 0.5], [N.E4, 1], [N.D4, 1],
+  ],
+  bass: [
+    [N.D2, 2], [N.A2, 2], [N.Bb2, 2], [N.F2, 2],
+    [N.D2, 2], [N.A2, 2], [N.G2, 2], [N.D2, 2],
+    [N.A2, 2], [N.C3, 2], [N.Bb2, 2], [N.C3, 2],
+    [N.F2, 2], [N.G2, 2], [N.A2, 2], [N.D2, 2],
+  ],
+  drums: buildDrumPattern(['k', 'k', 's', 'h', 'k', 'k', 's', 'h'], 8),
+};
+
+// ── Track 2: Relentless Assault (A minor, 140 BPM) — faster, more aggressive ──
+const TRACK_2: Track = {
+  bpm: 140,
+  melody: [
+    // Bar 1: staccato hammering
+    [N.A4, 0.5], [N.A4, 0.5], [N.A4, 0.5], [N.R, 0.5], [N.C5, 0.5], [N.D5, 0.5], [N.E5, 1],
+    // Bar 2: descending run
+    [N.D5, 0.5], [N.C5, 0.5], [N.A4, 0.5], [N.G4, 0.5], [N.A4, 1], [N.R, 1],
+    // Bar 3: call and response
+    [N.E4, 1], [N.G4, 0.5], [N.A4, 0.5], [N.C5, 1], [N.A4, 1],
+    // Bar 4: driving resolution
+    [N.G4, 0.5], [N.F4, 0.5], [N.E4, 0.5], [N.D4, 0.5], [N.E4, 2],
+    // Bar 5: intensity ramps up
+    [N.A4, 0.5], [N.C5, 0.5], [N.D5, 1], [N.E5, 0.5], [N.D5, 0.5], [N.C5, 1],
+    // Bar 6: heavy descent
+    [N.A4, 1], [N.G4, 0.5], [N.E4, 0.5], [N.D4, 1], [N.E4, 1],
+    // Bar 7: syncopated tension
+    [N.R, 0.5], [N.A4, 0.5], [N.R, 0.5], [N.C5, 0.5], [N.D5, 1], [N.C5, 1],
+    // Bar 8: crash back to root
+    [N.Bb4, 0.5], [N.A4, 0.5], [N.G4, 1], [N.E4, 1], [N.A3, 1],
+  ],
+  bass: [
+    [N.A2, 1], [N.A2, 1], [N.C3, 1], [N.D3, 1], [N.E3, 2], [N.A2, 2],
+    [N.E2, 2], [N.G2, 2], [N.A2, 2], [N.E2, 2],
+    [N.A2, 1], [N.A2, 1], [N.D3, 2], [N.E3, 2], [N.C3, 2],
+    [N.D3, 2], [N.E3, 2], [N.G2, 2], [N.A2, 2],
+  ],
+  drums: buildDrumPattern(['k', 'h', 'k', 's', 'h', 'k', 's', 'h'], 8),
+};
+
+// ── Track 3: Iron Waltz (F minor, 116 BPM) — heavier, brooding, 3/4-feel phrases ──
+const TRACK_3: Track = {
+  bpm: 116,
+  melody: [
+    // Bar 1: brooding opening
+    [N.F4, 1.5], [N.R, 0.5], [N.G4, 0.5], [N.A4, 0.5], [N.Bb4, 1],
+    // Bar 2: dark descent
+    [N.A4, 1], [N.G4, 1], [N.F4, 1], [N.E4, 1],
+    // Bar 3: ominous climb
+    [N.F4, 0.5], [N.F4, 0.5], [N.A4, 1], [N.C5, 1], [N.Bb4, 1],
+    // Bar 4: heavy resolution
+    [N.A4, 0.5], [N.G4, 0.5], [N.F4, 1], [N.R, 0.5], [N.F4, 0.5], [N.F4, 1],
+    // Bar 5: B section — menacing
+    [N.C5, 1], [N.C5, 0.5], [N.Bb4, 0.5], [N.A4, 1], [N.G4, 1],
+    // Bar 6: grinding descent
+    [N.F4, 1], [N.E4, 0.5], [N.D4, 0.5], [N.E4, 1.5], [N.R, 0.5],
+    // Bar 7: building dread
+    [N.F4, 0.5], [N.A4, 0.5], [N.C5, 0.5], [N.D5, 0.5], [N.C5, 1], [N.Bb4, 1],
+    // Bar 8: doom turnaround
+    [N.A4, 1], [N.G4, 1], [N.F4, 1], [N.F4, 1],
+  ],
+  bass: [
+    [N.F2, 2], [N.Bb2, 2], [N.C3, 2], [N.F2, 2],
+    [N.F2, 2], [N.A2, 2], [N.Bb2, 2], [N.C3, 2],
+    [N.A2, 2], [N.G2, 2], [N.F2, 2], [N.E2, 2],
+    [N.F2, 2], [N.C3, 2], [N.Bb2, 2], [N.F2, 2],
+  ],
+  drums: buildDrumPattern(['k', null, 's', 'h', 'k', 'h', 's', 'k'], 8),
+};
+
+const TRACKS: Track[] = [TRACK_1, TRACK_2, TRACK_3];
+let currentTrackIdx = Math.floor(Math.random() * TRACKS.length);
 
 // ── State ──
 let ctx: AudioContext | null = null;
@@ -76,8 +135,10 @@ let drumIdx = 0;
 function totalBeats(seq: [number, number][]): number {
   return seq.reduce((sum, [, d]) => sum + d, 0);
 }
-const LOOP_BEATS = totalBeats(MELODY);
-const LOOP_DURATION = LOOP_BEATS * BEAT;
+
+function currentTrack(): Track { return TRACKS[currentTrackIdx]; }
+function beat(): number { return 60 / currentTrack().bpm; }
+function loopDuration(): number { return totalBeats(currentTrack().melody) * beat(); }
 
 function ensureCtx(): AudioContext {
   if (!ctx) {
@@ -224,31 +285,33 @@ const SCHEDULE_AHEAD = 0.15; // seconds to look ahead
 function scheduleAll(): void {
   const ac = ensureCtx();
   updateGain();
+  const tk = currentTrack();
+  const b = beat();
 
   // Schedule melody
-  while (loopStartTime + melodyBeatOffset() * BEAT < ac.currentTime + SCHEDULE_AHEAD) {
-    if (melodyIdx >= MELODY.length) break;
-    const [freq, dur] = MELODY[melodyIdx];
-    const t = loopStartTime + melodyBeatOffset() * BEAT;
-    playMelodyNote(ac, freq, t, dur * BEAT * 0.9);
+  while (loopStartTime + melodyBeatOffset(tk) * b < ac.currentTime + SCHEDULE_AHEAD) {
+    if (melodyIdx >= tk.melody.length) break;
+    const [freq, dur] = tk.melody[melodyIdx];
+    const t = loopStartTime + melodyBeatOffset(tk) * b;
+    playMelodyNote(ac, freq, t, dur * b * 0.9);
     melodyIdx++;
   }
 
   // Schedule bass
-  while (loopStartTime + bassBeatOffset() * BEAT < ac.currentTime + SCHEDULE_AHEAD) {
-    if (bassIdx >= BASS.length) break;
-    const [freq, dur] = BASS[bassIdx];
-    const t = loopStartTime + bassBeatOffset() * BEAT;
-    playNote(ac, freq, t, dur * BEAT * 0.85, 'triangle', 0.22);
+  while (loopStartTime + bassBeatOffset(tk) * b < ac.currentTime + SCHEDULE_AHEAD) {
+    if (bassIdx >= tk.bass.length) break;
+    const [freq, dur] = tk.bass[bassIdx];
+    const t = loopStartTime + bassBeatOffset(tk) * b;
+    playNote(ac, freq, t, dur * b * 0.85, 'triangle', 0.22);
     bassIdx++;
   }
 
   // Schedule drums
-  const eighthBeat = BEAT / 2;
+  const eighthBeat = b / 2;
   while (loopStartTime + drumIdx * eighthBeat < ac.currentTime + SCHEDULE_AHEAD) {
-    if (drumIdx >= DRUMS.length) break;
+    if (drumIdx >= tk.drums.length) break;
     const t = loopStartTime + drumIdx * eighthBeat;
-    const hit = DRUMS[drumIdx];
+    const hit = tk.drums[drumIdx];
     if (hit === 'k') playKick(ac, t);
     else if (hit === 's') playSnare(ac, t);
     else if (hit === 'h') playHat(ac, t);
@@ -256,23 +319,23 @@ function scheduleAll(): void {
   }
 
   // Loop reset
-  if (melodyIdx >= MELODY.length && bassIdx >= BASS.length && drumIdx >= DRUMS.length) {
-    loopStartTime += LOOP_DURATION;
+  if (melodyIdx >= tk.melody.length && bassIdx >= tk.bass.length && drumIdx >= tk.drums.length) {
+    loopStartTime += loopDuration();
     melodyIdx = 0;
     bassIdx = 0;
     drumIdx = 0;
   }
 }
 
-function melodyBeatOffset(): number {
+function melodyBeatOffset(tk: Track): number {
   let b = 0;
-  for (let i = 0; i < melodyIdx; i++) b += MELODY[i][1];
+  for (let i = 0; i < melodyIdx; i++) b += tk.melody[i][1];
   return b;
 }
 
-function bassBeatOffset(): number {
+function bassBeatOffset(tk: Track): number {
   let b = 0;
-  for (let i = 0; i < bassIdx; i++) b += BASS[i][1];
+  for (let i = 0; i < bassIdx; i++) b += tk.bass[i][1];
   return b;
 }
 
@@ -305,4 +368,17 @@ export function setMusicMuted(m: boolean): void {
 
 export function isMusicPlaying(): boolean {
   return playing;
+}
+
+/** Switch to the next track. Called on match reset. */
+export function nextTrack(): void {
+  currentTrackIdx = (currentTrackIdx + 1) % TRACKS.length;
+  if (playing) {
+    // Reset indices so the new track starts from the beginning
+    const ac = ensureCtx();
+    loopStartTime = ac.currentTime + 0.1;
+    melodyIdx = 0;
+    bassIdx = 0;
+    drumIdx = 0;
+  }
 }
