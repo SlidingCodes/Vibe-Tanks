@@ -9,6 +9,7 @@ import {
 } from '../../../shared/src/types/index';
 import { GRAVITY } from '../../../shared/src/constants';
 import { computeMuzzle } from '../../../shared/src/muzzle';
+import { resolveRailEndpoint } from '../../../shared/src/rail';
 import { Heightmap } from '../terrain/Heightmap';
 
 export const SIM_DT = 1 / 60;
@@ -490,55 +491,34 @@ function simulateBounceShot(
   ], damageTotals, allTanks);
 }
 
-function distancePointToSegment(point: Vec3, start: Vec3, dir: Vec3): { distance: number; along: number; closest: Vec3 } {
-  const offset = sub(point, start);
-  const along = dot(offset, dir);
-  const closest = add(start, scale(dir, along));
-  return {
-    distance: length(sub(point, closest)),
-    along,
-    closest,
-  };
-}
-
 function simulateRailShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   heightmap: Heightmap,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, heightmap);
-  const direction = normalize(createInitialVelocity(shooter, 1));
   const maxRange = weapon.behaviorConfig?.railRange ?? 50;
   const beamRadius = weapon.behaviorConfig?.railRadius ?? weapon.blastRadius;
   const terrainDamage = weapon.behaviorConfig?.railTerrainDamage ?? weapon.terrainDamage;
-  const theoreticalEnd = add(startPos, scale(direction, maxRange));
-  const terrainTrace = heightmap.traceSegmentToTerrain(startPos, theoreticalEnd, 96);
-
-  let hitPoint = terrainTrace.hit ? terrainTrace.point : theoreticalEnd;
-  let bestDistance = length(sub(hitPoint, startPos));
-  let hitTank: TankState | null = null;
-
-  for (const tank of allTanks) {
-    if (!tank.alive || tank.playerId === shooter.playerId) continue;
-    const center = { x: tank.position.x, y: tank.position.y + 0.8, z: tank.position.z };
-    const hit = distancePointToSegment(center, startPos, direction);
-    if (hit.along < 0 || hit.along > bestDistance) continue;
-    if (hit.distance <= beamRadius) {
-      bestDistance = hit.along;
-      hitPoint = hit.closest;
-      hitTank = tank;
-    }
-  }
+  const railHit = resolveRailEndpoint(
+    shooter,
+    maxRange,
+    beamRadius,
+    (x, z) => heightmap.getHeight(x, z),
+    allTanks,
+  );
+  const hitTank = railHit.hitTankId
+    ? allTanks.find((tank) => tank.playerId === railHit.hitTankId) ?? null
+    : null;
 
   const damageTotals: DamageTotals = new Map();
   let terrainPatch: TerrainPatch | null = null;
 
   if (hitTank) {
     applyDirectHit(hitTank, weapon.damage, damageTotals);
-  } else if (terrainTrace.hit) {
+  } else if (railHit.terrainHit) {
     terrainPatch = applyImpact({
-      point: hitPoint,
+      point: railHit.hitPoint,
       blastRadius: beamRadius,
       damage: 0,
       terrainDamage,
@@ -546,7 +526,7 @@ function simulateRailShot(
   }
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, [startPos, hitPoint], hitPoint, 'beam', terrainPatch, beamRadius, 'rail'),
+    makeStep(0, [railHit.startPos, railHit.hitPoint], railHit.hitPoint, 'beam', terrainPatch, beamRadius, 'rail'),
   ], damageTotals, allTanks);
 }
 

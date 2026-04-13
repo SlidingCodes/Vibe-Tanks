@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -12,7 +12,7 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } f
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { createCamera, followTank, overviewCamera } from './scene/camera';
+import { createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
@@ -25,14 +25,15 @@ import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
 import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
-import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
+import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker } from './audio/sounds';
-import { startMusic } from './audio/music';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
+import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { computeMuzzle } from '@shared/muzzle';
+import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
+import { resolveRailEndpoint } from '@shared/rail';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -53,7 +54,7 @@ scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
 
 const camera = createCamera();
-createLights(scene);
+const lighting = createLights(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -69,6 +70,13 @@ let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
+  const worldMax = Math.max(terrainWidth, terrainHeight);
+  scene.fog = new THREE.Fog(0x87ceeb, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  updateCameraScale(terrainWidth, terrainHeight);
+  lighting.updateForTerrain(terrainWidth, terrainHeight);
+}
 
 function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
@@ -95,7 +103,9 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
-startMusic();
+playAnnouncer();
+// Start music after the announcer voice has time to land.
+setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
 socket.on('connect', () => {
@@ -117,6 +127,11 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     initMinimap(snap.terrain);
   }
 
+  const terrainWidth = snap.terrain.gridWidth * snap.terrain.cellSize;
+  const terrainHeight = snap.terrain.gridHeight * snap.terrain.cellSize;
+  updateSceneScale(terrainWidth, terrainHeight);
+
+  setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
 
   const existingIds = new Set(getAllTankMeshes().keys());
@@ -142,10 +157,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
-    overviewCamera(
-      snap.terrain.gridWidth * snap.terrain.cellSize,
-      snap.terrain.gridHeight * snap.terrain.cellSize,
-    );
+    overviewCamera(terrainWidth, terrainHeight);
   } else {
     hud.showWaiting(false);
   }
@@ -286,6 +298,7 @@ socket.on('player_left', ({ playerId }) => {
 
 socket.on('match_event', (ev) => {
   pushFeedEvent(ev);
+  if (ev.kind === 'reset') nextTrack();
 });
 
 socket.on('game_over', ({ winnerId }) => {
@@ -333,7 +346,7 @@ function animate(): void {
     }
 
     const { w: mapW, h: mapH } = getMapBounds();
-    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
+    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, snapshot?.terrain.cellSize ?? 1);
 
     updateLocalTankMesh(predictedState);
 
@@ -373,7 +386,7 @@ function animate(): void {
         selectedWeapon,
       );
     } else {
-      const aimTarget = getAimTarget(camera, predictedState.position.y);
+      const aimTarget = getAimTarget(camera, getTerrainMesh(), predictedState.position.y);
       if (aimTarget) {
         aimPointForFire = aimTarget;
         const dx = aimTarget.x - predictedState.position.x;
@@ -385,9 +398,14 @@ function animate(): void {
         const startY = predictedState.position.y + 0.8;
         const dy = aimTarget.y - startY;
 
+        let nextTurretRotation = turretRot;
         let barrelPitch: number;
+        let railEndPoint: { x: number; y: number; z: number } | null = null;
+        let railStartPoint: { x: number; y: number; z: number } | null = null;
         if (selectedWeapon.behavior === 'rail') {
-          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, Math.atan2(dy, Math.max(dist, 0.001))));
+          const railAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
+          nextTurretRotation = railAim.turretRotation;
+          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, railAim.barrelPitch));
         } else {
           const a = (g * dist * dist) / (2 * v * v);
           const disc = dist * dist - 4 * a * (dy + a);
@@ -399,18 +417,28 @@ function animate(): void {
           }
         }
 
-        socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
-        predictedState.turretRotation = turretRot;
+        socket.emit('aim_update', { turretRotation: nextTurretRotation, barrelPitch });
+        predictedState.turretRotation = nextTurretRotation;
         predictedState.barrelPitch = barrelPitch;
         updateLocalTankMesh(predictedState);
 
+        if (selectedWeapon.behavior === 'rail') {
+          const railRange = selectedWeapon.behaviorConfig?.railRange ?? 50;
+          const railRadius = selectedWeapon.behaviorConfig?.railRadius ?? selectedWeapon.blastRadius;
+          const railTrace = resolveRailEndpoint(predictedState, railRange, railRadius, getTerrainHeight, latestTanks);
+          railStartPoint = railTrace.startPos;
+          railEndPoint = railTrace.hitPoint;
+        }
+
         const muzzle = computeMuzzle(predictedState);
+        const previewStart = railStartPoint ?? muzzle.origin;
         updateTrajectoryPreview(
           scene,
-          muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+          previewStart.x, previewStart.y, previewStart.z,
           muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
           selectedWeapon,
           { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
+          railEndPoint,
         );
       } else {
         hideTrajectoryPreview();

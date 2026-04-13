@@ -52,7 +52,7 @@ export function onMinimapPatch(patch: TerrainPatch): void {
       const gx = patch.startX + px;
       const gz = patch.startZ + pz;
       if (gx < 0 || gx >= gridW || gz < 0 || gz >= gridH) continue;
-      heights[gz * gridW + gx] = patch.heights[pz * patch.width + px];
+      heights[gz * gridW + gx] += (patch.heightDeltas[pz * patch.width + px] ?? 0);
     }
   }
   // Cheap: redraw the whole map (64×64 is tiny). Could localise later.
