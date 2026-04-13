@@ -147,7 +147,8 @@ export class Room {
       tank.bodyRoll = 0;
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
-      this.physics.resetTank(tank);
+      this.physics.removeTank(tank.playerId);
+      this.physics.addTank(tank);
       const player = this.players.get(pid);
       if (player) {
         player.velX = 0;
@@ -638,7 +639,8 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
-    this.physics.resetTank(tank);
+    this.physics.removeTank(tank.playerId);
+    this.physics.addTank(tank);
     player.velX = 0;
     player.velZ = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
@@ -682,15 +684,28 @@ export class Room {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
 
+      const prevX = tank.position.x;
+      const prevZ = tank.position.z;
+
       const vel = { x: player.velX, z: player.velZ };
       stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
+
+      // Project the horizontal delta through Rapier's character controller
+      // so tank-vs-tank and tank-vs-terrain walls actually stop us.
+      const desiredX = tank.position.x - prevX;
+      const desiredZ = tank.position.z - prevZ;
+      const moved = this.physics.resolveTankMove(pid, desiredX, desiredZ);
+      tank.position.x = prevX + moved.x;
+      tank.position.z = prevZ + moved.z;
+      tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
+
+      // Zero velocity components that were blocked so we don't keep pushing.
+      if (Math.abs(moved.x) < Math.abs(desiredX) * 0.5) vel.x = 0;
+      if (Math.abs(moved.z) < Math.abs(desiredZ) * 0.5) vel.z = 0;
       player.velX = vel.x;
       player.velZ = vel.z;
-    }
-    // Keep rapier bodies roughly aligned with authoritative tank state so
-    // future collision queries / projectile contacts work without stale poses.
-    for (const tank of this.tanks.values()) {
-      if (tank.alive) this.physics.resetTank(tank);
+
+      this.physics.syncBody(tank);
     }
     this.physics.step();
   }
