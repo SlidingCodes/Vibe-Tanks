@@ -6,8 +6,11 @@ export interface TankVelocity {
   z: number;
 }
 
-const BASE_TILT_SAMPLE = 0.9;
-const BASE_GRAD_EPS = 0.6;
+const BASE_TILT_SAMPLE = 1.5;
+// Sampled gradient stencil. Must exceed the characteristic wavelength of
+// high-frequency terrain detail (currently detailScale≈0.15 → ~6.6m wavelength,
+// sub-meter bumps) or every bump reads as a cliff and the tank locks up.
+const BASE_GRAD_EPS = 1.5;
 const GRAVITY_ACCEL = 9.81;
 // Engine "grip": how strongly the tracks hold the commanded velocity.
 // High value = tank ignores small slopes (locks to target speed).
