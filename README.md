@@ -9,6 +9,7 @@ Real-time 3D multiplayer tank game with destructible terrain, built with Three.j
 - **Multiplayer first**: server owns game state; clients render and send inputs.
 - **Destructible terrain**: every shot reshapes the battlefield via heightmap craters.
 - **Weapon variety**: same input flow, different projectile and explosion behavior.
+- **Procedural audio**: all sounds synthesized via Web Audio API — no asset files needed.
 
 ## Controls
 
@@ -84,7 +85,9 @@ client/src/
   net/socket.ts       Socket.IO client connection
   ui/hud.ts           HP bar, scoreboard, cooldown bar
   ui/input.ts         WASD keyboard, mouse NDC, ground-plane raycast aim
+  ui/audioToggle.ts   Sound on/off toggle button (top-right corner)
   ui/trajectoryPreview.ts  Predicted shot arc rendered from current aim
+  audio/sounds.ts     Procedural Web Audio sounds (no external files)
 server/src/
   index.ts            HTTP + Socket.IO bootstrap, single room
   rooms/Room.ts       Match lifecycle, real-time game loop, free-fire
