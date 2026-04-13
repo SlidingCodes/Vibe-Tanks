@@ -22,7 +22,6 @@ import {
   SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { stepTankPhysics } from '../../../shared/src/physics';
 import { Heightmap } from '../terrain/Heightmap';
 import { RapierWorld } from '../physics/RapierWorld';
 import {
@@ -675,52 +674,11 @@ export class Room {
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
   }
 
-  private tickMovement(dt: number): void {
-    const mapW = this.heightmap.width * this.heightmap.cellSize;
-    const mapH = this.heightmap.height * this.heightmap.cellSize;
-    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
-
+  private tickMovement(_dt: number): void {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-
-      const prevX = tank.position.x;
-      const prevY = tank.position.y;
-      const prevZ = tank.position.z;
-
-      const vel = { x: player.velX, z: player.velZ };
-      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
-
-      // Desired 3D delta from the shared physics intent — KCC resolves it
-      // against both terrain heightfield and other tank colliders.
-      const desiredX = tank.position.x - prevX;
-      const desiredY = tank.position.y - prevY;
-      const desiredZ = tank.position.z - prevZ;
-      const moved = this.physics.resolveTankMove(pid, desiredX, desiredY, desiredZ);
-      tank.position.x = prevX + moved.x;
-      tank.position.y = prevY + moved.y;   // authoritative — no re-snap fight
-      tank.position.z = prevZ + moved.z;
-
-      // Refresh pitch/roll against the (possibly different) corrected pos so
-      // the mesh tilt still matches the ground under it.
-      const d = 0.9;
-      const fwdX = Math.sin(tank.bodyRotation), fwdZ = Math.cos(tank.bodyRotation);
-      const rgtX = Math.cos(tank.bodyRotation), rgtZ = -Math.sin(tank.bodyRotation);
-      const hF = sample(tank.position.x + fwdX * d, tank.position.z + fwdZ * d);
-      const hB = sample(tank.position.x - fwdX * d, tank.position.z - fwdZ * d);
-      const hR = sample(tank.position.x + rgtX * d, tank.position.z + rgtZ * d);
-      const hL = sample(tank.position.x - rgtX * d, tank.position.z - rgtZ * d);
-      tank.bodyPitch = Math.atan2(hB - hF, 2 * d);
-      tank.bodyRoll = Math.atan2(hR - hL, 2 * d);
-
-      const blockedX = desiredX !== 0 && Math.abs(moved.x) < Math.abs(desiredX) * 0.2;
-      const blockedZ = desiredZ !== 0 && Math.abs(moved.z) < Math.abs(desiredZ) * 0.2;
-      if (blockedX) vel.x = 0;
-      if (blockedZ) vel.z = 0;
-      player.velX = vel.x;
-      player.velZ = vel.z;
-
-      this.physics.syncBody(tank);
+      this.physics.stepTank(tank, player.input);
     }
     this.physics.step();
   }
