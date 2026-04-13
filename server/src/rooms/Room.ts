@@ -10,8 +10,10 @@ import {
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
+  ShotVisualStyle,
   TankState,
   Vec3,
+  WeaponDefinition,
 } from '../../../shared/src/types/index';
 import {
   TANK_MAX_HP,
@@ -23,18 +25,15 @@ import {
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { Heightmap } from '../terrain/Heightmap';
-import { RapierWorld } from '../physics/RapierWorld';
+import { ProjectileImpact, ProjectileSpawnConfig, RapierWorld } from '../physics/RapierWorld';
 import {
   DamageTotals,
   applyImpact,
   buildImpactResult,
   createInitialVelocity,
-  createLinearTrajectory,
   createMuzzlePosition,
   createShotResult,
   makeStep,
-  planDrillShot,
-  simulateSegment,
   simulateShot,
 } from '../game/Simulation';
 
@@ -54,13 +53,32 @@ interface PlayerState {
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
+  previousPosition: Vec3;
   age: number;
   lifetime: number;
+  radius: number;
+  gravityScale: number;
+  linearDamping: number;
   turnRate: number;
   targetRadius: number;
   blastRadius: number;
   damage: number;
   terrainDamage: number;
+  airburstHeight: number | null;
+  splitTime: number | null;
+  fragmentCount: number;
+  fragmentSpread: number;
+  fragmentSpeedScale: number;
+  fragmentBlastRadius: number;
+  fragmentDamage: number;
+  fragmentTerrainDamage: number;
+  bounceCount: number;
+  bounceDamping: number;
+  drillDistance: number;
+  drillDelay: number;
+  drillBlastRadius: number;
+  drillDamage: number;
+  drillTerrainDamage: number;
 }
 
 interface ActiveHazardRuntime extends HazardState {
@@ -129,6 +147,7 @@ export class Room {
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     this.activeProjectiles.clear();
+    this.physics.clearProjectiles();
     this.activeHazards.clear();
     this.scheduledStrikes = [];
     this.simTime = 0;
@@ -195,6 +214,7 @@ export class Room {
     for (const [projectileId, projectile] of this.activeProjectiles) {
       if (projectile.ownerId === playerId) {
         this.activeProjectiles.delete(projectileId);
+        this.physics.removeProjectile(projectileId);
       }
     }
 
@@ -217,6 +237,7 @@ export class Room {
       this.phase = MatchPhase.WaitingForPlayers;
       this.simTime = 0;
       this.activeProjectiles.clear();
+      this.physics.clearProjectiles();
       this.activeHazards.clear();
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
@@ -317,7 +338,7 @@ export class Room {
         case 'mine':
           this.fireMine(tank, weapon);
           break;
-        default: {
+        case 'rail': {
           const result = simulateShot(
             tank,
             weapon,
@@ -327,6 +348,9 @@ export class Room {
           this.scheduleShotResult(result, tank.playerId, weapon.id);
           break;
         }
+        default:
+          this.fireLiveShell(tank, weapon);
+          break;
       }
     });
 
@@ -435,108 +459,55 @@ export class Room {
     }
   }
 
-  private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const plan = planDrillShot(tank, weapon, this.heightmap);
-    this.io.to(this.id).emit('shot_resolved', plan.entryResult);
-
-    if (!plan.didImpact) return;
-
-    this.scheduledStrikes.push({
-      strikeId: `strike_${this.nextStrikeId++}`,
-      kind: 'drill',
-      ownerId: tank.playerId,
-      weaponId: weapon.id,
-      triggerAt: this.simTime + plan.impactTime + plan.eruptionDelay,
-      position: plan.eruptionPoint,
-      blastRadius: plan.blastRadius,
-      damage: plan.damage,
-      terrainDamage: plan.terrainDamage,
-      visualStyle: 'drill_burst',
-      spawnHeight: 0,
-    });
+  private fireLiveShell(tank: TankState, weapon: WeaponDefinition): void {
+    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon));
   }
 
-  private fireNapalm(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
+  private fireDrill(tank: TankState, weapon: WeaponDefinition): void {
+    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
+      visualStyle: 'drill_entry',
+      blastRadius: 0,
+      damage: 0,
+      terrainDamage: 0,
+      lifetime: 3.5,
+      drillDistance: weapon.behaviorConfig?.drillDistance ?? 5.5,
+      drillDelay: weapon.behaviorConfig?.drillDelay ?? 0.45,
+      drillBlastRadius: weapon.behaviorConfig?.drillBlastRadius ?? Math.max(weapon.blastRadius, 3.4),
+      drillDamage: weapon.behaviorConfig?.drillDamage ?? weapon.damage,
+      drillTerrainDamage: weapon.behaviorConfig?.drillTerrainDamage ?? Math.max(weapon.terrainDamage, 3),
+    }));
+  }
+
+  private fireNapalm(tank: TankState, weapon: WeaponDefinition): void {
+    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
+      visualStyle: 'napalm_shell',
+    }));
+  }
+
+  private fireSeeker(tank: TankState, weapon: WeaponDefinition): void {
     const startPos = createMuzzlePosition(tank, this.heightmap);
-    const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
-    const damageTotals: DamageTotals = new Map();
-    const terrainPatch = segment.reason === 'impact'
-      ? applyImpact({
-          point: segment.endPoint,
-          blastRadius: weapon.blastRadius,
-          damage: weapon.damage,
-          terrainDamage: weapon.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals)
-      : null;
-
-    const result = createShotResult(tank.playerId, weapon.id, [
-      makeStep(0, segment.trajectory, segment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'napalm_shell'),
-    ], damageTotals);
-    this.scheduleShotResult(result, tank.playerId, weapon.id);
-
-    if (segment.reason === 'impact') {
-      const radius = weapon.behaviorConfig?.burnRadius ?? 4;
-      const duration = weapon.behaviorConfig?.burnDuration ?? 5;
-      const tickInterval = weapon.behaviorConfig?.burnTickInterval ?? 0.5;
-      const tickDamage = weapon.behaviorConfig?.burnTickDamage ?? 6;
-      const timeout = setTimeout(() => {
-        this.pendingShotTimeouts.delete(timeout);
-        const hazardId = `hazard_${this.nextHazardId++}`;
-        this.activeHazards.set(hazardId, {
-          hazardId,
-          ownerId: tank.playerId,
-          weaponId: weapon.id,
-          type: 'napalm',
-          position: segment.endPoint,
-          radius,
-          armed: true,
-          timeRemaining: duration,
-          damage: tickDamage,
-          tickInterval,
-          tickTimer: tickInterval,
-          triggerRadius: radius,
-          blastRadius: radius,
-          terrainDamage: 0,
-        });
-      }, segment.elapsed * 1000);
-      this.pendingShotTimeouts.add(timeout);
-    }
-  }
-
-  private fireSeeker(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const projectileId = `proj_${this.nextProjectileId++}`;
-    const position = createMuzzlePosition(tank, this.heightmap);
-    const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
-    const projectile: ActiveProjectileRuntime = {
-      projectileId,
-      ownerId: tank.playerId,
-      weaponId: weapon.id,
-      position,
-      velocity,
+    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
+      position: startPos,
       visualStyle: 'seeker',
-      targetId: this.findNearestEnemy(position, tank.playerId, weapon.behaviorConfig?.seekerTargetRadius ?? 24),
-      age: 0,
-      lifetime: weapon.behaviorConfig?.seekerLifetime ?? 5,
-      turnRate: weapon.behaviorConfig?.seekerTurnRate ?? 3.5,
+      gravityScale: 0,
+      linearDamping: 0.05,
+      lifetime: weapon.behaviorConfig?.seekerLifetime ?? 5.2,
+      targetId: this.findNearestEnemy(startPos, tank.playerId, weapon.behaviorConfig?.seekerTargetRadius ?? 24),
+      turnRate: weapon.behaviorConfig?.seekerTurnRate ?? 3.8,
       targetRadius: weapon.behaviorConfig?.seekerTargetRadius ?? 24,
-      blastRadius: weapon.blastRadius,
-      damage: weapon.damage,
-      terrainDamage: weapon.terrainDamage,
-    };
-    this.activeProjectiles.set(projectileId, projectile);
+    }));
   }
 
-  private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
+  private fireMortar(tank: TankState, weapon: WeaponDefinition, aimPoint: Vec3 | null): void {
     const startPos = createMuzzlePosition(tank, this.heightmap);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const fallback = simulateSegment(startPos, startVel, this.heightmap).endPoint;
+    const fallback = addVec3(startPos, scaleVec3(normalizeVec3(startVel), 18));
     const center = aimPoint
       ? { x: aimPoint.x, y: this.heightmap.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
-      : fallback;
+      : { x: fallback.x, y: this.heightmap.getHeight(fallback.x, fallback.z), z: fallback.z };
 
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
-    const spread = weapon.behaviorConfig?.mortarSpread ?? 5;
+    const spread = weapon.behaviorConfig?.mortarSpread ?? 5.5;
     const interval = weapon.behaviorConfig?.mortarInterval ?? 0.28;
     const spawnHeight = weapon.behaviorConfig?.mortarSpawnHeight ?? 20;
     const blastRadius = weapon.behaviorConfig?.mortarImpactRadius ?? weapon.blastRadius;
@@ -552,7 +523,7 @@ export class Room {
       position: center,
       radius: spread + blastRadius,
       armed: true,
-      timeRemaining: shellCount * interval + 1.1,
+      timeRemaining: shellCount * interval + 2.2,
       damage: 0,
       tickInterval: 0,
       tickTimer: 0,
@@ -584,38 +555,386 @@ export class Room {
     }
   }
 
-  private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
-    const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
+  private fireMine(tank: TankState, weapon: WeaponDefinition): void {
+    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
+      visualStyle: 'mine_deploy',
+      blastRadius: 0,
+      damage: 0,
+      terrainDamage: 0,
+      lifetime: 4.5,
+    }));
+  }
 
-    const result = createShotResult(tank.playerId, weapon.id, [
-      makeStep(0, segment.trajectory, segment.endPoint, 'impact', null, 0, 'mine_deploy'),
+  private buildProjectileRuntime(
+    tank: TankState,
+    weapon: WeaponDefinition,
+    overrides: Partial<ActiveProjectileRuntime> = {},
+  ): ActiveProjectileRuntime {
+    const projectileId = overrides.projectileId ?? `proj_${this.nextProjectileId++}`;
+    const position = overrides.position ?? createMuzzlePosition(tank, this.heightmap);
+    const velocity = overrides.velocity ?? createInitialVelocity(tank, weapon.projectileSpeed);
+    const visualStyle = overrides.visualStyle ?? this.getDefaultVisualStyle(weapon);
+
+    return {
+      projectileId,
+      ownerId: tank.playerId,
+      weaponId: weapon.id,
+      position,
+      previousPosition: overrides.previousPosition ?? { ...position },
+      velocity,
+      visualStyle,
+      targetId: overrides.targetId ?? null,
+      age: overrides.age ?? 0,
+      lifetime: overrides.lifetime ?? 6,
+      radius: overrides.radius ?? this.getProjectileRadius(visualStyle),
+      gravityScale: overrides.gravityScale ?? 1,
+      linearDamping: overrides.linearDamping ?? (visualStyle === 'seeker' ? 0.05 : 0),
+      turnRate: overrides.turnRate ?? 0,
+      targetRadius: overrides.targetRadius ?? 0,
+      blastRadius: overrides.blastRadius ?? weapon.blastRadius,
+      damage: overrides.damage ?? weapon.damage,
+      terrainDamage: overrides.terrainDamage ?? weapon.terrainDamage,
+      airburstHeight: overrides.airburstHeight ?? (weapon.behavior === 'airburst' ? (weapon.behaviorConfig?.airburstHeight ?? 2.8) : null),
+      splitTime: overrides.splitTime ?? (weapon.behavior === 'split' && visualStyle === 'splitter_parent' ? (weapon.behaviorConfig?.splitTime ?? 0.7) : null),
+      fragmentCount: overrides.fragmentCount ?? (weapon.behaviorConfig?.fragmentCount ?? 3),
+      fragmentSpread: overrides.fragmentSpread ?? (weapon.behaviorConfig?.fragmentSpread ?? 0.34),
+      fragmentSpeedScale: overrides.fragmentSpeedScale ?? (weapon.behaviorConfig?.fragmentSpeedScale ?? 0.9),
+      fragmentBlastRadius: overrides.fragmentBlastRadius ?? (weapon.behaviorConfig?.fragmentBlastRadius ?? 2.2),
+      fragmentDamage: overrides.fragmentDamage ?? (weapon.behaviorConfig?.fragmentDamage ?? weapon.damage),
+      fragmentTerrainDamage: overrides.fragmentTerrainDamage ?? (weapon.behaviorConfig?.fragmentTerrainDamage ?? weapon.terrainDamage),
+      bounceCount: overrides.bounceCount ?? (weapon.behavior === 'bounce' ? (weapon.behaviorConfig?.bounceCount ?? 1) : 0),
+      bounceDamping: overrides.bounceDamping ?? (weapon.behaviorConfig?.bounceDamping ?? 0.72),
+      drillDistance: overrides.drillDistance ?? 5.5,
+      drillDelay: overrides.drillDelay ?? 0.45,
+      drillBlastRadius: overrides.drillBlastRadius ?? weapon.blastRadius,
+      drillDamage: overrides.drillDamage ?? weapon.damage,
+      drillTerrainDamage: overrides.drillTerrainDamage ?? weapon.terrainDamage,
+    };
+  }
+
+  private spawnProjectileRuntime(projectile: ActiveProjectileRuntime): void {
+    this.activeProjectiles.set(projectile.projectileId, projectile);
+    const spawnConfig: ProjectileSpawnConfig = {
+      projectileId: projectile.projectileId,
+      ownerId: projectile.ownerId,
+      position: projectile.position,
+      velocity: projectile.velocity,
+      radius: projectile.radius,
+      gravityScale: projectile.gravityScale,
+      linearDamping: projectile.linearDamping,
+    };
+    this.physics.addProjectile(spawnConfig);
+  }
+
+  private getWeaponById(weaponId: string): WeaponDefinition | undefined {
+    return WEAPONS.find((weapon) => weapon.id === weaponId);
+  }
+
+  private removeProjectileRuntime(projectileId: string): void {
+    this.activeProjectiles.delete(projectileId);
+    this.physics.removeProjectile(projectileId);
+  }
+
+  private syncProjectileRuntime(projectile: ActiveProjectileRuntime): boolean {
+    const physicsState = this.physics.getProjectileState(projectile.projectileId);
+    if (!physicsState) return false;
+    projectile.previousPosition = { ...projectile.position };
+    projectile.position = { ...physicsState.position };
+    projectile.velocity = { ...physicsState.velocity };
+    return true;
+  }
+
+  private buildProjectileCollisionContext(projectile: ActiveProjectileRuntime, impact: ProjectileImpact): {
+    point: Vec3;
+    normal: Vec3;
+    hitTankId: PlayerId | null;
+    hitTerrain: boolean;
+  } {
+    let point = { ...impact.point };
+    let normal: Vec3 = { x: 0, y: 1, z: 0 };
+
+    if (impact.hitTerrain) {
+      const trace = this.heightmap.traceSegmentToTerrain(projectile.previousPosition, projectile.position, 24);
+      if (trace.hit) {
+        point = trace.point;
+        normal = trace.normal;
+      } else {
+        point.y = this.heightmap.getHeight(point.x, point.z);
+        normal = this.heightmap.getSurfaceNormal(point.x, point.z);
+      }
+    } else if (impact.hitTankId) {
+      const tank = this.tanks.get(impact.hitTankId);
+      if (tank) {
+        const center = { x: tank.position.x, y: tank.position.y + 0.8, z: tank.position.z };
+        const delta = subVec3(point, center);
+        normal = lengthVec3(delta) > 0.001
+          ? normalizeVec3(delta)
+          : scaleVec3(normalizeVec3(projectile.velocity), -1);
+      }
+    }
+
+    if (lengthVec3(normal) <= 0.001) {
+      normal = { x: 0, y: 1, z: 0 };
+    }
+
+    return {
+      point,
+      normal,
+      hitTankId: impact.hitTankId,
+      hitTerrain: impact.hitTerrain,
+    };
+  }
+
+  private emitProjectileEvent(
+    projectile: ActiveProjectileRuntime,
+    point: Vec3,
+    eventType: 'impact' | 'split' | 'bounce',
+    visualStyle: ShotVisualStyle,
+  ): void {
+    const result = createShotResult(projectile.ownerId, projectile.weaponId, [
+      makeStep(0, [{ ...point }], { ...point }, eventType, null, 0, visualStyle),
     ]);
     this.io.to(this.id).emit('shot_resolved', result);
+  }
 
-    if (segment.reason === 'impact') {
-      const timeout = setTimeout(() => {
-        this.pendingShotTimeouts.delete(timeout);
-        const hazardId = `hazard_${this.nextHazardId++}`;
-        this.activeHazards.set(hazardId, {
-          hazardId,
-          ownerId: tank.playerId,
-          weaponId: weapon.id,
-          type: 'mine',
-          position: segment.endPoint,
-          radius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
-          armed: false,
-          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 12,
-          damage: weapon.behaviorConfig?.mineDamage ?? weapon.damage,
-          tickInterval: 0,
-          tickTimer: weapon.behaviorConfig?.mineArmTime ?? 0.8,
-          triggerRadius: weapon.behaviorConfig?.mineTriggerRadius ?? 2.5,
-          blastRadius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
-          terrainDamage: weapon.behaviorConfig?.mineTerrainDamage ?? weapon.terrainDamage,
-        });
-      }, segment.elapsed * 1000);
-      this.pendingShotTimeouts.add(timeout);
+  private detonateProjectile(
+    projectile: ActiveProjectileRuntime,
+    point: Vec3,
+    options: { terrainDamage?: number; visualStyle?: ShotVisualStyle } = {},
+  ): void {
+    const terrainDamage = options.terrainDamage ?? projectile.terrainDamage;
+    const visualStyle = options.visualStyle ?? projectile.visualStyle;
+    const damageTotals: DamageTotals = new Map();
+    const terrainPatch = applyImpact({
+      point,
+      blastRadius: projectile.blastRadius,
+      damage: projectile.damage,
+      terrainDamage,
+    }, this.heightmap, this.getTankList(), damageTotals);
+
+    this.physics.applyExplosionImpulse(
+      point,
+      projectile.blastRadius,
+      Math.max(projectile.damage * 18, projectile.blastRadius * 120),
+    );
+
+    const result = buildImpactResult(
+      projectile.ownerId,
+      projectile.weaponId,
+      point,
+      projectile.blastRadius,
+      visualStyle,
+      terrainPatch,
+      damageTotals,
+    );
+
+    this.removeProjectileRuntime(projectile.projectileId);
+    this.emitShotResultNow(result, projectile.ownerId, projectile.weaponId);
+  }
+
+  private bounceProjectile(projectile: ActiveProjectileRuntime, point: Vec3, normal: Vec3): void {
+    const bounceStyle = projectile.visualStyle;
+    const contactNormal = lengthVec3(normal) > 0.001 ? normalizeVec3(normal) : { x: 0, y: 1, z: 0 };
+    projectile.bounceCount = Math.max(0, projectile.bounceCount - 1);
+    projectile.visualStyle = 'bouncer_bounce';
+    projectile.position = addVec3(point, scaleVec3(contactNormal, projectile.radius + 0.08));
+    projectile.previousPosition = { ...point };
+    projectile.velocity = reflectVec3(projectile.velocity, contactNormal, projectile.bounceDamping);
+    this.physics.setProjectileTranslation(projectile.projectileId, projectile.position);
+    this.physics.setProjectileVelocity(projectile.projectileId, projectile.velocity);
+    this.emitProjectileEvent(projectile, point, 'bounce', bounceStyle);
+  }
+
+  private splitProjectile(projectile: ActiveProjectileRuntime): void {
+    const splitPoint = { ...projectile.position };
+    this.removeProjectileRuntime(projectile.projectileId);
+    this.emitProjectileEvent(projectile, splitPoint, 'split', projectile.visualStyle);
+
+    const count = Math.max(1, projectile.fragmentCount);
+    const half = (count - 1) / 2;
+    for (let i = 0; i < count; i++) {
+      const yawOffset = (i - half) * projectile.fragmentSpread;
+      this.spawnProjectileRuntime({
+        ...projectile,
+        projectileId: `proj_${this.nextProjectileId++}`,
+        position: { ...splitPoint },
+        previousPosition: { ...splitPoint },
+        velocity: makeFragmentVelocityVec(projectile.velocity, yawOffset, projectile.fragmentSpeedScale),
+        visualStyle: 'splitter_fragment',
+        targetId: null,
+        age: 0,
+        lifetime: 4,
+        radius: this.getProjectileRadius('splitter_fragment'),
+        gravityScale: 1,
+        linearDamping: 0,
+        turnRate: 0,
+        targetRadius: 0,
+        blastRadius: projectile.fragmentBlastRadius,
+        damage: projectile.fragmentDamage,
+        terrainDamage: projectile.fragmentTerrainDamage,
+        airburstHeight: null,
+        splitTime: null,
+        bounceCount: 0,
+      });
+    }
+  }
+
+  private scheduleDrillBurst(projectile: ActiveProjectileRuntime, point: Vec3): void {
+    const horizontal = normalizeVec3({ x: projectile.velocity.x, y: 0, z: projectile.velocity.z });
+    const ownerTank = this.tanks.get(projectile.ownerId);
+    const fallback = ownerTank
+      ? { x: Math.sin(ownerTank.turretRotation), y: 0, z: Math.cos(ownerTank.turretRotation) }
+      : { x: 0, y: 0, z: 1 };
+    const direction = lengthVec3(horizontal) > 0.001 ? horizontal : normalizeVec3(fallback);
+    const eruptionXZ = addVec3(point, scaleVec3(direction, projectile.drillDistance));
+    const eruptionPoint = {
+      x: eruptionXZ.x,
+      y: this.heightmap.getHeight(eruptionXZ.x, eruptionXZ.z),
+      z: eruptionXZ.z,
+    };
+
+    this.scheduledStrikes.push({
+      strikeId: `strike_${this.nextStrikeId++}`,
+      kind: 'drill',
+      ownerId: projectile.ownerId,
+      weaponId: projectile.weaponId,
+      triggerAt: this.simTime + projectile.drillDelay,
+      position: eruptionPoint,
+      blastRadius: projectile.drillBlastRadius,
+      damage: projectile.drillDamage,
+      terrainDamage: projectile.drillTerrainDamage,
+      visualStyle: 'drill_burst',
+      spawnHeight: 0,
+    });
+  }
+
+  private spawnNapalmHazard(projectile: ActiveProjectileRuntime, point: Vec3): void {
+    const weapon = this.getWeaponById(projectile.weaponId);
+    const radius = weapon?.behaviorConfig?.burnRadius ?? 3;
+    const duration = weapon?.behaviorConfig?.burnDuration ?? 6;
+    const tickDamage = weapon?.behaviorConfig?.burnTickDamage ?? Math.max(1, Math.round(projectile.damage * 0.18));
+    const tickInterval = weapon?.behaviorConfig?.burnTickInterval ?? 0.4;
+    const groundPoint = { x: point.x, y: this.heightmap.getHeight(point.x, point.z), z: point.z };
+    const hazardId = `hazard_${this.nextHazardId++}`;
+
+    this.activeHazards.set(hazardId, {
+      hazardId,
+      ownerId: projectile.ownerId,
+      weaponId: projectile.weaponId,
+      type: 'napalm',
+      position: groundPoint,
+      radius,
+      armed: true,
+      timeRemaining: duration,
+      damage: tickDamage,
+      tickInterval,
+      tickTimer: tickInterval,
+      triggerRadius: 0,
+      blastRadius: radius,
+      terrainDamage: 0,
+    });
+  }
+
+  private deployMine(projectile: ActiveProjectileRuntime, point: Vec3): void {
+    const weapon = this.getWeaponById(projectile.weaponId);
+    const groundPoint = { x: point.x, y: this.heightmap.getHeight(point.x, point.z), z: point.z };
+    const armTime = weapon?.behaviorConfig?.mineArmTime ?? 0.75;
+    const lifetime = weapon?.behaviorConfig?.mineLifetime ?? 20;
+    const triggerRadius = weapon?.behaviorConfig?.mineTriggerRadius ?? 1.5;
+    const blastRadius = weapon?.behaviorConfig?.mineBlastRadius ?? projectile.blastRadius;
+    const damage = weapon?.behaviorConfig?.mineDamage ?? projectile.damage;
+    const terrainDamage = weapon?.behaviorConfig?.mineTerrainDamage ?? projectile.terrainDamage;
+    const hazardId = `hazard_${this.nextHazardId++}`;
+
+    this.removeProjectileRuntime(projectile.projectileId);
+    this.emitProjectileEvent(projectile, groundPoint, 'impact', 'mine_deploy');
+
+    this.activeHazards.set(hazardId, {
+      hazardId,
+      ownerId: projectile.ownerId,
+      weaponId: projectile.weaponId,
+      type: 'mine',
+      position: groundPoint,
+      radius: triggerRadius,
+      armed: false,
+      timeRemaining: lifetime,
+      damage,
+      tickInterval: 0,
+      tickTimer: armTime,
+      triggerRadius,
+      blastRadius,
+      terrainDamage,
+    });
+  }
+
+  private handleProjectileImpact(projectile: ActiveProjectileRuntime, impact: ProjectileImpact): void {
+    if (impact.hitTankId === projectile.ownerId && projectile.age < 0.15) return;
+
+    const { point, normal, hitTerrain } = this.buildProjectileCollisionContext(projectile, impact);
+
+    if (projectile.visualStyle === 'mine_deploy') {
+      this.deployMine(projectile, point);
+      return;
+    }
+
+    if (projectile.visualStyle === 'drill_entry') {
+      this.removeProjectileRuntime(projectile.projectileId);
+      this.emitProjectileEvent(projectile, point, 'impact', 'drill_entry');
+      this.scheduleDrillBurst(projectile, point);
+      return;
+    }
+
+    if (projectile.bounceCount > 0) {
+      this.bounceProjectile(projectile, point, normal);
+      return;
+    }
+
+    this.detonateProjectile(projectile, point, {
+      terrainDamage: hitTerrain ? projectile.terrainDamage : 0,
+    });
+
+    if (projectile.visualStyle === 'napalm_shell') {
+      this.spawnNapalmHazard(projectile, point);
+    }
+  }
+
+  private getDefaultVisualStyle(weapon: WeaponDefinition): ShotVisualStyle {
+    switch (weapon.behavior) {
+      case 'airburst':
+        return 'big_blast';
+      case 'split':
+        return 'splitter_parent';
+      case 'bounce':
+        return 'bouncer_parent';
+      case 'napalm':
+        return 'napalm_shell';
+      case 'seeker':
+        return 'seeker';
+      case 'mortar':
+        return 'mortar_shell';
+      case 'mine':
+        return 'mine_deploy';
+      case 'drill':
+        return 'drill_entry';
+      default:
+        return 'standard';
+    }
+  }
+
+  private getProjectileRadius(style: ShotVisualStyle): number {
+    switch (style) {
+      case 'big_blast': return 0.34;
+      case 'splitter_parent': return 0.22;
+      case 'splitter_fragment': return 0.14;
+      case 'bouncer_parent': return 0.22;
+      case 'bouncer_bounce': return 0.2;
+      case 'drill_entry': return 0.24;
+      case 'drill_burst': return 0.16;
+      case 'napalm_shell': return 0.22;
+      case 'seeker': return 0.24;
+      case 'mortar_shell': return 0.28;
+      case 'mine_deploy': return 0.2;
+      default: return 0.2;
     }
   }
 
@@ -679,114 +998,78 @@ export class Room {
   }
 
   private tickProjectiles(dt: number): void {
-    for (const [projectileId, projectile] of this.activeProjectiles) {
+    const impacts = this.physics.consumeProjectileImpacts();
+
+    for (const [projectileId, projectile] of Array.from(this.activeProjectiles.entries())) {
       projectile.age += dt;
-
-      if (!projectile.targetId || !this.isTargetValid(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position)) {
-        projectile.targetId = this.findNearestEnemy(projectile.position, projectile.ownerId, projectile.targetRadius);
+      if (!this.syncProjectileRuntime(projectile)) {
+        this.activeProjectiles.delete(projectileId);
       }
+    }
 
-      const speed = Math.sqrt(
-        projectile.velocity.x * projectile.velocity.x +
-        projectile.velocity.y * projectile.velocity.y +
-        projectile.velocity.z * projectile.velocity.z
-      ) || 0.001;
+    for (const impact of impacts) {
+      const projectile = this.activeProjectiles.get(impact.projectileId);
+      if (!projectile) continue;
+      this.handleProjectileImpact(projectile, impact);
+    }
 
-      let direction = {
-        x: projectile.velocity.x / speed,
-        y: projectile.velocity.y / speed,
-        z: projectile.velocity.z / speed,
-      };
+    const maxX = this.heightmap.width * this.heightmap.cellSize;
+    const maxZ = this.heightmap.height * this.heightmap.cellSize;
 
-      if (projectile.targetId) {
-        const target = this.tanks.get(projectile.targetId);
-        if (target && target.alive) {
-          const desired = {
-            x: target.position.x - projectile.position.x,
-            y: target.position.y + 0.8 - projectile.position.y,
-            z: target.position.z - projectile.position.z,
-          };
-          const desiredLen = Math.sqrt(desired.x * desired.x + desired.y * desired.y + desired.z * desired.z) || 1;
-          const desiredDir = {
-            x: desired.x / desiredLen,
-            y: desired.y / desiredLen,
-            z: desired.z / desiredLen,
-          };
-
-          const alignment = Math.max(-1, Math.min(1, direction.x * desiredDir.x + direction.y * desiredDir.y + direction.z * desiredDir.z));
-          const angle = Math.acos(alignment);
-          const maxTurn = projectile.turnRate * dt;
-          const blend = angle <= maxTurn || angle === 0 ? 1 : maxTurn / angle;
-
-          direction = {
-            x: direction.x + (desiredDir.x - direction.x) * blend,
-            y: direction.y + (desiredDir.y - direction.y) * blend,
-            z: direction.z + (desiredDir.z - direction.z) * blend,
-          };
-          const dirLen = Math.sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z) || 1;
-          direction.x /= dirLen;
-          direction.y /= dirLen;
-          direction.z /= dirLen;
-        }
-      }
-
-      projectile.velocity = {
-        x: direction.x * speed,
-        y: direction.y * speed,
-        z: direction.z * speed,
-      };
-
-      const prevPos = { ...projectile.position };
-      projectile.position = {
-        x: projectile.position.x + projectile.velocity.x * dt,
-        y: projectile.position.y + projectile.velocity.y * dt,
-        z: projectile.position.z + projectile.velocity.z * dt,
-      };
-
-      let impactPoint: Vec3 | null = null;
-      const terrainY = this.heightmap.getHeight(projectile.position.x, projectile.position.z);
-      if (projectile.position.y <= terrainY) {
-        impactPoint = { x: projectile.position.x, y: terrainY, z: projectile.position.z };
-      }
-
-      if (!impactPoint) {
-        for (const tank of this.tanks.values()) {
-          if (!tank.alive || tank.playerId === projectile.ownerId) continue;
-          const dx = tank.position.x - projectile.position.x;
-          const dy = tank.position.y + 0.8 - projectile.position.y;
-          const dz = tank.position.z - projectile.position.z;
-          if (Math.sqrt(dx * dx + dy * dy + dz * dz) <= 1.1) {
-            impactPoint = { x: projectile.position.x, y: projectile.position.y, z: projectile.position.z };
-            break;
-          }
-        }
-      }
-
-      if (!impactPoint) {
-        const outOfBounds =
-          projectile.position.x < -10 || projectile.position.x > this.heightmap.width * this.heightmap.cellSize + 10 ||
-          projectile.position.z < -10 || projectile.position.z > this.heightmap.height * this.heightmap.cellSize + 10 ||
-          projectile.position.y < -10;
-        if (outOfBounds || projectile.age >= projectile.lifetime) {
-          this.activeProjectiles.delete(projectileId);
+    for (const [projectileId, projectile] of Array.from(this.activeProjectiles.entries())) {
+      if (projectile.airburstHeight !== null) {
+        const terrainY = this.heightmap.getHeight(projectile.position.x, projectile.position.z);
+        if (projectile.velocity.y < 0 && projectile.position.y <= terrainY + projectile.airburstHeight) {
+          this.detonateProjectile(projectile, { ...projectile.position }, {
+            terrainDamage: 0,
+            visualStyle: 'big_blast',
+          });
           continue;
         }
       }
 
-      if (impactPoint) {
-        const damageTotals: DamageTotals = new Map();
-        const terrainPatch = applyImpact({
-          point: impactPoint,
-          blastRadius: projectile.blastRadius,
-          damage: projectile.damage,
-          terrainDamage: projectile.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals);
+      if (projectile.splitTime !== null && projectile.age >= projectile.splitTime) {
+        this.splitProjectile(projectile);
+        continue;
+      }
 
-        const result = createShotResult(projectile.ownerId, projectile.weaponId, [
-          makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', terrainPatch, projectile.blastRadius, 'seeker'),
-        ], damageTotals);
-        this.activeProjectiles.delete(projectileId);
-        this.emitShotResultNow(result, projectile.ownerId, projectile.weaponId);
+      if (projectile.visualStyle === 'seeker') {
+        if (!projectile.targetId || !this.isTargetValid(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position)) {
+          projectile.targetId = this.findNearestEnemy(projectile.position, projectile.ownerId, projectile.targetRadius);
+        }
+
+        const speed = lengthVec3(projectile.velocity);
+        if (speed > 0.001 && projectile.targetId) {
+          const target = this.tanks.get(projectile.targetId);
+          if (target && target.alive) {
+            const currentDir = normalizeVec3(projectile.velocity);
+            const desiredDir = normalizeVec3({
+              x: target.position.x - projectile.position.x,
+              y: target.position.y + 0.8 - projectile.position.y,
+              z: target.position.z - projectile.position.z,
+            });
+            const alignment = clamp(dotVec3(currentDir, desiredDir), -1, 1);
+            const angle = Math.acos(alignment);
+            const maxTurn = projectile.turnRate * dt;
+            const blend = angle <= maxTurn || angle === 0 ? 1 : maxTurn / angle;
+            const steeredDir = normalizeVec3({
+              x: currentDir.x + (desiredDir.x - currentDir.x) * blend,
+              y: currentDir.y + (desiredDir.y - currentDir.y) * blend,
+              z: currentDir.z + (desiredDir.z - currentDir.z) * blend,
+            });
+            projectile.velocity = scaleVec3(steeredDir, speed);
+            this.physics.setProjectileVelocity(projectile.projectileId, projectile.velocity);
+          }
+        }
+      }
+
+      const outOfBounds =
+        projectile.position.x < -12 || projectile.position.x > maxX + 12 ||
+        projectile.position.z < -12 || projectile.position.z > maxZ + 12 ||
+        projectile.position.y < -12;
+
+      if (outOfBounds || projectile.age >= projectile.lifetime) {
+        this.removeProjectileRuntime(projectileId);
       }
     }
   }
@@ -820,6 +1103,11 @@ export class Room {
               terrainDamage: hazard.terrainDamage,
             }, this.heightmap, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', terrainPatch, damageTotals);
+            this.physics.applyExplosionImpulse(
+              hazard.position,
+              hazard.blastRadius,
+              Math.max(hazard.damage * 18, hazard.blastRadius * 120),
+            );
             this.activeHazards.delete(hazardId);
             this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
             continue;
@@ -838,6 +1126,40 @@ export class Room {
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.triggerAt > this.simTime);
 
     for (const strike of ready) {
+      if (strike.kind === 'mortar') {
+        const ownerTank = this.tanks.get(strike.ownerId);
+        const weapon = this.getWeaponById(strike.weaponId);
+        if (!ownerTank || !weapon) continue;
+
+        const spawnPoint = {
+          x: strike.position.x,
+          y: strike.position.y + strike.spawnHeight,
+          z: strike.position.z,
+        };
+
+        this.spawnProjectileRuntime(this.buildProjectileRuntime(ownerTank, weapon, {
+          position: spawnPoint,
+          previousPosition: { ...spawnPoint },
+          velocity: { x: 0, y: -6, z: 0 },
+          visualStyle: 'mortar_shell',
+          age: 0,
+          lifetime: 6,
+          radius: this.getProjectileRadius('mortar_shell'),
+          gravityScale: 1,
+          linearDamping: 0,
+          targetId: null,
+          turnRate: 0,
+          targetRadius: 0,
+          blastRadius: strike.blastRadius,
+          damage: strike.damage,
+          terrainDamage: strike.terrainDamage,
+          airburstHeight: null,
+          splitTime: null,
+          bounceCount: 0,
+        }));
+        continue;
+      }
+
       const damageTotals: DamageTotals = new Map();
       const terrainPatch = applyImpact({
         point: strike.position,
@@ -845,21 +1167,11 @@ export class Room {
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
       }, this.heightmap, this.getTankList(), damageTotals);
-
-      if (strike.kind === 'mortar') {
-        const start = {
-          x: strike.position.x,
-          y: strike.position.y + strike.spawnHeight,
-          z: strike.position.z,
-        };
-        const trajectory = createLinearTrajectory(start, strike.position, 0.8);
-        const result = createShotResult(strike.ownerId, strike.weaponId, [
-          makeStep(0, trajectory, strike.position, 'impact', terrainPatch, strike.blastRadius, 'mortar_shell'),
-        ], damageTotals);
-        this.scheduleShotResult(result, strike.ownerId, strike.weaponId);
-        continue;
-      }
-
+      this.physics.applyExplosionImpulse(
+        strike.position,
+        strike.blastRadius,
+        Math.max(strike.damage * 18, strike.blastRadius * 120),
+      );
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, terrainPatch, damageTotals);
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
@@ -969,6 +1281,75 @@ export class Room {
       resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
     };
   }
+}
+
+function lengthVec3(v: Vec3): number {
+  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+function normalizeVec3(v: Vec3): Vec3 {
+  const len = lengthVec3(v) || 1;
+  return {
+    x: v.x / len,
+    y: v.y / len,
+    z: v.z / len,
+  };
+}
+
+function addVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.x + b.x,
+    y: a.y + b.y,
+    z: a.z + b.z,
+  };
+}
+
+function subVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.x - b.x,
+    y: a.y - b.y,
+    z: a.z - b.z,
+  };
+}
+
+function scaleVec3(v: Vec3, amount: number): Vec3 {
+  return {
+    x: v.x * amount,
+    y: v.y * amount,
+    z: v.z * amount,
+  };
+}
+
+function dotVec3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function reflectVec3(velocity: Vec3, normal: Vec3, damping: number): Vec3 {
+  const contactNormal = normalizeVec3(normal);
+  const factor = 2 * dotVec3(velocity, contactNormal);
+  const reflected = subVec3(velocity, scaleVec3(contactNormal, factor));
+  const bounced = scaleVec3(reflected, damping);
+  bounced.y = Math.max(Math.abs(bounced.y), 2.5);
+  return bounced;
+}
+
+function makeFragmentVelocityVec(baseVelocity: Vec3, yawOffset: number, speedScale: number): Vec3 {
+  const baseSpeed = lengthVec3(baseVelocity) * speedScale;
+  const horizontal = Math.sqrt(baseVelocity.x ** 2 + baseVelocity.z ** 2);
+  const baseYaw = Math.atan2(baseVelocity.x, baseVelocity.z);
+  const basePitch = Math.atan2(baseVelocity.y, Math.max(horizontal, 0.0001));
+  const pitch = Math.max(-0.65, basePitch - 0.18);
+  const yaw = baseYaw + yawOffset;
+
+  return {
+    x: Math.sin(yaw) * Math.cos(pitch) * baseSpeed,
+    y: Math.sin(pitch) * baseSpeed,
+    z: Math.cos(yaw) * Math.cos(pitch) * baseSpeed,
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function isValidHex(c?: string): boolean {

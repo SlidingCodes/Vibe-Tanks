@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { MovementInput, PlayerId, TankState } from '../../../shared/src/types/index';
+import { MovementInput, PlayerId, TankState, Vec3 } from '../../../shared/src/types/index';
 import { GRAVITY, TANK_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
@@ -52,6 +52,15 @@ const TOP_FORWARD_SPEED = TANK_SPEED;
 const TURN_MIX_MOVING = 1.6;
 const TURN_MIX_PIVOT = 1.0;
 
+// ── Projectile tuning / filtering ──────────────────────────────────
+const PROJECTILE_MASS = 1.0;
+const GROUP_TERRAIN = 0x0001;
+const GROUP_TANK = 0x0002;
+const GROUP_PROJECTILE = 0x0004;
+const TERRAIN_COLLISION_GROUPS = interactionGroups(GROUP_TERRAIN, GROUP_TANK | GROUP_PROJECTILE);
+const TANK_COLLISION_GROUPS = interactionGroups(GROUP_TANK, GROUP_TERRAIN | GROUP_PROJECTILE | GROUP_TANK);
+const PROJECTILE_COLLISION_GROUPS = interactionGroups(GROUP_PROJECTILE, GROUP_TERRAIN | GROUP_TANK);
+
 interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
@@ -60,6 +69,35 @@ interface TankEntry {
   leftBrake: number;
   rightEngine: number;
   rightBrake: number;
+}
+
+interface ProjectileEntry {
+  ownerId: PlayerId;
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  radius: number;
+}
+
+export interface ProjectileSpawnConfig {
+  projectileId: string;
+  ownerId: PlayerId;
+  position: Vec3;
+  velocity: Vec3;
+  radius: number;
+  gravityScale?: number;
+  linearDamping?: number;
+}
+
+export interface ProjectilePhysicsState {
+  position: Vec3;
+  velocity: Vec3;
+}
+
+export interface ProjectileImpact {
+  projectileId: string;
+  point: Vec3;
+  hitTankId: PlayerId | null;
+  hitTerrain: boolean;
 }
 
 /**
@@ -71,13 +109,19 @@ interface TankEntry {
 export class RapierWorld {
   world: RAPIER.World;
   private heightmap: Heightmap;
+  private eventQueue: RAPIER.EventQueue;
   private terrainBody: RAPIER.RigidBody | null = null;
   private terrainCollider: RAPIER.Collider | null = null;
   private tanks: Map<PlayerId, TankEntry> = new Map();
+  private tankColliderOwners: Map<number, PlayerId> = new Map();
+  private projectiles: Map<string, ProjectileEntry> = new Map();
+  private projectileColliderIds: Map<number, string> = new Map();
+  private pendingProjectileImpacts: ProjectileImpact[] = [];
 
   constructor(heightmap: Heightmap) {
     this.heightmap = heightmap;
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
+    this.eventQueue = new RAPIER.EventQueue(true);
     this.rebuildTerrain();
   }
 
@@ -104,11 +148,13 @@ export class RapierWorld {
     );
     this.terrainBody = this.world.createRigidBody(bodyDesc);
     const colliderDesc = RAPIER.ColliderDesc.heightfield(nrows, ncols, flat, scale)
-      .setFriction(1.0);
+      .setFriction(1.0)
+      .setCollisionGroups(TERRAIN_COLLISION_GROUPS);
     this.terrainCollider = this.world.createCollider(colliderDesc, this.terrainBody);
 
-    // Wake all tanks so they resettle onto the new surface immediately.
+    // Wake all tanks and projectiles so they resettle onto the new surface immediately.
     for (const entry of this.tanks.values()) entry.body.wakeUp();
+    for (const entry of this.projectiles.values()) entry.body.wakeUp();
   }
 
   addTank(tank: TankState): void {
@@ -134,7 +180,8 @@ export class RapierWorld {
     const colliderDesc = RAPIER.ColliderDesc.cuboid(HULL_HALF.x, HULL_HALF.y, HULL_HALF.z)
       .setTranslation(0, -0.15, 0)
       .setDensity(HULL_MASS / (HULL_HALF.x * HULL_HALF.y * HULL_HALF.z * 8))
-      .setFriction(0.9);
+      .setFriction(0.9)
+      .setCollisionGroups(TANK_COLLISION_GROUPS);
     const collider = this.world.createCollider(colliderDesc, body);
 
     const vehicle = this.world.createVehicleController(body);
@@ -154,6 +201,7 @@ export class RapierWorld {
       vehicle.setWheelSideFrictionStiffness(i, WHEEL_SIDE_FRICTION);
     });
 
+    this.tankColliderOwners.set(collider.handle, tank.playerId);
     this.tanks.set(tank.playerId, {
       body,
       collider,
@@ -168,6 +216,7 @@ export class RapierWorld {
   removeTank(playerId: PlayerId): void {
     const entry = this.tanks.get(playerId);
     if (!entry) return;
+    this.tankColliderOwners.delete(entry.collider.handle);
     this.world.removeRigidBody(entry.body);
     this.tanks.delete(playerId);
   }
@@ -175,6 +224,112 @@ export class RapierWorld {
   resetTank(tank: TankState): void {
     this.removeTank(tank.playerId);
     this.addTank(tank);
+  }
+
+  addProjectile(config: ProjectileSpawnConfig): void {
+    this.removeProjectile(config.projectileId);
+
+    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(config.position.x, config.position.y, config.position.z)
+      .setLinvel(config.velocity.x, config.velocity.y, config.velocity.z)
+      .setGravityScale(config.gravityScale ?? 1)
+      .setLinearDamping(config.linearDamping ?? 0)
+      .setAngularDamping(0.4)
+      .lockRotations()
+      .setCcdEnabled(true);
+    const body = this.world.createRigidBody(bodyDesc);
+
+    const colliderDesc = RAPIER.ColliderDesc.ball(config.radius)
+      .setMass(PROJECTILE_MASS)
+      .setFriction(0)
+      .setRestitution(0)
+      .setCollisionGroups(PROJECTILE_COLLISION_GROUPS)
+      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    const collider = this.world.createCollider(colliderDesc, body);
+
+    this.projectiles.set(config.projectileId, {
+      ownerId: config.ownerId,
+      body,
+      collider,
+      radius: config.radius,
+    });
+    this.projectileColliderIds.set(collider.handle, config.projectileId);
+  }
+
+  removeProjectile(projectileId: string): void {
+    const entry = this.projectiles.get(projectileId);
+    if (!entry) return;
+    this.projectileColliderIds.delete(entry.collider.handle);
+    this.world.removeRigidBody(entry.body);
+    this.projectiles.delete(projectileId);
+  }
+
+  clearProjectiles(): void {
+    for (const projectileId of Array.from(this.projectiles.keys())) {
+      this.removeProjectile(projectileId);
+    }
+    this.pendingProjectileImpacts = [];
+  }
+
+  hasProjectile(projectileId: string): boolean {
+    return this.projectiles.has(projectileId);
+  }
+
+  getProjectileState(projectileId: string): ProjectilePhysicsState | null {
+    const entry = this.projectiles.get(projectileId);
+    if (!entry) return null;
+    const t = entry.body.translation();
+    const v = entry.body.linvel();
+    return {
+      position: { x: t.x, y: t.y, z: t.z },
+      velocity: { x: v.x, y: v.y, z: v.z },
+    };
+  }
+
+  setProjectileVelocity(projectileId: string, velocity: Vec3): void {
+    const entry = this.projectiles.get(projectileId);
+    if (!entry) return;
+    entry.body.setLinvel(velocity, true);
+  }
+
+  setProjectileTranslation(projectileId: string, position: Vec3): void {
+    const entry = this.projectiles.get(projectileId);
+    if (!entry) return;
+    entry.body.setTranslation(position, true);
+  }
+
+  getProjectileRadius(projectileId: string): number | null {
+    return this.projectiles.get(projectileId)?.radius ?? null;
+  }
+
+  applyExplosionImpulse(center: Vec3, radius: number, strength: number, upwardBias = 0.22): void {
+    if (radius <= 0 || strength <= 0) return;
+
+    for (const entry of this.tanks.values()) {
+      const bodyPos = entry.body.translation();
+      const delta = {
+        x: bodyPos.x - center.x,
+        y: bodyPos.y - center.y + upwardBias,
+        z: bodyPos.z - center.z,
+      };
+      const dist = Math.sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+      if (dist <= 0.001 || dist > radius) continue;
+
+      const falloff = 1 - dist / radius;
+      const impulseMag = strength * falloff;
+      const impulse = {
+        x: (delta.x / dist) * impulseMag,
+        y: (delta.y / dist) * impulseMag,
+        z: (delta.z / dist) * impulseMag,
+      };
+      entry.body.applyImpulse(impulse, true);
+    }
+  }
+
+  consumeProjectileImpacts(): ProjectileImpact[] {
+    const impacts = this.pendingProjectileImpacts;
+    this.pendingProjectileImpacts = [];
+    return impacts;
   }
 
   /** Record the driver input; forces are applied during step(). */
@@ -223,7 +378,8 @@ export class RapierWorld {
       }
       entry.vehicle.updateVehicle(dt);
     }
-    this.world.step();
+    this.world.step(this.eventQueue);
+    this.captureProjectileImpacts();
   }
 
   /** Copy the resolved body pose back into the gameplay TankState. */
@@ -239,6 +395,38 @@ export class RapierWorld {
     tank.bodyRotation = e.y;
     tank.bodyPitch = e.x;
     tank.bodyRoll = e.z;
+  }
+
+  private captureProjectileImpacts(): void {
+    const seenProjectileIds = new Set<string>();
+    this.eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+      if (!started) return;
+
+      const projectileIdA = this.projectileColliderIds.get(handle1);
+      const projectileIdB = this.projectileColliderIds.get(handle2);
+      if (!projectileIdA && !projectileIdB) return;
+      if (projectileIdA && projectileIdB) return;
+
+      const projectileId = projectileIdA ?? projectileIdB!;
+      if (seenProjectileIds.has(projectileId)) return;
+
+      const projectile = this.projectiles.get(projectileId);
+      if (!projectile) return;
+
+      const otherHandle = projectileIdA ? handle2 : handle1;
+      const hitTankId = this.tankColliderOwners.get(otherHandle) ?? null;
+      const hitTerrain = this.terrainCollider?.handle === otherHandle;
+      if (!hitTerrain && !hitTankId) return;
+
+      const point = projectile.body.translation();
+      this.pendingProjectileImpacts.push({
+        projectileId,
+        point: { x: point.x, y: point.y, z: point.z },
+        hitTankId,
+        hitTerrain,
+      });
+      seenProjectileIds.add(projectileId);
+    });
   }
 }
 
@@ -259,6 +447,10 @@ function driveCommandToForces(command: number, forwardSpeed: number, allowCounte
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function interactionGroups(membership: number, filter: number): number {
+  return (membership << 16) | filter;
 }
 
 
