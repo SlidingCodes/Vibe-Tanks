@@ -237,6 +237,7 @@ export function updateTrajectoryPreview(
   vz: number,
   weapon: WeaponDefinition,
   aimTarget?: Vec3 | null,
+  resolvedEndPoint?: Vec3 | null,
 ): void {
   if (!initialized) init(scene);
 
@@ -351,8 +352,8 @@ export function updateTrajectoryPreview(
   if (weapon.behavior === 'rail') {
     parentMat.color.setHex(0xaff4ff);
     const dir = normalize(startVel);
-    const end = aimTarget
-      ? { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z }
+    const end = resolvedEndPoint
+      ? { x: resolvedEndPoint.x, y: resolvedEndPoint.y, z: resolvedEndPoint.z }
       : {
           x: startPos.x + dir.x * (weapon.behaviorConfig?.railRange ?? 50),
           y: startPos.y + dir.y * (weapon.behaviorConfig?.railRange ?? 50),
