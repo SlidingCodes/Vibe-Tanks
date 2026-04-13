@@ -18,7 +18,7 @@ import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
-  setVirtualWeaponSlot, getVirtualAimDirect, setAimContext, setEnemyPositions,
+  setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -86,6 +86,7 @@ function getSelectedWeapon() {
 // animate-loop handler picks it up uniformly.
 const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
 hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
+setWeaponCount(WEAPONS.length);
 
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();

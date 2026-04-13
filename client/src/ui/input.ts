@@ -3,6 +3,12 @@ import { MovementInput } from '@shared/types/index';
 
 const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
+let currentWeaponSlot = 0;
+let weaponCount = 1;
+
+export function setWeaponCount(count: number): void {
+  weaponCount = count;
+}
 
 window.addEventListener('keydown', (e) => {
   if (!keys[e.code] && e.code.startsWith('Digit')) {
@@ -10,10 +16,18 @@ window.addEventListener('keydown', (e) => {
     const slot = digit === 0 ? 9 : digit - 1;
     if (Number.isInteger(slot) && slot >= 0) {
       pendingWeaponSlot = slot;
+      currentWeaponSlot = slot;
     }
   }
 
   keys[e.code] = true;
+});
+
+window.addEventListener('wheel', (e) => {
+  if (weaponCount <= 1) return;
+  const dir = e.deltaY > 0 ? 1 : -1;
+  currentWeaponSlot = ((currentWeaponSlot + dir) % weaponCount + weaponCount) % weaponCount;
+  pendingWeaponSlot = currentWeaponSlot;
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -84,6 +98,7 @@ export function triggerVirtualFire(): void {
 
 export function setVirtualWeaponSlot(slot: number): void {
   pendingWeaponSlot = slot;
+  currentWeaponSlot = slot;
 }
 
 // ── Direct aim override (mobile aim bar) ──
