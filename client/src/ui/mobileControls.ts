@@ -19,8 +19,9 @@ const DIAGONAL_THRESHOLD = Math.cos(Math.PI / 8);
 
 const PITCH_MIN = -(10 * Math.PI) / 180;    // -10° so you can shoot downhill when tilted
 const PITCH_MAX = Math.PI / 2.2;            // ~81.8°, matches server solver cap
-const YAW_RATE_MAX = Math.PI * 0.9;         // ~162°/s when finger at bar edge — pan speed
-const YAW_RATE_CURVE = 1.4;                 // >1 = gentle near center, fast at edges
+const YAW_RATE_MAX = Math.PI / 3;           // ~60°/s at bar edge — the bar is mainly a pitch meter,
+                                             // yaw is just a nudge around aim-assist
+const YAW_RATE_CURVE = 1.6;                 // gentle near center, still tame at edges
 const ASSIST_CONE = Math.PI / 4;            // ±45° capture window for aim-assist
 const ASSIST_RATE = 5.0;                    // exponential pull rate toward nearest-to-aim enemy
 

@@ -364,7 +364,7 @@ function animate(): void {
         barrelPitch = Math.PI / 4; // out of range: max range
       } else {
         const u = (dist - Math.sqrt(disc)) / (2 * a);
-        barrelPitch = Math.max(0.02, Math.min(Math.PI / 2.2, Math.atan(u)));
+        barrelPitch = Math.max(-(10 * Math.PI) / 180, Math.min(Math.PI / 2.2, Math.atan(u)));
       }
 
       socket.emit('aim_update', { turretRotation: turretRot, barrelPitch });
