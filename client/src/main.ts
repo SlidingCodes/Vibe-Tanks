@@ -17,7 +17,7 @@ import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
-  setVirtualWeaponSlot, getVirtualAimWorld, setAimContext,
+  setVirtualWeaponSlot, getVirtualAimDirect, setAimContext, setEnemyPositions,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -307,19 +307,43 @@ function animate(): void {
     // Update local tank mesh from predicted state
     updateLocalTankMesh(predictedState);
 
-    // Expose local tank pose to the mobile aim joystick.
+    // Expose local tank pose + enemy positions to the mobile aim bar.
     setAimContext(
       predictedState.position.x,
       predictedState.position.y,
       predictedState.position.z,
       predictedState.bodyRotation,
     );
+    {
+      const enemies: { x: number; z: number }[] = [];
+      for (const [pid, mesh] of getAllTankMeshes()) {
+        if (pid === myId) continue;
+        const ts = latestTanks.find((t) => t.playerId === pid);
+        if (ts && !ts.alive) continue;
+        enemies.push({ x: mesh.group.position.x, z: mesh.group.position.z });
+      }
+      setEnemyPositions(enemies);
+    }
 
-    // ── Aim: mobile virtual-world aim takes precedence over camera raycast ──
-    const worldAim = getVirtualAimWorld();
-    const aimTarget = worldAim
-      ? new THREE.Vector3(worldAim.x, predictedState.position.y, worldAim.z)
-      : getAimTarget(camera, predictedState.position.y);
+    // ── Aim: mobile direct (yaw, pitch) bypasses the ballistic solver ──
+    const aimDirect = getVirtualAimDirect();
+    if (aimDirect) {
+      const v = selectedWeapon.projectileSpeed;
+      socket.emit('aim_update', {
+        turretRotation: aimDirect.yaw,
+        barrelPitch: aimDirect.pitch,
+      });
+      predictedState.turretRotation = aimDirect.yaw;
+      predictedState.barrelPitch = aimDirect.pitch;
+      updateLocalTankMesh(predictedState);
+      const muzzle = computeMuzzle(predictedState);
+      updateTrajectoryPreview(
+        scene,
+        muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
+        muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+        selectedWeapon,
+      );
+    } else { const aimTarget = getAimTarget(camera, predictedState.position.y);
     if (aimTarget) {
       const dx = aimTarget.x - predictedState.position.x;
       const dz = aimTarget.z - predictedState.position.z;
@@ -360,6 +384,7 @@ function animate(): void {
       );
     } else {
       hideTrajectoryPreview();
+    }
     }
 
     // ── Click to fire ──

@@ -88,18 +88,28 @@ export function setVirtualWeaponSlot(slot: number): void {
   pendingWeaponSlot = slot;
 }
 
-// ── World-space aim override (mobile aim joystick) ──
-// When set, main.ts uses this world-XZ point directly as the aim target and
-// skips the camera raycast. Cleared by mobileControls on touch release.
-let virtualAimWorld: { x: number; z: number } | null = null;
-export function setVirtualAimWorld(x: number, z: number): void {
-  virtualAimWorld = { x, z };
+// ── Direct aim override (mobile aim bar) ──
+// When set, main.ts bypasses the camera raycast + ballistic solver and
+// feeds (yaw, pitch) straight to the tank state / server. Used by the
+// pitch-bar + aim-assist mobile scheme.
+let virtualAimDirect: { yaw: number; pitch: number } | null = null;
+export function setVirtualAimDirect(yaw: number, pitch: number): void {
+  virtualAimDirect = { yaw, pitch };
 }
-export function clearVirtualAimWorld(): void {
-  virtualAimWorld = null;
+export function clearVirtualAimDirect(): void {
+  virtualAimDirect = null;
 }
-export function getVirtualAimWorld(): { x: number; z: number } | null {
-  return virtualAimWorld;
+export function getVirtualAimDirect(): { yaw: number; pitch: number } | null {
+  return virtualAimDirect;
+}
+
+// Enemy positions for mobile aim-assist. main.ts refreshes this each frame.
+let enemyPositions: { x: number; z: number }[] = [];
+export function setEnemyPositions(list: { x: number; z: number }[]): void {
+  enemyPositions = list;
+}
+export function getEnemyPositions(): { x: number; z: number }[] {
+  return enemyPositions;
 }
 
 // Aim context: main.ts pushes the local tank's pose each frame so the

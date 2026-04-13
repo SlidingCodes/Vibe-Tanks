@@ -1,36 +1,38 @@
 import {
   setVirtualKey, triggerVirtualFire,
-  setVirtualAimWorld, getAimContext,
+  setVirtualAimDirect, getAimContext, getEnemyPositions,
 } from './input';
 
 /**
- * Brawl-Stars-style touch scheme:
- *  - Left joystick: movement, mapped to WASD booleans as before.
- *  - Right joystick ("aim"): touch-down opens aiming, drag sets direction
- *    (magnitude → range / pitch). Releasing after a drag fires along the
- *    current aim; a tap (no meaningful drag) fires straight ahead in the
- *    tank's body direction.
+ * Pocket-Tanks-style aim scheme:
+ *  - Left joystick: movement (WASD booleans).
+ *  - Right vertical bar: touch anywhere to grip; Y controls barrel pitch
+ *    (top = max arc, bottom = flat), X gives a small ±20° yaw trim with
+ *    deliberately narrow angular range for fine control. Release fires.
+ *  - Aim-assist: yaw auto-tracks the nearest alive enemy every frame
+ *    (plus the user's trim). Without enemies, yaw = body heading + trim.
  */
 
 const DEADZONE = 0.16;
 const JOYSTICK_RADIUS = 60;
 const DIAGONAL_THRESHOLD = Math.cos(Math.PI / 8);
 
-const AIM_RADIUS = 60;                  // px of knob travel on the aim joystick
-const AIM_MIN_RANGE = 6;                // world units at zero drag
-const AIM_MAX_RANGE = 32;               // world units at full drag
-const TAP_MAX_DRAG_PX = 10;             // below this total drag a release = tap = auto-fire forward
+const PITCH_MIN = 0.08;                     // ~4.6°, nearly flat
+const PITCH_MAX = Math.PI / 2.2;            // ~81.8°, matches server solver cap
+const TRIM_MAX  = (20 * Math.PI) / 180;     // ±20° lateral trim at full edge
 
 export function setupMobileControls(): void {
   const baseEl = document.getElementById('mc-joystick-base');
   const knobEl = document.getElementById('mc-joystick-knob');
-  const aimBaseEl = document.getElementById('mc-aim-base');
-  const aimKnobEl = document.getElementById('mc-aim-knob');
-  if (!baseEl || !knobEl || !aimBaseEl || !aimKnobEl) return;
+  const barEl = document.getElementById('mc-aim-bar');
+  const barKnobEl = document.getElementById('mc-aim-bar-knob');
+  const barFillEl = document.getElementById('mc-aim-bar-fill');
+  if (!baseEl || !knobEl || !barEl || !barKnobEl || !barFillEl) return;
   const base = baseEl as HTMLDivElement;
   const knob = knobEl as HTMLDivElement;
-  const aimBase = aimBaseEl as HTMLDivElement;
-  const aimKnob = aimKnobEl as HTMLDivElement;
+  const bar = barEl as HTMLDivElement;
+  const barKnob = barKnobEl as HTMLDivElement;
+  const barFill = barFillEl as HTMLDivElement;
 
   // ── Joystick ──
   let joyTouchId: number | null = null;
@@ -99,85 +101,95 @@ export function setupMobileControls(): void {
     setVirtualKey('KeyD', false);
   }
 
-  // ── Aim joystick (right side, Brawl-Stars style) ──
-  let aimTouchId: number | null = null;
-  let aimOrigin = { x: 0, y: 0 };
-  let aimMaxDrag = 0;
-  let lastAim = { dx: 0, dy: 0 };
+  // ── Aim bar (right side, pitch + trim with aim-assist) ──
+  let barTouchId: number | null = null;
+  let pitchT = 0.5;   // 0 = flat, 1 = max arc
+  let trimT = 0;      // -1 (left) .. +1 (right)
 
-  aimBase.addEventListener('touchstart', (e) => {
-    if (aimTouchId !== null) return;
+  bar.addEventListener('touchstart', (e) => {
+    if (barTouchId !== null) return;
     const t = e.changedTouches[0];
-    aimTouchId = t.identifier;
-    const rect = aimBase.getBoundingClientRect();
-    aimOrigin = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    aimMaxDrag = 0;
-    lastAim = { dx: 0, dy: 0 };
-    aimBase.classList.add('active');
-    updateAim(t.clientX, t.clientY);
+    barTouchId = t.identifier;
+    bar.classList.add('active');
+    readTouch(t.clientX, t.clientY);
     e.preventDefault();
   }, { passive: false });
 
   window.addEventListener('touchmove', (e) => {
-    if (aimTouchId === null) return;
+    if (barTouchId === null) return;
     for (const t of Array.from(e.changedTouches)) {
-      if (t.identifier === aimTouchId) {
-        updateAim(t.clientX, t.clientY);
+      if (t.identifier === barTouchId) {
+        readTouch(t.clientX, t.clientY);
         e.preventDefault();
         return;
       }
     }
   }, { passive: false });
 
-  const endAim = (e: TouchEvent) => {
-    if (aimTouchId === null) return;
+  const endBar = (e: TouchEvent) => {
+    if (barTouchId === null) return;
     for (const t of Array.from(e.changedTouches)) {
-      if (t.identifier === aimTouchId) {
-        aimTouchId = null;
-        aimKnob.style.transform = 'translate(0, 0)';
-        aimBase.classList.remove('active');
-        // Tap → auto-fire straight ahead; drag → fire along current aim.
-        // The virtual aim target is intentionally NOT cleared on release
-        // so the trajectory preview stays visible until the next touch
-        // repositions it.
-        if (aimMaxDrag < TAP_MAX_DRAG_PX) writeAimFromOffset(0, -AIM_RADIUS * 0.5);
+      if (t.identifier === barTouchId) {
+        barTouchId = null;
+        bar.classList.remove('active');
+        // Any release = fire. Pitch/trim persist so the next shot re-uses
+        // the same arc until the player adjusts.
         triggerVirtualFire();
         return;
       }
     }
   };
-  window.addEventListener('touchend', endAim);
-  window.addEventListener('touchcancel', endAim);
+  window.addEventListener('touchend', endBar);
+  window.addEventListener('touchcancel', endBar);
 
-  function updateAim(clientX: number, clientY: number): void {
-    const dx = clientX - aimOrigin.x;
-    const dy = clientY - aimOrigin.y;
-    const dist = Math.hypot(dx, dy);
-    const clamped = Math.min(dist, AIM_RADIUS);
-    const nx = dist > 0 ? (dx / dist) * clamped : 0;
-    const ny = dist > 0 ? (dy / dist) * clamped : 0;
-    aimKnob.style.transform = `translate(${nx}px, ${ny}px)`;
-    aimMaxDrag = Math.max(aimMaxDrag, dist);
-    lastAim = { dx: nx, dy: ny };
-    writeAimFromOffset(nx, ny);
+  function readTouch(clientX: number, clientY: number): void {
+    const rect = bar.getBoundingClientRect();
+    const relY = (clientY - rect.top) / rect.height;     // 0 top .. 1 bottom
+    const relX = (clientX - rect.left) / rect.width - 0.5; // -0.5 .. 0.5
+    pitchT = Math.max(0, Math.min(1, 1 - relY));
+    // Horizontal range within ±half-bar → trimT in [-1, 1]; the narrow
+    // ±20° cap (TRIM_MAX) is what makes the lateral response feel slow.
+    trimT = Math.max(-1, Math.min(1, relX * 2));
+    updateBarVisual();
   }
 
-  function writeAimFromOffset(offsetX: number, offsetY: number): void {
+  function updateBarVisual(): void {
+    barFill.style.height = `${pitchT * 100}%`;
+    const rect = bar.getBoundingClientRect();
+    const knobY = (1 - pitchT) * rect.height - rect.height / 2;
+    const knobX = trimT * (rect.width * 0.35);
+    barKnob.style.transform = `translate(${knobX}px, ${knobY}px)`;
+  }
+
+  function pushAim(): void {
     const ctx = getAimContext();
-    const mag = Math.min(1, Math.hypot(offsetX, offsetY) / AIM_RADIUS);
-    // The third-person camera sits behind the tank and looks forward, so
-    // world +X ends up on screen-LEFT (right-handed coords). Flip the
-    // joystick X sign so dragging right on screen aims right on screen.
-    // atan2(-x, -y): up → 0, right → -π/2 offset applied to body yaw.
-    const joyAngle = mag > 0 ? Math.atan2(-offsetX, -offsetY) : 0;
-    const aimAngle = ctx.bodyRot + joyAngle;
-    const range = AIM_MIN_RANGE + (AIM_MAX_RANGE - AIM_MIN_RANGE) * mag;
-    setVirtualAimWorld(
-      ctx.px + Math.sin(aimAngle) * range,
-      ctx.pz + Math.cos(aimAngle) * range,
-    );
+    const enemies = getEnemyPositions();
+    let yaw: number;
+    if (enemies.length > 0) {
+      let best = enemies[0];
+      let bestD = (best.x - ctx.px) ** 2 + (best.z - ctx.pz) ** 2;
+      for (let i = 1; i < enemies.length; i++) {
+        const e = enemies[i];
+        const d = (e.x - ctx.px) ** 2 + (e.z - ctx.pz) ** 2;
+        if (d < bestD) { bestD = d; best = e; }
+      }
+      yaw = Math.atan2(best.x - ctx.px, best.z - ctx.pz);
+    } else {
+      yaw = ctx.bodyRot;
+    }
+    yaw += trimT * TRIM_MAX;
+    const pitch = PITCH_MIN + (PITCH_MAX - PITCH_MIN) * pitchT;
+    setVirtualAimDirect(yaw, pitch);
   }
-  void lastAim; // retained for debugging; silences unused-var lint
+
+  // Re-emit every frame so the auto-aim keeps tracking the nearest enemy
+  // even when the player isn't touching the bar.
+  function tick(): void {
+    requestAnimationFrame(tick);
+    pushAim();
+  }
+  tick();
+  updateBarVisual();
 }
 
 /** Detects a touch-capable device, or allows ?mobile=1 override for desktop testing. */
