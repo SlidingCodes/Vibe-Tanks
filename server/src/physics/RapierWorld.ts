@@ -38,13 +38,18 @@ export class RapierWorld {
   constructor(heightmap: Heightmap) {
     this.heightmap = heightmap;
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
-    this.controller = this.world.createCharacterController(CHARACTER_OFFSET);
-    this.controller.setUp({ x: 0, y: 1, z: 0 });
-    this.controller.setMaxSlopeClimbAngle(Math.PI / 2);
-    this.controller.enableSnapToGround(1.0);
-    this.controller.enableAutostep(0.8, 0.3, true);
-    this.controller.setApplyImpulsesToDynamicBodies(false);
+    this.controller = this.makeController();
     this.rebuildTerrain();
+  }
+
+  private makeController(): RAPIER.KinematicCharacterController {
+    const c = this.world.createCharacterController(CHARACTER_OFFSET);
+    c.setUp({ x: 0, y: 1, z: 0 });
+    c.setMaxSlopeClimbAngle(Math.PI / 2);
+    c.enableSnapToGround(1.0);
+    c.enableAutostep(0.8, 0.3, true);
+    c.setApplyImpulsesToDynamicBodies(false);
+    return c;
   }
 
   rebuildTerrain(): void {
@@ -72,6 +77,22 @@ export class RapierWorld {
     const colliderDesc = RAPIER.ColliderDesc.heightfield(nrows, ncols, flat, scale)
       .setFriction(1.0);
     this.terrainCollider = this.world.createCollider(colliderDesc, this.terrainBody);
+
+    // Recreate the KCC so it drops any cached state tied to the old terrain
+    // collider handle.
+    if (this.controller) this.world.removeCharacterController(this.controller);
+    this.controller = this.makeController();
+
+    // Lift any tanks that ended up below the new terrain surface so the
+    // next KCC query starts from a non-penetrating pose.
+    for (const entry of this.tanks.values()) {
+      const t = entry.body.translation();
+      const minY = this.heightmap.getHeight(t.x, t.z) + TANK_HALF.y + 0.02;
+      if (t.y < minY) {
+        entry.body.setNextKinematicTranslation({ x: t.x, y: minY, z: t.z });
+        entry.body.setTranslation({ x: t.x, y: minY, z: t.z }, true);
+      }
+    }
   }
 
   addTank(tank: TankState): void {
