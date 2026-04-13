@@ -112,7 +112,14 @@ export function setWeapons(
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-    chip.textContent = `[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
+    const icon = document.createElement('img');
+    icon.src = `/weapons/${weapon.id}.svg`;
+    icon.alt = '';
+    icon.className = 'weapon-icon';
+    chip.appendChild(icon);
+    const label = document.createElement('span');
+    label.textContent = `[${index + 1}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
+    chip.appendChild(label);
     if (onSelect) {
       chip.addEventListener('click', () => onSelect(index));
       // Mobile: touch-action keeps a tap instant instead of waiting for click.
