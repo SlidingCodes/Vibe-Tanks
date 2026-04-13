@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRAVITY } from '@shared/constants';
 import { Vec3, WeaponDefinition } from '@shared/types/index';
-import { getTerrainHeight } from '../scene/terrain';
+import { getTerrainCellSize, getTerrainHeight } from '../scene/terrain';
 
 const MAX_PARENT_DOTS = 80;
 const MAX_FRAGMENT_DOTS = 90;
@@ -101,7 +101,7 @@ function add(a: Vec3, b: Vec3): Vec3 {
 }
 
 function getSurfaceNormal(x: number, z: number): Vec3 {
-  const step = 1;
+  const step = getTerrainCellSize();
   const hx0 = getTerrainHeight(x - step, z);
   const hx1 = getTerrainHeight(x + step, z);
   const hz0 = getTerrainHeight(x, z - step);

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -12,7 +12,7 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } f
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { createCamera, followTank, overviewCamera } from './scene/camera';
+import { createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
@@ -25,7 +25,7 @@ import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
 import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
-import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
+import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
@@ -54,7 +54,7 @@ scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
 
 const camera = createCamera();
-createLights(scene);
+const lighting = createLights(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -70,6 +70,13 @@ let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
+  const worldMax = Math.max(terrainWidth, terrainHeight);
+  scene.fog = new THREE.Fog(0x87ceeb, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  updateCameraScale(terrainWidth, terrainHeight);
+  lighting.updateForTerrain(terrainWidth, terrainHeight);
+}
 
 function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
@@ -120,6 +127,11 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     initMinimap(snap.terrain);
   }
 
+  const terrainWidth = snap.terrain.gridWidth * snap.terrain.cellSize;
+  const terrainHeight = snap.terrain.gridHeight * snap.terrain.cellSize;
+  updateSceneScale(terrainWidth, terrainHeight);
+
+  setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
 
   const existingIds = new Set(getAllTankMeshes().keys());
@@ -145,10 +157,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
-    overviewCamera(
-      snap.terrain.gridWidth * snap.terrain.cellSize,
-      snap.terrain.gridHeight * snap.terrain.cellSize,
-    );
+    overviewCamera(terrainWidth, terrainHeight);
   } else {
     hud.showWaiting(false);
   }
@@ -337,7 +346,7 @@ function animate(): void {
     }
 
     const { w: mapW, h: mapH } = getMapBounds();
-    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH);
+    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, snapshot?.terrain.cellSize ?? 1);
 
     updateLocalTankMesh(predictedState);
 
@@ -377,7 +386,7 @@ function animate(): void {
         selectedWeapon,
       );
     } else {
-      const aimTarget = getAimTarget(camera, predictedState.position.y);
+      const aimTarget = getAimTarget(camera, getTerrainMesh(), predictedState.position.y);
       if (aimTarget) {
         aimPointForFire = aimTarget;
         const dx = aimTarget.x - predictedState.position.x;
