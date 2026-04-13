@@ -23,10 +23,13 @@ import {
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
+import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker } from './audio/sounds';
+import { startMusic } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
@@ -79,6 +82,7 @@ hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();
 setupSettingsMenu();
+setupAudioToggle();
 setupFeed();
 setupMatchTimer();
 
@@ -91,6 +95,7 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
+startMusic();
 const socket = connect();
 
 socket.on('connect', () => {
@@ -156,6 +161,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
       createTankMesh(tankState, scene, myId);
     } else if (existing.state.alive && !tankState.alive) {
       spawnTankExplosion(existing.group.position, tankState.color, scene);
+      playTankExplosion();
       // Prevent re-triggering on subsequent state_updates while dead.
       // (For the local tank, updateLocalTankMesh is skipped once dead, so
       // existing.state would otherwise keep reporting alive=true.)
@@ -211,6 +217,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   // Toggle the Dark-Souls-style death screen based on the alive flag edge.
   if (myTank) {
     if (!myTank.alive && !wasDead) {
+      playDeath();
       // Let the explosion play before the overlay takes over the screen.
       setTimeout(() => {
         if (wasDead) {
@@ -222,6 +229,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
       wasDead = true;
     } else if (myTank.alive && wasDead) {
       hud.hideDeathScreen();
+      playRespawn();
       wasDead = false;
     }
   }
@@ -234,6 +242,17 @@ socket.on('shot_resolved', (result) => {
       onMinimapPatch(patch);
     }
   });
+
+  // Play explosion sounds at each impact, timed to match the visual animation.
+  const SECS_PER_SAMPLE = 4 / 60;
+  for (const step of result.steps) {
+    if (step.eventType !== 'impact') continue;
+    const delay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
+    setTimeout(() => {
+      const scale = Math.min(1, step.blastRadius / 6);
+      playExplosion(scale);
+    }, delay * 1000);
+  }
 
   // Floating damage numbers at the moment of visual impact (matches the
   // server's delayed HP/patch commit: startDelay + flight of the last step).
@@ -248,6 +267,9 @@ socket.on('shot_resolved', (result) => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
       if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
+    }
+    if (result.shooterId === myId && result.damageDealt.length > 0) {
+      playHitMarker();
     }
   }, impactMs * 1000);
 });
@@ -292,6 +314,7 @@ function animate(): void {
     if (weapon) {
       selectedWeaponId = weapon.id;
       hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
+      playWeaponSwitch();
     }
   }
 
@@ -402,6 +425,7 @@ function animate(): void {
           aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
         });
         lastFireTime = now;
+        playShoot();
       }
     }
 
