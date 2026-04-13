@@ -25,7 +25,7 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('wheel', (e) => {
   if (weaponCount <= 1) return;
-  const dir = e.deltaY > 0 ? 1 : -1;
+  const dir = e.deltaY > 0 ? -1 : 1;
   currentWeaponSlot = ((currentWeaponSlot + dir) % weaponCount + weaponCount) % weaponCount;
   pendingWeaponSlot = currentWeaponSlot;
 });

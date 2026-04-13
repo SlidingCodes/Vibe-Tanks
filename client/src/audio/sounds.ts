@@ -27,21 +27,21 @@ function ramp(param: AudioParam, from: number, to: number, start: number, end: n
   param.linearRampToValueAtTime(to, end);
 }
 
-// ── Master volume ──
+// ── SFX volume ──
 
-let masterVolume = 0.5;
+let sfxVolume = 0.5;
 
 export function setVolume(v: number): void {
-  masterVolume = Math.max(0, Math.min(1, v));
+  sfxVolume = Math.max(0, Math.min(1, v));
 }
 
 export function getVolume(): number {
-  return masterVolume;
+  return sfxVolume;
 }
 
 function masterGain(ac: AudioContext): GainNode {
   const g = ac.createGain();
-  g.gain.value = masterVolume;
+  g.gain.value = sfxVolume;
   g.connect(ac.destination);
   return g;
 }
@@ -253,7 +253,7 @@ function playDeathChoir(): void {
     const utter = new SpeechSynthesisUtterance('YOU DIED');
     utter.rate = 0.45;
     utter.pitch = 0.1;
-    utter.volume = Math.min(1, masterVolume * 1.2);
+    utter.volume = Math.min(1, sfxVolume * 1.2);
 
     const voices = speechSynthesis.getVoices();
     const pick = voices.find(
@@ -341,7 +341,7 @@ export function playAnnouncer(): void {
   const utter = new SpeechSynthesisUtterance('VIBE TANKS!');
   utter.rate = 0.6;   // slow and dramatic
   utter.pitch = 0.4;  // deep, commanding voice
-  utter.volume = Math.min(1, masterVolume * 1.5); // a bit louder than SFX
+  utter.volume = Math.min(1, sfxVolume * 1.5); // a bit louder than SFX
 
   // Try to pick a male English voice for the best effect.
   const voices = speechSynthesis.getVoices();
