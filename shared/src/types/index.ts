@@ -214,6 +214,8 @@ export interface MatchSnapshot {
   phase: MatchPhase;
   tanks: TankState[];
   terrain: TerrainConfig;
+  terrainPresetId: TerrainPresetId;
+  terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
   /** Seconds until the next match reset (terrain regen + score reset). */

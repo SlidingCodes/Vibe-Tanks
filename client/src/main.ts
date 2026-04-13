@@ -24,7 +24,7 @@ import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
 import { setupSettingsMenu } from './ui/settings';
 import { setupFeed, pushFeedEvent } from './ui/feed';
-import { setupMatchTimer, setMatchResetCountdown } from './ui/matchTimer';
+import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
@@ -124,6 +124,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   const terrainHeight = snap.terrain.gridHeight * snap.terrain.cellSize;
   updateSceneScale(terrainWidth, terrainHeight);
 
+  setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
 
   const existingIds = new Set(getAllTankMeshes().keys());

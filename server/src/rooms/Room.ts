@@ -11,6 +11,7 @@ import {
   ServerEvents,
   ShotResult,
   TankState,
+  TerrainPresetId,
   TerrainSettings,
   Vec3,
 } from '../../../shared/src/types/index';
@@ -22,7 +23,12 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
 } from '../../../shared/src/constants';
-import { DEFAULT_TERRAIN_SETTINGS, getRandomTerrainSettings } from '../../../shared/src/terrain';
+import {
+  DEFAULT_TERRAIN_PRESET_ID,
+  TERRAIN_PRESETS,
+  getRandomTerrainPresetId,
+  getTerrainSettingsForPreset,
+} from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
@@ -97,6 +103,7 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
+  private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
@@ -114,13 +121,11 @@ export class Room {
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
-  constructor(id: string, io: Server, terrainSettings: TerrainSettings = DEFAULT_TERRAIN_SETTINGS) {
+  constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
     this.id = id;
     this.io = io;
-    this.terrainSettings = {
-      ...terrainSettings,
-      params: { ...terrainSettings.params },
-    };
+    this.terrainPresetId = terrainPresetId;
+    this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
     this.scheduleReset();
   }
@@ -138,7 +143,8 @@ export class Room {
     this.activeHazards.clear();
     this.scheduledStrikes = [];
     this.simTime = 0;
-    this.terrainSettings = getRandomTerrainSettings();
+    this.terrainPresetId = getRandomTerrainPresetId();
+    this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
@@ -1003,6 +1009,8 @@ export class Room {
       phase: this.phase,
       tanks: state.tanks,
       terrain: this.heightmap.toConfig(),
+      terrainPresetId: this.terrainPresetId,
+      terrainPresetLabel: TERRAIN_PRESETS[this.terrainPresetId].label,
       projectiles: state.projectiles,
       hazards: state.hazards,
       resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
