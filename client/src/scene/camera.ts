@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 
 let camera: THREE.PerspectiveCamera;
+let shakeTimeRemaining = 0;
+let shakeDuration = 0;
+let shakeStrength = 0;
 
 export type CameraPresetId = 'classic' | 'wide' | 'tactical';
 
@@ -69,9 +72,35 @@ export function followTank(
   const rotated = p.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
   const desired = tankPos.clone().add(rotated);
   const lookTarget = tankPos.clone().add(p.lookOffset);
+  const shakeOffset = new THREE.Vector3();
+  const lookShakeOffset = new THREE.Vector3();
+
+  if (shakeTimeRemaining > 0 && shakeDuration > 0 && shakeStrength > 0) {
+    shakeTimeRemaining = Math.max(0, shakeTimeRemaining - dt);
+    const falloff = shakeTimeRemaining / shakeDuration;
+    const amount = shakeStrength * falloff;
+    shakeOffset.set(
+      (Math.random() * 2 - 1) * amount,
+      (Math.random() * 2 - 1) * amount * 0.55,
+      (Math.random() * 2 - 1) * amount,
+    );
+    lookShakeOffset.set(
+      (Math.random() * 2 - 1) * amount * 0.2,
+      (Math.random() * 2 - 1) * amount * 0.12,
+      (Math.random() * 2 - 1) * amount * 0.2,
+    );
+  }
 
   camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
-  camera.lookAt(lookTarget);
+  camera.position.add(shakeOffset);
+  camera.lookAt(lookTarget.add(lookShakeOffset));
+}
+
+export function addImpactCameraShake(intensity: number, duration = 0.22): void {
+  if (intensity <= 0) return;
+  shakeStrength = Math.max(shakeStrength, intensity);
+  shakeDuration = Math.max(shakeDuration, duration);
+  shakeTimeRemaining = Math.max(shakeTimeRemaining, duration);
 }
 
 export function overviewCamera(terrainWidth: number, terrainHeight: number): void {
