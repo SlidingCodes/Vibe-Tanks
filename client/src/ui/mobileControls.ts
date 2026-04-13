@@ -17,9 +17,12 @@ const DEADZONE = 0.16;
 const JOYSTICK_RADIUS = 60;
 const DIAGONAL_THRESHOLD = Math.cos(Math.PI / 8);
 
-const PITCH_MIN = 0.08;                     // ~4.6°, nearly flat
+const PITCH_MIN = -(10 * Math.PI) / 180;    // -10° so you can shoot downhill when tilted
 const PITCH_MAX = Math.PI / 2.2;            // ~81.8°, matches server solver cap
-const TRIM_MAX  = (20 * Math.PI) / 180;     // ±20° lateral trim at full edge
+const YAW_RATE_MAX = Math.PI * 0.9;         // ~162°/s when finger at bar edge — pan speed
+const YAW_RATE_CURVE = 1.4;                 // >1 = gentle near center, fast at edges
+const ASSIST_CONE = Math.PI / 4;            // ±45° capture window for aim-assist
+const ASSIST_RATE = 5.0;                    // exponential pull rate toward nearest-to-aim enemy
 
 export function setupMobileControls(): void {
   const baseEl = document.getElementById('mc-joystick-base');
@@ -101,10 +104,12 @@ export function setupMobileControls(): void {
     setVirtualKey('KeyD', false);
   }
 
-  // ── Aim bar (right side, pitch + trim with aim-assist) ──
+  // ── Aim bar (right side, pitch + yaw-rate trim with soft aim-assist) ──
   let barTouchId: number | null = null;
-  let pitchT = 0.5;   // 0 = flat, 1 = max arc
-  let trimT = 0;      // -1 (left) .. +1 (right)
+  let pitchT = 0.5;         // 0 = flat (pitch min), 1 = max arc
+  let trimHx = 0;           // -1..1, horizontal finger offset; 0 when untouched
+  let aimYaw = 0;            // world-space absolute yaw, persists across frames
+  let yawInitialized = false;
 
   bar.addEventListener('touchstart', (e) => {
     if (barTouchId !== null) return;
@@ -131,9 +136,11 @@ export function setupMobileControls(): void {
     for (const t of Array.from(e.changedTouches)) {
       if (t.identifier === barTouchId) {
         barTouchId = null;
+        trimHx = 0;  // stop panning when finger lifts
         bar.classList.remove('active');
-        // Any release = fire. Pitch/trim persist so the next shot re-uses
-        // the same arc until the player adjusts.
+        updateBarVisual();
+        // Any release = fire. Current aim (yaw + pitch) persists so the
+        // next shot re-uses the same aim until the player adjusts.
         triggerVirtualFire();
         return;
       }
