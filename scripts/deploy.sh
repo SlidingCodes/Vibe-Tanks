@@ -6,7 +6,7 @@
 #   - Safe to rerun; no-ops when nothing has changed.
 set -euo pipefail
 
-REPO="/home/blin2h/projects/Vibe-Tanks"
+REPO="/home/blin2h/deploy/Vibe-Tanks"
 BRANCH="main"
 SERVICE="vibe-tanks.service"
 
