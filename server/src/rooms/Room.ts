@@ -22,6 +22,7 @@ import {
   SIM_TICK_RATE,
 } from '../../../shared/src/constants';
 import { WEAPONS } from '../../../shared/src/weapons';
+import { stepTankPhysics } from '../../../shared/src/physics';
 import { Heightmap } from '../terrain/Heightmap';
 import { RapierWorld } from '../physics/RapierWorld';
 import {
@@ -672,19 +673,26 @@ export class Room {
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
   }
 
-  private tickMovement(_dt: number): void {
+  private tickMovement(dt: number): void {
+    const mapW = this.heightmap.width * this.heightmap.cellSize;
+    const mapH = this.heightmap.height * this.heightmap.cellSize;
+    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
+
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-      this.physics.applyInput(pid, player.input);
+
+      const vel = { x: player.velX, z: player.velZ };
+      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
+      player.velX = vel.x;
+      player.velZ = vel.z;
+    }
+    // Keep rapier bodies roughly aligned with authoritative tank state so
+    // future collision queries / projectile contacts work without stale poses.
+    for (const tank of this.tanks.values()) {
+      if (tank.alive) this.physics.resetTank(tank);
     }
     this.physics.step();
-    for (const [pid, tank] of this.tanks) {
-      if (!tank.alive) continue;
-      this.physics.syncTankState(tank);
-      const player = this.players.get(pid);
-      if (player) { player.velX = 0; player.velZ = 0; }
-    }
   }
 
   private tickProjectiles(dt: number): void {

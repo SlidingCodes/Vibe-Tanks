@@ -11,10 +11,12 @@ export function initRapier(): Promise<void> {
 
 const TANK_HALF = { x: 0.9, y: 0.5, z: 1.2 };
 const TANK_MASS = 1500;
-const ENGINE_FORCE = TANK_MASS * 12;   // N — accelerates to ~TANK_SPEED quickly
-const BRAKE_LINEAR_DAMPING = 2.5;
+// How fast horizontal velocity chases the commanded velocity. Mirrors the
+// old shared physics ENGINE_GRIP so the tank locks to throttle snappily.
+const ENGINE_GRIP = 20.0;
+const BRAKE_GRIP = 15.0;
 const ANGULAR_DAMPING = 6.0;
-const MAX_HORIZONTAL_SPEED = TANK_SPEED * 1.5;
+const INPUT_TICK_DT = 1 / 60;
 
 interface TankBody {
   body: RAPIER.RigidBody;
@@ -72,10 +74,11 @@ export class RapierWorld {
     if (existing) this.removeTank(tank.playerId);
 
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(tank.position.x, tank.position.y + TANK_HALF.y + 0.05, tank.position.z)
+      .setTranslation(tank.position.x, tank.position.y + TANK_HALF.y + 0.5, tank.position.z)
       .setRotation(quatFromEuler(0, tank.bodyRotation, 0))
-      .setLinearDamping(0.4)
+      .setLinearDamping(0.0)
       .setAngularDamping(ANGULAR_DAMPING)
+      .setCanSleep(false)
       .setCcdEnabled(true);
     const body = this.world.createRigidBody(bodyDesc);
 
@@ -103,7 +106,7 @@ export class RapierWorld {
       return;
     }
     entry.body.setTranslation(
-      { x: tank.position.x, y: tank.position.y + TANK_HALF.y + 0.05, z: tank.position.z },
+      { x: tank.position.x, y: tank.position.y + TANK_HALF.y + 0.5, z: tank.position.z },
       true,
     );
     entry.body.setRotation(quatFromEuler(0, tank.bodyRotation, 0), true);
@@ -111,20 +114,22 @@ export class RapierWorld {
     entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** Apply driver input as forces/torques to a tank. */
+  /** Apply driver input by steering the tank's horizontal velocity. */
   applyInput(playerId: PlayerId, input: MovementInput): void {
     const entry = this.tanks.get(playerId);
     if (!entry) return;
     const body = entry.body;
+    const dt = INPUT_TICK_DT;
 
-    // Yaw via direct angular velocity (so turning feels responsive, not floaty).
+    // Yaw via direct angular velocity (snappy turns, no drift).
     let targetYawRate = 0;
     if (input.left) targetYawRate += TANK_TURN_SPEED;
     if (input.right) targetYawRate -= TANK_TURN_SPEED;
     const angvel = body.angvel();
     body.setAngvel({ x: angvel.x * 0.5, y: targetYawRate, z: angvel.z * 0.5 }, true);
 
-    // Throttle: force along body-forward (XZ projection of local +Z axis).
+    // Forward direction from body yaw (XZ plane only — don't let pitch
+    // divert throttle into vertical motion).
     const rot = body.rotation();
     const fwd = rotateVec({ x: 0, y: 0, z: 1 }, rot);
     const fwdLen = Math.hypot(fwd.x, fwd.z) || 1;
@@ -135,16 +140,16 @@ export class RapierWorld {
     if (input.forward) throttle += 1;
     if (input.backward) throttle -= 1;
 
-    if (throttle !== 0) {
-      const linvel = body.linvel();
-      const horizSpeed = Math.hypot(linvel.x, linvel.z);
-      if (horizSpeed < MAX_HORIZONTAL_SPEED) {
-        body.addForce({ x: fx * ENGINE_FORCE * throttle, y: 0, z: fz * ENGINE_FORCE * throttle }, true);
-      }
-      body.setLinearDamping(0.4);
-    } else {
-      body.setLinearDamping(BRAKE_LINEAR_DAMPING);
-    }
+    const targetX = fx * TANK_SPEED * throttle;
+    const targetZ = fz * TANK_SPEED * throttle;
+    const k = throttle !== 0 ? ENGINE_GRIP : BRAKE_GRIP;
+
+    // Semi-implicit blend: stable for any k·dt. Matches old stepTankPhysics.
+    const denom = 1 + k * dt;
+    const linvel = body.linvel();
+    const newX = (linvel.x + k * targetX * dt) / denom;
+    const newZ = (linvel.z + k * targetZ * dt) / denom;
+    body.setLinvel({ x: newX, y: linvel.y, z: newZ }, true);
   }
 
   /** Step the simulation. */
