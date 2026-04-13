@@ -1,10 +1,6 @@
 // Procedural chiptune background music — multiple tracks, rotated on match reset.
 // Uses Web Audio API oscillators scheduled in a loop. No external files.
 
-import { getVolume } from './sounds';
-
-const MUSIC_VOL_RATIO = 0.35; // music is quieter than SFX
-
 // ── Note table ──
 const N: Record<string, number> = {
   D2: 73.4, E2: 82.4, F2: 87.3, G2: 98, A2: 110, Bb2: 116.5, C3: 131,
@@ -125,8 +121,8 @@ let currentTrackIdx = Math.floor(Math.random() * TRACKS.length);
 let ctx: AudioContext | null = null;
 let musicGain: GainNode | null = null;
 let schedulerId: ReturnType<typeof setInterval> | null = null;
+let musicVolume = 0.35;
 let playing = false;
-let muted = false;
 let loopStartTime = 0;
 let melodyIdx = 0;
 let bassIdx = 0;
@@ -144,7 +140,7 @@ function ensureCtx(): AudioContext {
   if (!ctx) {
     ctx = new AudioContext();
     musicGain = ctx.createGain();
-    musicGain.gain.value = muted ? 0 : getVolume() * MUSIC_VOL_RATIO;
+    musicGain.gain.value = musicVolume;
     musicGain.connect(ctx.destination);
   }
   if (ctx.state === 'suspended') ctx.resume();
@@ -154,11 +150,20 @@ function ensureCtx(): AudioContext {
 function updateGain(): void {
   if (musicGain) {
     musicGain.gain.setTargetAtTime(
-      muted ? 0 : getVolume() * MUSIC_VOL_RATIO,
+      musicVolume,
       ctx!.currentTime,
       0.05,
     );
   }
+}
+
+export function setMusicVolume(v: number): void {
+  musicVolume = Math.max(0, Math.min(1, v));
+  updateGain();
+}
+
+export function getMusicVolume(): number {
+  return musicVolume;
 }
 
 // ── Instrument voices ──
@@ -361,17 +366,8 @@ export function stopMusic(): void {
   }
 }
 
-export function setMusicMuted(m: boolean): void {
-  muted = m;
-  updateGain();
-}
-
 export function isMusicPlaying(): boolean {
   return playing;
-}
-
-export function isMusicMuted(): boolean {
-  return muted;
 }
 
 /** Switch to the next track. Called on match reset. */
