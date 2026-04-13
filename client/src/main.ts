@@ -9,6 +9,7 @@ import {
   tickTankEffects, triggerRespawnAnim,
 } from './entities/tank';
 import { playShotAnimation, updateProjectileAnimation } from './entities/projectile';
+import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
 import { createCamera, followTank, overviewCamera } from './scene/camera';
@@ -155,6 +156,8 @@ socket.on('state_update', (tanks: TankState[]) => {
     const existing = getAllTankMeshes().get(tankState.playerId);
     if (!existing) {
       createTankMesh(tankState, scene, myId);
+    } else if (existing.state.alive && !tankState.alive) {
+      spawnTankExplosion(existing.group.position, tankState.color, scene);
     }
 
     if (tankState.playerId === myId) {
@@ -409,6 +412,7 @@ function animate(): void {
   // Interpolate remote tanks smoothly
   interpolateRemoteTanks(dt, myId);
   tickTankEffects(dt);
+  updateTankExplosions(scene, dt);
 
   updateProjectileAnimation(scene, dt);
 
