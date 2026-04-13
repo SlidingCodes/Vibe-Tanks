@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="flame" cx="0.5" cy="0.9" r="0.9">
+      <stop offset="0" stop-color="#fff5b0"/>
+      <stop offset="0.35" stop-color="#ffc233"/>
+      <stop offset="0.7" stop-color="#ff5a0e"/>
+      <stop offset="1" stop-color="#8a1a00"/>
+    </radialGradient>
+  </defs>
+  <path d="M32 6
+           C 22 22, 14 26, 18 40
+           C 10 40, 8 50, 16 56
+           C 20 50, 26 52, 26 46
+           C 30 56, 42 56, 46 46
+           C 48 54, 56 50, 54 40
+           C 58 28, 46 26, 44 14
+           C 40 22, 36 18, 32 6 Z"
+        fill="url(#flame)" stroke="#4a1200" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M32 22 C 28 34, 34 36, 32 46"
+        fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+</svg>
