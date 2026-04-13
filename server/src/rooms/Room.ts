@@ -54,6 +54,7 @@ interface PlayerState {
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
   previousPosition: Vec3;
+  previousVelocity: Vec3;
   age: number;
   lifetime: number;
   radius: number;
@@ -581,6 +582,7 @@ export class Room {
       weaponId: weapon.id,
       position,
       previousPosition: overrides.previousPosition ?? { ...position },
+      previousVelocity: overrides.previousVelocity ?? { ...velocity },
       velocity,
       visualStyle,
       targetId: overrides.targetId ?? null,
@@ -639,6 +641,7 @@ export class Room {
     const physicsState = this.physics.getProjectileState(projectile.projectileId);
     if (!physicsState) return false;
     projectile.previousPosition = { ...projectile.position };
+    projectile.previousVelocity = { ...projectile.velocity };
     projectile.position = { ...physicsState.position };
     projectile.velocity = { ...physicsState.velocity };
     return true;
@@ -669,7 +672,7 @@ export class Room {
         const delta = subVec3(point, center);
         normal = lengthVec3(delta) > 0.001
           ? normalizeVec3(delta)
-          : scaleVec3(normalizeVec3(projectile.velocity), -1);
+          : scaleVec3(normalizeVec3(projectile.previousVelocity), -1);
       }
     }
 
@@ -739,7 +742,8 @@ export class Room {
     projectile.visualStyle = 'bouncer_bounce';
     projectile.position = addVec3(point, scaleVec3(contactNormal, projectile.radius + 0.08));
     projectile.previousPosition = { ...point };
-    projectile.velocity = reflectVec3(projectile.velocity, contactNormal, projectile.bounceDamping);
+    projectile.velocity = reflectVec3(projectile.previousVelocity, contactNormal, projectile.bounceDamping);
+    projectile.previousVelocity = { ...projectile.velocity };
     this.physics.setProjectileTranslation(projectile.projectileId, projectile.position);
     this.physics.setProjectileVelocity(projectile.projectileId, projectile.velocity);
     this.emitProjectileEvent(projectile, point, 'bounce', bounceStyle);
@@ -759,7 +763,8 @@ export class Room {
         projectileId: `proj_${this.nextProjectileId++}`,
         position: { ...splitPoint },
         previousPosition: { ...splitPoint },
-        velocity: makeFragmentVelocityVec(projectile.velocity, yawOffset, projectile.fragmentSpeedScale),
+        previousVelocity: makeFragmentVelocityVec(projectile.previousVelocity, yawOffset, projectile.fragmentSpeedScale),
+        velocity: makeFragmentVelocityVec(projectile.previousVelocity, yawOffset, projectile.fragmentSpeedScale),
         visualStyle: 'splitter_fragment',
         targetId: null,
         age: 0,
