@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
@@ -34,10 +34,11 @@ import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from 
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle } from '@shared/muzzle';
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
+await renderer.init();
 document.body.prepend(renderer.domElement);
 
 // CSS2D renderer overlays DOM elements (name labels) onto the 3D scene.

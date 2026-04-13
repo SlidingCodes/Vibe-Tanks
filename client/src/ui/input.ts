@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { MovementInput } from '@shared/types/index';
 
 const keys: Record<string, boolean> = {};

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { GRAVITY } from '@shared/constants';
 import { Vec3, WeaponDefinition } from '@shared/types/index';
 import { getTerrainHeight } from '../scene/terrain';
