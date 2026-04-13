@@ -82,6 +82,7 @@ function syncTerrainGeometry(config: TerrainConfig): void {
   gridWidth = config.gridWidth;
   gridHeight = config.gridHeight;
   cellSize = config.cellSize;
+  terrainHeights = config.heights.slice();
   if (dimsChanged) {
     const nextGeometry = buildGeometry(gridWidth, gridHeight, cellSize);
     applyHeightsToGeometry(nextGeometry, terrainHeights);
