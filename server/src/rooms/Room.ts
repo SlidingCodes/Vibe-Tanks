@@ -678,9 +678,12 @@ export class Room {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
-      this.physics.stepTank(tank, player.input);
+      this.physics.applyInput(pid, player.input);
     }
     this.physics.step();
+    for (const tank of this.tanks.values()) {
+      if (tank.alive) this.physics.syncTankState(tank);
+    }
   }
 
   private tickProjectiles(dt: number): void {
