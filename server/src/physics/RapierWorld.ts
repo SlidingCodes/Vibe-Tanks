@@ -9,7 +9,7 @@ export function initRapier(): Promise<void> {
   return rapierReady;
 }
 
-const TANK_HALF = { x: 0.9, y: 0.5, z: 1.2 };
+const TANK_HALF = { x: 0.7, y: 0.4, z: 0.9 };
 const CHARACTER_OFFSET = 0.05;
 
 interface TankBody {
@@ -40,8 +40,10 @@ export class RapierWorld {
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.controller = this.world.createCharacterController(CHARACTER_OFFSET);
     this.controller.setUp({ x: 0, y: 1, z: 0 });
-    this.controller.setMaxSlopeClimbAngle(Math.PI / 2); // let the tank go anywhere; slope handling is upstream
-    this.controller.enableSnapToGround(0.5);
+    this.controller.setMaxSlopeClimbAngle(Math.PI / 2);
+    this.controller.enableSnapToGround(1.0);
+    this.controller.enableAutostep(0.8, 0.3, true);
+    this.controller.setApplyImpulsesToDynamicBodies(false);
     this.rebuildTerrain();
   }
 
@@ -94,16 +96,21 @@ export class RapierWorld {
    * displacement (after collisions with terrain + other tank colliders).
    * Does not move the body — caller decides whether to apply.
    */
-  resolveTankMove(playerId: PlayerId, desiredX: number, desiredZ: number): { x: number; z: number } {
+  resolveTankMove(
+    playerId: PlayerId,
+    desiredX: number,
+    desiredY: number,
+    desiredZ: number,
+  ): { x: number; y: number; z: number } {
     const entry = this.tanks.get(playerId);
-    if (!entry) return { x: desiredX, z: desiredZ };
+    if (!entry) return { x: desiredX, y: desiredY, z: desiredZ };
     this.controller.computeColliderMovement(entry.collider, {
       x: desiredX,
-      y: 0,
+      y: desiredY,
       z: desiredZ,
     });
     const m = this.controller.computedMovement();
-    return { x: m.x, z: m.z };
+    return { x: m.x, y: m.y, z: m.z };
   }
 
   /** Snap the body to the authoritative tank pose. */

@@ -685,23 +685,30 @@ export class Room {
       if (!tank || !tank.alive) continue;
 
       const prevX = tank.position.x;
+      const prevY = tank.position.y;
       const prevZ = tank.position.z;
 
       const vel = { x: player.velX, z: player.velZ };
       stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH);
 
-      // Project the horizontal delta through Rapier's character controller
-      // so tank-vs-tank and tank-vs-terrain walls actually stop us.
+      // Send the full 3D delta through the character controller so it can
+      // autostep over gentle rises and slide past other tanks.
       const desiredX = tank.position.x - prevX;
+      const desiredY = tank.position.y - prevY;
       const desiredZ = tank.position.z - prevZ;
-      const moved = this.physics.resolveTankMove(pid, desiredX, desiredZ);
+      const moved = this.physics.resolveTankMove(pid, desiredX, desiredY, desiredZ);
       tank.position.x = prevX + moved.x;
       tank.position.z = prevZ + moved.z;
+      // Re-sample ground height so the tank visually hugs the terrain even
+      // if the controller snapped us slightly off.
       tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
 
-      // Zero velocity components that were blocked so we don't keep pushing.
-      if (Math.abs(moved.x) < Math.abs(desiredX) * 0.5) vel.x = 0;
-      if (Math.abs(moved.z) < Math.abs(desiredZ) * 0.5) vel.z = 0;
+      // Only kill velocity when we were genuinely blocked by another collider
+      // (not when autostep adjusted Y). Use a tight threshold.
+      const blockedX = desiredX !== 0 && Math.abs(moved.x) < Math.abs(desiredX) * 0.2;
+      const blockedZ = desiredZ !== 0 && Math.abs(moved.z) < Math.abs(desiredZ) * 0.2;
+      if (blockedX) vel.x = 0;
+      if (blockedZ) vel.z = 0;
       player.velX = vel.x;
       player.velZ = vel.z;
 
