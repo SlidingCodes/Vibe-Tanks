@@ -161,7 +161,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     removeTankMesh(id, scene);
   }
 
-  syncActiveCombatState(scene, snap.projectiles, snap.hazards);
+  syncActiveCombatState(scene, snap.projectiles, snap.hazards, snap.debris);
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -175,7 +175,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 });
 
 socket.on('state_update', (state: RoomStateUpdate) => {
-  const { tanks, projectiles, hazards } = state;
+  const { tanks, projectiles, hazards, debris } = state;
   latestTanks = tanks;
 
   for (const tankState of tanks) {
@@ -215,7 +215,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
     }
   }
 
-  syncActiveCombatState(scene, projectiles, hazards);
+  syncActiveCombatState(scene, projectiles, hazards, debris);
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   ActiveProjectileState,
+  DebrisState,
   HazardState,
   ShotResult,
   ShotStep,
@@ -62,9 +63,18 @@ interface HazardVisual {
   pulse: number;
 }
 
+interface DebrisVisual {
+  mesh: THREE.Mesh;
+  currentPosition: THREE.Vector3;
+  targetPosition: THREE.Vector3;
+  currentQuat: THREE.Quaternion;
+  targetQuat: THREE.Quaternion;
+}
+
 const shots: ActiveShotStep[] = [];
 const replicatedProjectiles = new Map<string, ReplicatedProjectileVisual>();
 const hazardVisuals = new Map<string, HazardVisual>();
+const replicatedDebris = new Map<string, DebrisVisual>();
 
 function getVisualSpec(style: ShotStep['visualStyle']): VisualSpec {
   switch (style) {
@@ -569,10 +579,42 @@ function removeHazardVisual(id: string, scene: THREE.Scene): void {
   hazardVisuals.delete(id);
 }
 
+function createDebrisVisual(state: DebrisState, scene: THREE.Scene): DebrisVisual {
+  const geo = new THREE.BoxGeometry(state.size, state.size, state.size);
+  const mat = new THREE.MeshStandardMaterial({
+    color: state.color,
+    roughness: 0.9,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.position.set(state.position.x, state.position.y, state.position.z);
+  mesh.quaternion.set(state.rotation.x, state.rotation.y, state.rotation.z, state.rotation.w);
+  scene.add(mesh);
+  return {
+    mesh,
+    currentPosition: mesh.position.clone(),
+    targetPosition: mesh.position.clone(),
+    currentQuat: mesh.quaternion.clone(),
+    targetQuat: mesh.quaternion.clone(),
+  };
+}
+
+function removeDebrisVisual(id: string, scene: THREE.Scene): void {
+  const visual = replicatedDebris.get(id);
+  if (!visual) return;
+  scene.remove(visual.mesh);
+  visual.mesh.geometry.dispose();
+  disposeMaterial(visual.mesh.material);
+  replicatedDebris.delete(id);
+}
+
 export function syncActiveCombatState(
   scene: THREE.Scene,
   projectiles: ActiveProjectileState[],
   hazards: HazardState[],
+  debris: DebrisState[] = [],
 ): void {
   const activeProjectileIds = new Set<string>();
   for (const projectile of projectiles) {
@@ -610,6 +652,22 @@ export function syncActiveCombatState(
     if (!activeHazardIds.has(hazardId)) {
       removeHazardVisual(hazardId, scene);
     }
+  }
+
+  const activeDebrisIds = new Set<string>();
+  for (const d of debris) {
+    activeDebrisIds.add(d.debrisId);
+    let visual = replicatedDebris.get(d.debrisId);
+    if (!visual) {
+      visual = createDebrisVisual(d, scene);
+      replicatedDebris.set(d.debrisId, visual);
+    }
+    visual.targetPosition.set(d.position.x, d.position.y, d.position.z);
+    visual.targetQuat.set(d.rotation.x, d.rotation.y, d.rotation.z, d.rotation.w);
+  }
+
+  for (const id of Array.from(replicatedDebris.keys())) {
+    if (!activeDebrisIds.has(id)) removeDebrisVisual(id, scene);
   }
 }
 
@@ -699,6 +757,14 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
     const attr = visual.trail.geometry.getAttribute('position') as THREE.BufferAttribute;
     attr.needsUpdate = true;
     visual.trail.geometry.setDrawRange(0, visual.trailCount);
+  }
+
+  const debrisBlend = Math.min(1, dt * 15);
+  for (const visual of replicatedDebris.values()) {
+    visual.currentPosition.lerp(visual.targetPosition, debrisBlend);
+    visual.mesh.position.copy(visual.currentPosition);
+    visual.currentQuat.slerp(visual.targetQuat, debrisBlend);
+    visual.mesh.quaternion.copy(visual.currentQuat);
   }
 
   for (const visual of hazardVisuals.values()) {

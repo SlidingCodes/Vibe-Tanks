@@ -49,6 +49,7 @@ const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#a
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+const DEBRIS_COLOR = '#7a5937';
 
 interface PlayerState {
   socket: Socket;
@@ -161,6 +162,7 @@ export class Room {
     this.pendingShotTimeouts.clear();
     this.activeProjectiles.clear();
     this.physics.clearProjectiles();
+    this.physics.clearDebris();
     this.activeHazards.clear();
     this.scheduledStrikes = [];
     this.simTime = 0;
@@ -428,6 +430,7 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
+        this.physics.spawnDebrisBurst(step.endPoint, step.blastRadius, DEBRIS_COLOR);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -449,6 +452,7 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
+      this.physics.spawnDebrisBurst(step.endPoint, step.blastRadius, DEBRIS_COLOR);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
@@ -1313,6 +1317,7 @@ export class Room {
         armed: hazard.armed,
         timeRemaining: hazard.timeRemaining,
       })),
+      debris: this.physics.getDebrisStates(),
     };
   }
 
@@ -1327,6 +1332,7 @@ export class Room {
       terrainPresetLabel: TERRAIN_PRESETS[this.terrainPresetId].label,
       projectiles: state.projectiles,
       hazards: state.hazards,
+      debris: state.debris,
       resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
     };
   }

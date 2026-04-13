@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { MovementInput, PlayerId, TankState, Vec3 } from '../../../shared/src/types/index';
+import { DebrisState, MovementInput, PlayerId, TankState, Vec3 } from '../../../shared/src/types/index';
 import { GRAVITY, TANK_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
@@ -57,9 +57,22 @@ const PROJECTILE_MASS = 1.0;
 const GROUP_TERRAIN = 0x0001;
 const GROUP_TANK = 0x0002;
 const GROUP_PROJECTILE = 0x0004;
-const TERRAIN_COLLISION_GROUPS = interactionGroups(GROUP_TERRAIN, GROUP_TANK | GROUP_PROJECTILE);
+const GROUP_DEBRIS = 0x0008;
+const TERRAIN_COLLISION_GROUPS = interactionGroups(GROUP_TERRAIN, GROUP_TANK | GROUP_PROJECTILE | GROUP_DEBRIS);
 const TANK_COLLISION_GROUPS = interactionGroups(GROUP_TANK, GROUP_TERRAIN | GROUP_PROJECTILE | GROUP_TANK);
 const PROJECTILE_COLLISION_GROUPS = interactionGroups(GROUP_PROJECTILE, GROUP_TERRAIN | GROUP_TANK);
+const DEBRIS_COLLISION_GROUPS = interactionGroups(GROUP_DEBRIS, GROUP_TERRAIN);
+
+// ── Debris tuning ──────────────────────────────────────────────────
+const DEBRIS_LIFETIME = 3.0;
+const DEBRIS_FADE_WINDOW = 0.6; // last seconds of lifetime, client uses for fade
+const DEBRIS_MIN_SIZE = 0.18;
+const DEBRIS_MAX_SIZE = 0.38;
+const DEBRIS_RADIAL_SPEED = 10;
+const DEBRIS_UPWARD_SPEED = 7;
+const DEBRIS_SPAWN_HEIGHT_OFFSET = 0.4;
+const DEBRIS_SPEED_JITTER = 0.45;
+const DEBRIS_MAX_CONCURRENT = 120;
 
 interface TankEntry {
   body: RAPIER.RigidBody;
@@ -76,6 +89,14 @@ interface ProjectileEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   radius: number;
+}
+
+interface DebrisEntry {
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  size: number;
+  color: string;
+  remainingLife: number;
 }
 
 export interface ProjectileSpawnConfig {
@@ -117,6 +138,8 @@ export class RapierWorld {
   private projectiles: Map<string, ProjectileEntry> = new Map();
   private projectileColliderIds: Map<number, string> = new Map();
   private pendingProjectileImpacts: ProjectileImpact[] = [];
+  private debris: Map<string, DebrisEntry> = new Map();
+  private nextDebrisId = 1;
 
   constructor(heightmap: Heightmap) {
     this.heightmap = heightmap;
@@ -271,6 +294,89 @@ export class RapierWorld {
     this.pendingProjectileImpacts = [];
   }
 
+  spawnDebrisBurst(center: Vec3, blastRadius: number, color: string): void {
+    // Budget shrinks as we approach the cap so concurrent impacts don't pile up.
+    const budget = Math.max(0, DEBRIS_MAX_CONCURRENT - this.debris.size);
+    if (budget === 0) return;
+
+    const baseCount = Math.max(3, Math.min(10, Math.round(blastRadius * 1.4)));
+    const count = Math.min(baseCount, budget);
+
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.4;
+      const radial = blastRadius * 0.25 * (0.4 + Math.random() * 0.6);
+      const spawnPos = {
+        x: center.x + Math.cos(angle) * radial,
+        y: center.y + DEBRIS_SPAWN_HEIGHT_OFFSET + Math.random() * 0.3,
+        z: center.z + Math.sin(angle) * radial,
+      };
+      const jitter = 1 - DEBRIS_SPEED_JITTER * 0.5 + Math.random() * DEBRIS_SPEED_JITTER;
+      const velocity = {
+        x: Math.cos(angle) * DEBRIS_RADIAL_SPEED * jitter,
+        y: DEBRIS_UPWARD_SPEED * (0.65 + Math.random() * 0.7),
+        z: Math.sin(angle) * DEBRIS_RADIAL_SPEED * jitter,
+      };
+      const angVel = {
+        x: (Math.random() - 0.5) * 12,
+        y: (Math.random() - 0.5) * 12,
+        z: (Math.random() - 0.5) * 12,
+      };
+      const size = DEBRIS_MIN_SIZE + Math.random() * (DEBRIS_MAX_SIZE - DEBRIS_MIN_SIZE);
+
+      const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(spawnPos.x, spawnPos.y, spawnPos.z)
+        .setLinvel(velocity.x, velocity.y, velocity.z)
+        .setAngvel(angVel)
+        .setLinearDamping(0.2)
+        .setAngularDamping(0.5);
+      const body = this.world.createRigidBody(bodyDesc);
+
+      const halfExtent = size * 0.5;
+      const colliderDesc = RAPIER.ColliderDesc.cuboid(halfExtent, halfExtent, halfExtent)
+        .setDensity(600)
+        .setFriction(0.8)
+        .setRestitution(0.15)
+        .setCollisionGroups(DEBRIS_COLLISION_GROUPS);
+      const collider = this.world.createCollider(colliderDesc, body);
+
+      const id = `d${this.nextDebrisId++}`;
+      this.debris.set(id, { body, collider, size, color, remainingLife: DEBRIS_LIFETIME });
+    }
+  }
+
+  clearDebris(): void {
+    for (const entry of this.debris.values()) {
+      this.world.removeRigidBody(entry.body);
+    }
+    this.debris.clear();
+  }
+
+  getDebrisStates(): DebrisState[] {
+    const states: DebrisState[] = [];
+    for (const [id, entry] of this.debris) {
+      const t = entry.body.translation();
+      const r = entry.body.rotation();
+      states.push({
+        debrisId: id,
+        position: { x: t.x, y: t.y, z: t.z },
+        rotation: { x: r.x, y: r.y, z: r.z, w: r.w },
+        size: entry.size,
+        color: entry.color,
+      });
+    }
+    return states;
+  }
+
+  private stepDebrisLifetimes(dt: number): void {
+    for (const [id, entry] of this.debris) {
+      entry.remainingLife -= dt;
+      if (entry.remainingLife <= 0) {
+        this.world.removeRigidBody(entry.body);
+        this.debris.delete(id);
+      }
+    }
+  }
+
   hasProjectile(projectileId: string): boolean {
     return this.projectiles.has(projectileId);
   }
@@ -380,6 +486,7 @@ export class RapierWorld {
     }
     this.world.step(this.eventQueue);
     this.captureProjectileImpacts();
+    this.stepDebrisLifetimes(dt);
   }
 
   /** Copy the resolved body pose back into the gameplay TankState. */

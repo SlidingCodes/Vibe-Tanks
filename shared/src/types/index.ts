@@ -213,10 +213,19 @@ export interface HazardState {
   timeRemaining: number;
 }
 
+export interface DebrisState {
+  debrisId: string;
+  position: Vec3;
+  rotation: { x: number; y: number; z: number; w: number };
+  size: number;
+  color: string;
+}
+
 export interface RoomStateUpdate {
   tanks: TankState[];
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  debris: DebrisState[];
 }
 
 // ── Match snapshot ──
@@ -229,6 +238,7 @@ export interface MatchSnapshot {
   terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  debris: DebrisState[];
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
 }
