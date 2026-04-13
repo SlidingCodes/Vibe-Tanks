@@ -1,45 +1,206 @@
-import { TerrainConfig, TerrainPatch, Vec3 } from '../../../shared/src/types/index';
-import { TERRAIN_GRID_WIDTH, TERRAIN_GRID_HEIGHT, TERRAIN_CELL_SIZE } from '../../../shared/src/constants';
+import { DEFAULT_TERRAIN_SETTINGS } from '../../../shared/src/terrain';
+import { TerrainConfig, TerrainGenerationParams, TerrainPatch, TerrainSettings, Vec3 } from '../../../shared/src/types/index';
+
+const UINT32_MAX = 0xffffffff;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function smoothStep01(t: number): number {
+  const clamped = clamp(t, 0, 1);
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function smoothThreshold(value: number, threshold: number, softness: number): number {
+  const soft = Math.max(softness, 0.0001);
+  return smoothStep01((value - (threshold - soft)) / (soft * 2));
+}
+
+export function createRandomTerrainSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
 
 export class Heightmap {
   width: number;
   height: number;
   cellSize: number;
+  seed: number;
+  generator: TerrainSettings['generator'];
+  params: TerrainGenerationParams;
   data: Float32Array;
   /** Subscribers notified whenever the height grid changes (regen or patch). */
   onChange: (() => void) | null = null;
 
-  constructor() {
-    this.width = TERRAIN_GRID_WIDTH;
-    this.height = TERRAIN_GRID_HEIGHT;
-    this.cellSize = TERRAIN_CELL_SIZE;
-    this.data = new Float32Array(this.width * this.height);
+  constructor(settings: TerrainSettings = DEFAULT_TERRAIN_SETTINGS, seed = createRandomTerrainSeed()) {
+    this.width = 0;
+    this.height = 0;
+    this.cellSize = 1;
+    this.seed = seed;
+    this.generator = settings.generator;
+    this.params = { ...settings.params };
+    this.data = new Float32Array(0);
+    this.configure(settings, seed);
+  }
+
+  getSettings(): TerrainSettings {
+    return {
+      gridWidth: this.width,
+      gridHeight: this.height,
+      cellSize: this.cellSize,
+      generator: this.generator,
+      params: { ...this.params },
+    };
+  }
+
+  private configure(settings: TerrainSettings, seed: number): void {
+    this.width = settings.gridWidth;
+    this.height = settings.gridHeight;
+    this.cellSize = settings.cellSize;
+    this.seed = seed;
+    this.generator = settings.generator;
+    this.params = { ...settings.params };
+
+    const expectedSize = this.width * this.height;
+    if (this.data.length !== expectedSize) {
+      this.data = new Float32Array(expectedSize);
+    }
+
     this.generate();
   }
 
-  /** Generate gentle rolling hills with a random phase per match. */
+  private hash(ix: number, iz: number, salt = 0): number {
+    let h = Math.imul(ix ^ (this.seed + salt), 0x45d9f3b);
+    h ^= Math.imul(iz ^ (this.seed * 97 + salt * 17), 0x119de1f3);
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x45d9f3b);
+    h ^= h >>> 16;
+    return h >>> 0;
+  }
+
+  private randomUnit(ix: number, iz: number, salt = 0): number {
+    return this.hash(ix, iz, salt) / UINT32_MAX;
+  }
+
+  private valueNoise(x: number, z: number, salt = 0): number {
+    const x0 = Math.floor(x);
+    const z0 = Math.floor(z);
+    const x1 = x0 + 1;
+    const z1 = z0 + 1;
+    const tx = smoothStep01(x - x0);
+    const tz = smoothStep01(z - z0);
+
+    const h00 = this.randomUnit(x0, z0, salt);
+    const h10 = this.randomUnit(x1, z0, salt);
+    const h01 = this.randomUnit(x0, z1, salt);
+    const h11 = this.randomUnit(x1, z1, salt);
+
+    const hx0 = lerp(h00, h10, tx);
+    const hx1 = lerp(h01, h11, tx);
+    return lerp(hx0, hx1, tz);
+  }
+
+  private signedNoise(x: number, z: number, salt = 0): number {
+    return this.valueNoise(x, z, salt) * 2 - 1;
+  }
+
+  private fbm(x: number, z: number, octaves: number, persistence: number, lacunarity: number, salt = 0): number {
+    let frequency = 1;
+    let amplitude = 1;
+    let total = 0;
+    let amplitudeSum = 0;
+
+    for (let octave = 0; octave < octaves; octave++) {
+      total += this.signedNoise(x * frequency, z * frequency, salt + octave * 101) * amplitude;
+      amplitudeSum += amplitude;
+      frequency *= lacunarity;
+      amplitude *= persistence;
+    }
+
+    return amplitudeSum > 0 ? total / amplitudeSum : 0;
+  }
+
+  private ridgedFbm(x: number, z: number, octaves: number, persistence: number, lacunarity: number, salt = 0): number {
+    let frequency = 1;
+    let amplitude = 1;
+    let total = 0;
+    let amplitudeSum = 0;
+
+    for (let octave = 0; octave < octaves; octave++) {
+      const n = this.signedNoise(x * frequency, z * frequency, salt + octave * 131);
+      const ridge = 1 - Math.abs(n);
+      total += (ridge * ridge * 2 - 1) * amplitude;
+      amplitudeSum += amplitude;
+      frequency *= lacunarity;
+      amplitude *= persistence;
+    }
+
+    return amplitudeSum > 0 ? total / amplitudeSum : 0;
+  }
+
+  private edgeFlattenFactor(worldX: number, worldZ: number): number {
+    const margin = Math.max(this.params.edgeFlatMargin, 0.001);
+    const maxX = Math.max(0, (this.width - 1) * this.cellSize);
+    const maxZ = Math.max(0, (this.height - 1) * this.cellSize);
+    const distToEdge = Math.min(worldX, worldZ, maxX - worldX, maxZ - worldZ);
+    const edgeT = smoothStep01(distToEdge / margin);
+    return 1 - this.params.edgeFlatStrength * (1 - edgeT);
+  }
+
+  /** Generate rougher seeded terrain with broad hills, ridges, and detail noise. */
   private generate(): void {
-    const phaseX = Math.random() * Math.PI * 2;
-    const phaseZ = Math.random() * Math.PI * 2;
-    const phaseD = Math.random() * Math.PI * 2;
-    const freqX = 2 + Math.random() * 1.5;
-    const freqZ = 2.5 + Math.random() * 1.5;
+    const p = this.params;
+    const detailOctaves = Math.max(1, p.detailOctaves ?? 2);
+    const detailPersistence = p.detailPersistence ?? 0.55;
+    const detailLacunarity = p.detailLacunarity ?? 2.3;
+    const ridgeOctaves = Math.max(1, p.ridgeOctaves ?? Math.max(2, p.macroOctaves - 1));
+    const peakWeight = Math.max(0, p.peakWeight ?? 0);
+    const mountainMaskScale = Math.max(0.0001, p.mountainMaskScale ?? Math.max(0.0001, p.macroScale * 0.55));
+    const mountainMaskThreshold = p.mountainMaskThreshold ?? 0.7;
+    const mountainMaskSoftness = p.mountainMaskSoftness ?? 0.1;
+    const peakScale = Math.max(0.0001, p.peakScale ?? Math.max(0.0001, p.ridgeScale * 1.15));
+    const peakOctaves = Math.max(1, p.peakOctaves ?? Math.max(2, ridgeOctaves + 1));
+    const peakSharpness = Math.max(1, p.peakSharpness ?? 2.4);
+    const peakPersistence = Math.min(0.9, Math.max(0.2, detailPersistence + 0.08));
+
     for (let z = 0; z < this.height; z++) {
       for (let x = 0; x < this.width; x++) {
-        const nx = x / this.width;
-        const nz = z / this.height;
-        let h = 0;
-        h += Math.sin(nx * Math.PI * freqX + phaseX) * 2;
-        h += Math.sin(nz * Math.PI * freqZ + phaseZ) * 1.5;
-        h += Math.sin((nx + nz) * Math.PI * 4 + phaseD) * 0.5;
-        h += 2;
-        this.data[z * this.width + x] = h;
+        const worldX = x * this.cellSize;
+        const worldZ = z * this.cellSize;
+        const warpX = this.signedNoise(worldX * p.warpScale, worldZ * p.warpScale, 701) * p.warpStrength;
+        const warpZ = this.signedNoise(worldX * p.warpScale, worldZ * p.warpScale, 911) * p.warpStrength;
+        const sampleX = worldX + warpX;
+        const sampleZ = worldZ + warpZ;
+
+        const macro = this.fbm(sampleX * p.macroScale, sampleZ * p.macroScale, p.macroOctaves, p.persistence, p.lacunarity, 211);
+        const ridge = this.ridgedFbm(sampleX * p.ridgeScale, sampleZ * p.ridgeScale, ridgeOctaves, p.persistence, p.lacunarity, 431);
+        const detail = this.fbm(sampleX * p.detailScale, sampleZ * p.detailScale, detailOctaves, detailPersistence, detailLacunarity, 617);
+        const edgeFactor = this.edgeFlattenFactor(worldX, worldZ);
+        const baseShape = macro + ridge * p.ridgeWeight + detail * p.detailWeight;
+        let shape = baseShape;
+
+        if (peakWeight > 0) {
+          const mountainMaskNoise = this.valueNoise(sampleX * mountainMaskScale, sampleZ * mountainMaskScale, 977);
+          const mountainMask = smoothThreshold(mountainMaskNoise, mountainMaskThreshold, mountainMaskSoftness);
+          if (mountainMask > 0) {
+            const peakNoise = this.ridgedFbm(sampleX * peakScale, sampleZ * peakScale, peakOctaves, peakPersistence, p.lacunarity, 1237);
+            const peakBase = clamp((peakNoise + 1) * 0.5, 0, 1);
+            const peakShape = Math.pow(peakBase, peakSharpness);
+            shape += mountainMask * peakShape * peakWeight;
+          }
+        }
+
+        this.data[z * this.width + x] = p.baseHeight + p.heightScale * shape * edgeFactor;
       }
     }
   }
 
-  regenerate(): void {
-    this.generate();
+  regenerate(seed = createRandomTerrainSeed(), settings: TerrainSettings = this.getSettings()): void {
+    this.configure(settings, seed);
     this.onChange?.();
   }
 
@@ -77,6 +238,41 @@ export class Heightmap {
       y: ny / len,
       z: nz / len,
     };
+  }
+
+  getSlopeMagnitude(x: number, z: number): number {
+    const step = this.cellSize;
+    const hE = this.getHeight(x + step, z);
+    const hW = this.getHeight(x - step, z);
+    const hN = this.getHeight(x, z + step);
+    const hS = this.getHeight(x, z - step);
+    const dhx = (hE - hW) / (2 * step);
+    const dhz = (hN - hS) / (2 * step);
+    return Math.sqrt(dhx * dhx + dhz * dhz);
+  }
+
+  getLocalRelief(x: number, z: number, radius = this.cellSize * 2.5): number {
+    const offsets = [
+      [0, 0],
+      [radius, 0],
+      [-radius, 0],
+      [0, radius],
+      [0, -radius],
+      [radius, radius],
+      [radius, -radius],
+      [-radius, radius],
+      [-radius, -radius],
+    ] as const;
+
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (const [dx, dz] of offsets) {
+      const h = this.getHeight(x + dx, z + dz);
+      if (h < minH) minH = h;
+      if (h > maxH) maxH = h;
+    }
+
+    return maxH - minH;
   }
 
   traceSegmentToTerrain(start: Vec3, end: Vec3, steps = 32): { hit: boolean; point: Vec3; normal: Vec3 } {
@@ -140,30 +336,32 @@ export class Heightmap {
     const patchW = endX - startX + 1;
     const patchH = endZ - startZ + 1;
 
-    const patchHeights: number[] = [];
+    const patchDeltas: number[] = [];
     for (let z = startZ; z <= endZ; z++) {
       for (let x = startX; x <= endX; x++) {
         const dx = (x - cx) * this.cellSize;
         const dz = (z - cz) * this.cellSize;
         const dist = Math.sqrt(dx * dx + dz * dz);
-        const idx = z * this.width + x;
-        let h = this.data[idx];
+        let delta = 0;
         if (dist < blastRadius) {
           const t = dist / blastRadius;
           const falloff = 1 - t * t * (3 - 2 * t);
-          h = h - terrainDamage * falloff;
+          delta = -terrainDamage * falloff;
         }
-        patchHeights.push(h);
+        patchDeltas.push(delta);
       }
     }
-    return { startX, startZ, width: patchW, height: patchH, heights: patchHeights };
+
+    return { startX, startZ, width: patchW, height: patchH, heightDeltas: patchDeltas };
   }
 
   applyPatch(patch: TerrainPatch): void {
     for (let j = 0; j < patch.height; j++) {
       for (let i = 0; i < patch.width; i++) {
-        this.data[(patch.startZ + j) * this.width + (patch.startX + i)] =
-          patch.heights[j * patch.width + i];
+        const patchIndex = j * patch.width + i;
+        const delta = patch.heightDeltas[patchIndex];
+        if (!delta) continue;
+        this.data[(patch.startZ + j) * this.width + (patch.startX + i)] += delta;
       }
     }
     this.onChange?.();
@@ -181,6 +379,9 @@ export class Heightmap {
       gridWidth: this.width,
       gridHeight: this.height,
       cellSize: this.cellSize,
+      seed: this.seed,
+      generator: this.generator,
+      params: { ...this.params },
       heights: Array.from(this.data),
     };
   }

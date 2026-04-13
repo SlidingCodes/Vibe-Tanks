@@ -12,6 +12,8 @@ import {
   ShotResult,
   ShotVisualStyle,
   TankState,
+  TerrainPresetId,
+  TerrainSettings,
   Vec3,
   WeaponDefinition,
 } from '../../../shared/src/types/index';
@@ -23,8 +25,14 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
 } from '../../../shared/src/constants';
+import {
+  DEFAULT_TERRAIN_PRESET_ID,
+  TERRAIN_PRESETS,
+  getRandomTerrainPresetId,
+  getTerrainSettingsForPreset,
+} from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { Heightmap } from '../terrain/Heightmap';
+import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
 import { ProjectileImpact, ProjectileSpawnConfig, RapierWorld } from '../physics/RapierWorld';
 import {
   DamageTotals,
@@ -113,6 +121,8 @@ export class Room {
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
   physics: RapierWorld;
+  private terrainPresetId: TerrainPresetId;
+  private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
@@ -129,10 +139,12 @@ export class Room {
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
-  constructor(id: string, io: Server) {
+  constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
     this.id = id;
     this.io = io;
-    this.heightmap = new Heightmap();
+    this.terrainPresetId = terrainPresetId;
+    this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
+    this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
     this.physics = new RapierWorld(this.heightmap);
     this.heightmap.onChange = () => this.physics.rebuildTerrain();
     this.scheduleReset();
@@ -152,7 +164,9 @@ export class Room {
     this.activeHazards.clear();
     this.scheduledStrikes = [];
     this.simTime = 0;
-    this.heightmap.regenerate();
+    this.terrainPresetId = getRandomTerrainPresetId();
+    this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
+    this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
       tank.position = pos;
@@ -273,26 +287,54 @@ export class Room {
   private findSpawnPosition(): { x: number; y: number; z: number } {
     const w = this.heightmap.width * this.heightmap.cellSize;
     const h = this.heightmap.height * this.heightmap.cellSize;
+    const edgePadding = Math.max(6, this.heightmap.cellSize * 6);
+    const centerX = w / 2;
+    const centerZ = h / 2;
+    let bestCandidate: { x: number; y: number; z: number } | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
 
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const x = 4 + Math.random() * (w - 8);
-      const z = 4 + Math.random() * (h - 8);
+    for (let attempt = 0; attempt < 96; attempt++) {
+      const x = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, w - edgePadding * 2);
+      const z = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, h - edgePadding * 2);
       const y = this.heightmap.getHeight(x, z);
 
       let tooClose = false;
+      let nearestTankDistance = Number.POSITIVE_INFINITY;
       for (const tank of this.tanks.values()) {
         const dx = tank.position.x - x;
         const dz = tank.position.z - z;
-        if (Math.sqrt(dx * dx + dz * dz) < SPAWN_MIN_DISTANCE) {
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        nearestTankDistance = Math.min(nearestTankDistance, dist);
+        if (dist < SPAWN_MIN_DISTANCE) {
           tooClose = true;
           break;
         }
       }
-      if (!tooClose) return { x, y, z };
+      if (tooClose) continue;
+
+      const slope = this.heightmap.getSlopeMagnitude(x, z);
+      const relief = this.heightmap.getLocalRelief(x, z, this.heightmap.cellSize * 2.5);
+      const centerBias = Math.hypot(x - centerX, z - centerZ) / Math.max(1, Math.hypot(centerX, centerZ));
+      const spacingPenalty = nearestTankDistance === Number.POSITIVE_INFINITY
+        ? 0
+        : 1 / Math.max(nearestTankDistance, SPAWN_MIN_DISTANCE);
+      const score = slope * 2.4 + relief * 0.75 + centerBias * 0.5 + spacingPenalty;
+      const candidate = { x, y, z };
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestCandidate = candidate;
+      }
+
+      if (slope <= 0.45 && relief <= 1.8) {
+        return candidate;
+      }
     }
 
-    const x = w / 2;
-    const z = h / 2;
+    if (bestCandidate) return bestCandidate;
+
+    const x = centerX;
+    const z = centerZ;
     return { x, y: this.heightmap.getHeight(x, z), z };
   }
 
@@ -1281,6 +1323,8 @@ export class Room {
       phase: this.phase,
       tanks: state.tanks,
       terrain: this.heightmap.toConfig(),
+      terrainPresetId: this.terrainPresetId,
+      terrainPresetLabel: TERRAIN_PRESETS[this.terrainPresetId].label,
       projectiles: state.projectiles,
       hazards: state.hazards,
       resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),

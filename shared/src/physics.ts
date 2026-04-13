@@ -6,8 +6,11 @@ export interface TankVelocity {
   z: number;
 }
 
-const TILT_SAMPLE = 0.9;
-const GRAD_EPS = 0.6;
+const BASE_TILT_SAMPLE = 1.5;
+// Sampled gradient stencil. Must exceed the characteristic wavelength of
+// high-frequency terrain detail (currently detailScale≈0.15 → ~6.6m wavelength,
+// sub-meter bumps) or every bump reads as a cliff and the tank locks up.
+const BASE_GRAD_EPS = 1.5;
 const GRAVITY_ACCEL = 9.81;
 // Engine "grip": how strongly the tracks hold the commanded velocity.
 // High value = tank ignores small slopes (locks to target speed).
@@ -37,16 +40,26 @@ export function stepTankPhysics(
   sampleHeight: HeightSampler,
   mapW: number,
   mapH: number,
+  cellSize = 1,
 ): void {
-  if (input.left) tank.bodyRotation += TANK_TURN_SPEED * dt;
-  if (input.right) tank.bodyRotation -= TANK_TURN_SPEED * dt;
+  let moveDir = 0;
+  if (input.forward) moveDir += 1;
+  if (input.backward) moveDir -= 1;
 
-  const hE = sampleHeight(tank.position.x + GRAD_EPS, tank.position.z);
-  const hW = sampleHeight(tank.position.x - GRAD_EPS, tank.position.z);
-  const hN = sampleHeight(tank.position.x, tank.position.z + GRAD_EPS);
-  const hS = sampleHeight(tank.position.x, tank.position.z - GRAD_EPS);
-  const dhx = (hE - hW) / (2 * GRAD_EPS);
-  const dhz = (hN - hS) / (2 * GRAD_EPS);
+  // Invert steering when moving backward for intuitive arcade controls.
+  const turnScale = moveDir < 0 ? -1 : 1;
+  if (input.left) tank.bodyRotation += TANK_TURN_SPEED * dt * turnScale;
+  if (input.right) tank.bodyRotation -= TANK_TURN_SPEED * dt * turnScale;
+
+  const gradEps = BASE_GRAD_EPS * cellSize;
+  const tiltSample = BASE_TILT_SAMPLE * cellSize;
+
+  const hE = sampleHeight(tank.position.x + gradEps, tank.position.z);
+  const hW = sampleHeight(tank.position.x - gradEps, tank.position.z);
+  const hN = sampleHeight(tank.position.x, tank.position.z + gradEps);
+  const hS = sampleHeight(tank.position.x, tank.position.z - gradEps);
+  const dhx = (hE - hW) / (2 * gradEps);
+  const dhz = (hN - hS) / (2 * gradEps);
   const gradSq = dhx * dhx + dhz * dhz;
   const gradMag = Math.sqrt(gradSq);
   // Slide as horizontal component of gravity on the slope surface (Model B:
@@ -69,9 +82,6 @@ export function stepTankPhysics(
       ? 1
       : 1 - (gradMag - SLIDE_GRADE_THRESHOLD) / (CLIFF_GRADE - SLIDE_GRADE_THRESHOLD);
 
-  let moveDir = 0;
-  if (input.forward) moveDir += 1;
-  if (input.backward) moveDir -= 1;
   const fwdX = Math.sin(tank.bodyRotation);
   const fwdZ = Math.cos(tank.bodyRotation);
 
@@ -101,15 +111,16 @@ export function stepTankPhysics(
 
   const nx = tank.position.x + vel.x * dt;
   const nz = tank.position.z + vel.z * dt;
-  const cx = Math.max(1, Math.min(mapW - 1, nx));
-  const cz = Math.max(1, Math.min(mapH - 1, nz));
+  const borderPadding = Math.max(1, cellSize);
+  const cx = Math.max(borderPadding, Math.min(mapW - borderPadding, nx));
+  const cz = Math.max(borderPadding, Math.min(mapH - borderPadding, nz));
   if (cx !== nx) vel.x = 0;
   if (cz !== nz) vel.z = 0;
   tank.position.x = cx;
   tank.position.z = cz;
 
   tank.position.y = sampleHeight(cx, cz);
-  const d = TILT_SAMPLE;
+  const d = tiltSample;
   const rgtX = Math.cos(tank.bodyRotation), rgtZ = -Math.sin(tank.bodyRotation);
   const hF = sampleHeight(cx + fwdX * d, cz + fwdZ * d);
   const hB = sampleHeight(cx - fwdX * d, cz - fwdZ * d);

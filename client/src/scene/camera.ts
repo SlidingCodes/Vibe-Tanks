@@ -41,7 +41,7 @@ function applyProjection(): void {
 
 export function createCamera(): THREE.PerspectiveCamera {
   const p = PRESETS[currentPreset];
-  camera = new THREE.PerspectiveCamera(p.fov, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera = new THREE.PerspectiveCamera(p.fov, window.innerWidth / window.innerHeight, 0.1, 220);
   camera.position.set(32, 30, 50);
   camera.lookAt(32, 0, 32);
 
@@ -60,6 +60,12 @@ export function setCameraPreset(id: CameraPresetId): void {
 
 export function getCameraPreset(): CameraPresetId {
   return currentPreset;
+}
+
+export function updateCameraScale(terrainWidth: number, terrainHeight: number): void {
+  const worldMax = Math.max(terrainWidth, terrainHeight);
+  camera.far = Math.max(220, worldMax * 2.3);
+  camera.updateProjectionMatrix();
 }
 
 /** Follow a tank in third-person: behind and above, looking at it */
@@ -104,7 +110,12 @@ export function addImpactCameraShake(intensity: number, duration = 0.22): void {
 }
 
 export function overviewCamera(terrainWidth: number, terrainHeight: number): void {
-  camera.position.set(terrainWidth / 2, 35, terrainHeight + 15);
+  const worldMax = Math.max(terrainWidth, terrainHeight);
+  camera.position.set(
+    terrainWidth / 2,
+    Math.max(35, worldMax * 0.55),
+    terrainHeight / 2 + Math.max(15, worldMax * 0.95),
+  );
   camera.lookAt(terrainWidth / 2, 0, terrainHeight / 2);
 }
 

@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '../../shared/src/types/index';
 import { SERVER_PORT } from '../../shared/src/constants';
+import { getRandomTerrainPresetId } from '../../shared/src/terrain';
 import { Room } from './rooms/Room';
 import { initRapier } from './physics/RapierWorld';
 
@@ -10,9 +11,9 @@ const io = new Server<ClientEvents, ServerEvents>(httpServer, {
   cors: { origin: '*' },
 });
 
-let mainRoom: Room;
+let mainRoom: Room | null = null;
 initRapier().then(() => {
-  mainRoom = new Room('main', io);
+  mainRoom = new Room('main', io, getRandomTerrainPresetId());
 });
 
 io.on('connection', (socket) => {

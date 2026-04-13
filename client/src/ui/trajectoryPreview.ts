@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRAVITY } from '@shared/constants';
 import { Vec3, WeaponDefinition } from '@shared/types/index';
-import { getTerrainHeight } from '../scene/terrain';
+import { getTerrainCellSize, getTerrainHeight } from '../scene/terrain';
 
 const MAX_PARENT_DOTS = 80;
 const MAX_FRAGMENT_DOTS = 90;
@@ -101,7 +101,7 @@ function add(a: Vec3, b: Vec3): Vec3 {
 }
 
 function getSurfaceNormal(x: number, z: number): Vec3 {
-  const step = 1;
+  const step = getTerrainCellSize();
   const hx0 = getTerrainHeight(x - step, z);
   const hx1 = getTerrainHeight(x + step, z);
   const hz0 = getTerrainHeight(x, z - step);
@@ -237,6 +237,7 @@ export function updateTrajectoryPreview(
   vz: number,
   weapon: WeaponDefinition,
   aimTarget?: Vec3 | null,
+  resolvedEndPoint?: Vec3 | null,
 ): void {
   if (!initialized) init(scene);
 
@@ -351,8 +352,8 @@ export function updateTrajectoryPreview(
   if (weapon.behavior === 'rail') {
     parentMat.color.setHex(0xaff4ff);
     const dir = normalize(startVel);
-    const end = aimTarget
-      ? { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z }
+    const end = resolvedEndPoint
+      ? { x: resolvedEndPoint.x, y: resolvedEndPoint.y, z: resolvedEndPoint.z }
       : {
           x: startPos.x + dir.x * (weapon.behaviorConfig?.railRange ?? 50),
           y: startPos.y + dir.y * (weapon.behaviorConfig?.railRange ?? 50),

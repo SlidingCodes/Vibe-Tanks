@@ -4,6 +4,12 @@ import { MovementInput } from '@shared/types/index';
 const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
 const MOVEMENT_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
+let currentWeaponSlot = 0;
+let weaponCount = 1;
+
+export function setWeaponCount(count: number): void {
+  weaponCount = count;
+}
 
 window.addEventListener('keydown', (e) => {
   if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
@@ -13,11 +19,20 @@ window.addEventListener('keydown', (e) => {
     const slot = digit === 0 ? 9 : digit - 1;
     if (Number.isInteger(slot) && slot >= 0) {
       pendingWeaponSlot = slot;
+      currentWeaponSlot = slot;
     }
   }
 
   keys[e.code] = true;
 });
+
+window.addEventListener('wheel', (e) => {
+  if (weaponCount <= 1) return;
+  const dir = e.deltaY > 0 ? -1 : 1;
+  currentWeaponSlot = ((currentWeaponSlot + dir) % weaponCount + weaponCount) % weaponCount;
+  pendingWeaponSlot = currentWeaponSlot;
+});
+
 window.addEventListener('keyup', (e) => {
   if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
   keys[e.code] = false;
@@ -90,6 +105,7 @@ export function triggerVirtualFire(): void {
 
 export function setVirtualWeaponSlot(slot: number): void {
   pendingWeaponSlot = slot;
+  currentWeaponSlot = slot;
 }
 
 // ── Direct aim override (mobile aim bar) ──
@@ -141,8 +157,16 @@ export function requestPointerLock(): void {
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export function getAimTarget(camera: THREE.Camera, tankY: number): THREE.Vector3 | null {
+export function getAimTarget(camera: THREE.Camera, terrain: THREE.Object3D | null, tankY: number): THREE.Vector3 | null {
   raycaster.setFromCamera(mouse, camera);
+
+  if (terrain) {
+    const hits = raycaster.intersectObject(terrain, false);
+    if (hits.length > 0) {
+      return hits[0].point.clone();
+    }
+  }
+
   groundPlane.constant = -tankY;
   const target = new THREE.Vector3();
   const hit = raycaster.ray.intersectPlane(groundPlane, target);
