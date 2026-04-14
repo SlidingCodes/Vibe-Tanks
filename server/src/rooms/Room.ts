@@ -768,7 +768,7 @@ export class Room {
       this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
     }
 
-    this.physics.applyTankInputs();
+    this.physics.applyTankInputs(dt);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {

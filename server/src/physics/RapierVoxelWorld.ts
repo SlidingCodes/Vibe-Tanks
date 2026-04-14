@@ -5,21 +5,19 @@ import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../../../shared/
 import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '../../../shared/src/constants';
 
 // ── Tank tuning ─────────────────────────────────────────────────────
-/** Sphere collider for the tank hull. Using a ball means tunnel entrances
- *  and crater lips don't "catch" the front of a cuboid and get deflected
- *  upward by Rapier's collision response — a sphere rolls into openings.
- *  Direction of motion still comes from the body's yaw. */
-const HULL_RADIUS = 0.85;
-const HULL_MASS = 900;
-/** Y offset from tank.position.y to the body center so the sphere sits flush
- *  on the ground. */
+/** Sphere collider for the tank hull. Ball + KCC means the tank cannot
+ *  catch on crater lips / tunnel stipes the way a cuboid did, and the
+ *  KCC enforces a slope climb limit so it won't ride up overhanging
+ *  terrain instead of entering the opening. */
+const HULL_RADIUS = 0.8;
 const BODY_Y_OFFSET = HULL_RADIUS;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
-/** Per-tick blend toward the target horizontal velocity. 0.4 at 60 Hz ≈
- *  40 ms time constant — very responsive. */
-const VEL_BLEND = 0.4;
+const MAX_SLOPE_CLIMB_DEG = 45;
+const AUTOSTEP_HEIGHT = 0.4;
+const AUTOSTEP_MIN_WIDTH = 0.15;
+const SNAP_TO_GROUND = 0.5;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -35,6 +33,8 @@ interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   input: MovementInput;
+  yaw: number;
+  verticalVel: number;
 }
 
 const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false };
@@ -66,11 +66,19 @@ export class RapierVoxelWorld {
   private terrainBody: RAPIER.RigidBody;
   private colliders: Map<string, RAPIER.Collider> = new Map();
   private tanks: Map<PlayerId, TankEntry> = new Map();
+  private kcc: RAPIER.KinematicCharacterController;
 
   constructor(grid: VoxelGrid) {
     this.grid = grid;
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.terrainBody = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    // Shared KCC for all tanks. 0.02 m penetration allowance: generous enough
+    // to tolerate the carve density gradient without snagging.
+    this.kcc = this.world.createCharacterController(0.02);
+    this.kcc.setMaxSlopeClimbAngle((MAX_SLOPE_CLIMB_DEG * Math.PI) / 180);
+    this.kcc.enableAutostep(AUTOSTEP_HEIGHT, AUTOSTEP_MIN_WIDTH, true);
+    this.kcc.enableSnapToGround(SNAP_TO_GROUND);
+    this.kcc.setApplyImpulsesToDynamicBodies(false);
     this.rebuildAll();
   }
 
@@ -154,22 +162,24 @@ export class RapierVoxelWorld {
 
   addTank(tank: TankState): void {
     if (this.tanks.has(tank.playerId)) this.removeTank(tank.playerId);
-    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+    // Kinematic position-based: we tell Rapier where the tank should go each
+    // frame via setNextKinematicTranslation and the KCC resolves contacts
+    // (slope climb limit, autostep, ground snap).
+    const bodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
       .setTranslation(tank.position.x, tank.position.y + BODY_Y_OFFSET + 0.3, tank.position.z)
-      .setRotation(quatFromYaw(tank.bodyRotation))
-      // Pitch/roll locked for stability on voxel terrain — tank stays upright
-      // regardless of slope. Tradeoff is no visual tilt; revisit post-V4.
-      .enabledRotations(false, true, false);
+      .setRotation(quatFromYaw(tank.bodyRotation));
     const body = this.world.createRigidBody(bodyDesc);
-    // Low friction on the hull because locomotion is driven by setLinvel;
-    // friction would otherwise fight the direct velocity commands and the
-    // tank would drift back toward rest (the rubber-band bug in V4b).
     const colliderDesc = RAPIER.ColliderDesc.ball(HULL_RADIUS)
-      .setMass(HULL_MASS)
-      .setFriction(0.1)
+      .setFriction(0.2)
       .setRestitution(0);
     const collider = this.world.createCollider(colliderDesc, body);
-    this.tanks.set(tank.playerId, { body, collider, input: { ...ZERO_INPUT } });
+    this.tanks.set(tank.playerId, {
+      body,
+      collider,
+      input: { ...ZERO_INPUT },
+      yaw: tank.bodyRotation,
+      verticalVel: 0,
+    });
   }
 
   removeTank(id: PlayerId): void {
@@ -184,11 +194,12 @@ export class RapierVoxelWorld {
   resetTank(id: PlayerId, pos: Vec3, yaw: number): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
+    entry.body.setNextKinematicTranslation({ x: pos.x, y: pos.y + BODY_Y_OFFSET + 0.3, z: pos.z });
     entry.body.setTranslation({ x: pos.x, y: pos.y + BODY_Y_OFFSET + 0.3, z: pos.z }, true);
     entry.body.setRotation(quatFromYaw(yaw), true);
-    entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     entry.input = { ...ZERO_INPUT };
+    entry.yaw = yaw;
+    entry.verticalVel = 0;
   }
 
   setTankInput(id: PlayerId, input: MovementInput): void {
@@ -197,41 +208,50 @@ export class RapierVoxelWorld {
     entry.input = { ...input };
   }
 
-  /** Translate per-tank input into body velocity on each tick. Must be
-   *  called before stepping the world. Uses direct setLinvel (arcade-style)
-   *  to sidestep terrain friction — impulse control fights friction and the
-   *  tank never moves. Y is preserved so gravity + collision response still
-   *  handle falls into pits and bumps into walls. */
-  applyTankInputs(): void {
+  /** Translate per-tank input into desired movement, let the KCC solve
+   *  against the voxel collider mesh, then commit the result as the tank's
+   *  next kinematic translation. Must be called before stepping the world. */
+  applyTankInputs(dt: number): void {
     for (const entry of this.tanks.values()) {
       const input = entry.input;
       const body = entry.body;
 
-      // Yaw via angular velocity — tank pivots in place. Sign matches
-      // shared/physics: left increases yaw, right decreases.
+      // Yaw: rotate by a fixed angular speed while left/right is held.
+      // Sign matches shared/physics (left increases yaw, right decreases).
       const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
-      body.setAngvel({ x: 0, y: turn * TURN_ANGVEL, z: 0 }, true);
+      entry.yaw += turn * TURN_ANGVEL * dt;
 
-      // Forward drive in body-local +Z (convention: fwdX=sin(yaw), fwdZ=cos(yaw)).
-      const yaw = yawFromQuat(body.rotation());
-      const fwdX = Math.sin(yaw);
-      const fwdZ = Math.cos(yaw);
+      const fwdX = Math.sin(entry.yaw);
+      const fwdZ = Math.cos(entry.yaw);
 
-      let targetVx = 0, targetVz = 0;
+      let moveX = 0, moveZ = 0;
       if (input.forward) {
-        targetVx = fwdX * FORWARD_SPEED;
-        targetVz = fwdZ * FORWARD_SPEED;
+        moveX = fwdX * FORWARD_SPEED * dt;
+        moveZ = fwdZ * FORWARD_SPEED * dt;
       } else if (input.backward) {
-        targetVx = -fwdX * BACKWARD_SPEED;
-        targetVz = -fwdZ * BACKWARD_SPEED;
+        moveX = -fwdX * BACKWARD_SPEED * dt;
+        moveZ = -fwdZ * BACKWARD_SPEED * dt;
       }
 
-      const vel = body.linvel();
-      body.setLinvel({
-        x: vel.x + (targetVx - vel.x) * VEL_BLEND,
-        y: vel.y,
-        z: vel.z + (targetVz - vel.z) * VEL_BLEND,
-      }, true);
+      // Integrate gravity manually (kinematic bodies ignore world gravity).
+      entry.verticalVel += GRAVITY * dt;
+      const moveY = entry.verticalVel * dt;
+
+      this.kcc.computeColliderMovement(entry.collider, { x: moveX, y: moveY, z: moveZ });
+      const corrected = this.kcc.computedMovement();
+      const pos = body.translation();
+      body.setNextKinematicTranslation({
+        x: pos.x + corrected.x,
+        y: pos.y + corrected.y,
+        z: pos.z + corrected.z,
+      });
+      body.setNextKinematicRotation(quatFromYaw(entry.yaw));
+
+      // Reset accumulated fall velocity when the KCC reports grounded so we
+      // don't build up downward momentum against the floor.
+      if (this.kcc.computedGrounded()) {
+        entry.verticalVel = 0;
+      }
     }
   }
 
@@ -240,15 +260,13 @@ export class RapierVoxelWorld {
     const entry = this.tanks.get(id);
     if (!entry) return;
     const pos = entry.body.translation();
-    const rot = entry.body.rotation();
     tank.position.x = pos.x;
-    // "position.y" represents the cuboid bottom — matches the old convention
+    // "position.y" represents the hull bottom — matches the old convention
     // where stepTankPhysics set tank.y to the ground surface, so the client
     // mesh stays visually coherent.
     tank.position.y = pos.y - BODY_Y_OFFSET;
     tank.position.z = pos.z;
-    tank.bodyRotation = yawFromQuat(rot);
-    // Pitch/roll locked: keep zero so the client renders upright.
+    tank.bodyRotation = entry.yaw;
     tank.bodyPitch = 0;
     tank.bodyRoll = 0;
   }
