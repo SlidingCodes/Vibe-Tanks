@@ -79,36 +79,28 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
   function spawnFromCarve(grid: VoxelGrid, center: Vec3, radius: number): void {
     // Scale count with volume but cap.
     const count = Math.min(45, Math.max(8, Math.floor(radius * radius * radius * 1.8)));
-    const cs = grid.cellSize;
-    let spawned = 0;
-    for (let attempt = 0; attempt < count * 4 && spawned < count; attempt++) {
-      // Uniform point in sphere.
+    for (let i = 0; i < count; i++) {
+      // Random point on a disk within the blast XZ radius (sqrt for uniform area).
       const theta = Math.random() * Math.PI * 2;
-      const phiCos = 2 * Math.random() - 1;
-      const phiSin = Math.sqrt(1 - phiCos * phiCos);
-      const rr = radius * Math.cbrt(Math.random());
-      const dx = rr * phiSin * Math.cos(theta);
-      const dy = rr * phiCos;
-      const dz = rr * phiSin * Math.sin(theta);
-      const px = center.x + dx;
-      const py = center.y + dy;
-      const pz = center.z + dz;
-      const ix = Math.round(px / cs);
-      const iy = Math.round(py / cs) - grid.minYCells;
-      const iz = Math.round(pz / cs);
-      if (!grid.isSolid(ix, iy, iz)) continue;
+      const rXZ = radius * Math.sqrt(Math.random());
+      const px = center.x + rXZ * Math.cos(theta);
+      const pz = center.z + rXZ * Math.sin(theta);
+      // Spawn just above the current ground so debris is always visible no
+      // matter which terrain renderer is on. Use max(groundY, center.y) so a
+      // carve that ate into the surface still spawns at a sensible height.
+      const groundY = grid.getHeightInterpolated(px, pz);
+      const py = Math.max(groundY, center.y) + 0.3 + Math.random() * 0.6;
 
-      const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      const radialSpeed = 5 + Math.random() * 5;
-      const upBoost = 3 + Math.random() * 4;
-      const jitter = 1.5;
+      const radialSpeed = 4 + Math.random() * 5;
+      const upBoost = 5 + Math.random() * 5;
+      const jitterXZ = 1.8;
 
       const slot = allocSlot();
       const s = states[slot];
       s.px = px; s.py = py; s.pz = pz;
-      s.vx = (dx / len) * radialSpeed + (Math.random() - 0.5) * jitter;
-      s.vy = Math.abs(dy / len) * radialSpeed * 0.5 + upBoost;
-      s.vz = (dz / len) * radialSpeed + (Math.random() - 0.5) * jitter;
+      s.vx = Math.cos(theta) * radialSpeed + (Math.random() - 0.5) * jitterXZ;
+      s.vy = upBoost;
+      s.vz = Math.sin(theta) * radialSpeed + (Math.random() - 0.5) * jitterXZ;
       s.rx = Math.random() * Math.PI * 2;
       s.ry = Math.random() * Math.PI * 2;
       s.rz = Math.random() * Math.PI * 2;
@@ -127,10 +119,8 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
       dummy.scale.setScalar(1);
       dummy.updateMatrix();
       mesh.setMatrixAt(slot, dummy.matrix);
-
-      spawned++;
     }
-    if (spawned > 0) mesh.instanceMatrix.needsUpdate = true;
+    if (count > 0) mesh.instanceMatrix.needsUpdate = true;
   }
 
   function update(dt: number, grid: VoxelGrid | null): void {
