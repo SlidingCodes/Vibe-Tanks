@@ -88,8 +88,12 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
       // Spawn just above the current ground so debris is always visible no
       // matter which terrain renderer is on. Use max(groundY, center.y) so a
       // carve that ate into the surface still spawns at a sensible height.
-      const groundY = grid.getHeightInterpolated(px, pz);
-      const py = Math.max(groundY, center.y) + 0.3 + Math.random() * 0.6;
+      // Use the same sampler the settle check uses below (getHeight, cell-
+      // quantized). Mixing getHeightInterpolated here and getHeight there let
+      // some spawns land below the settle threshold and die on the first
+      // frame, which showed up as "shells cast shadows but nothing appears".
+      const groundY = grid.getHeight(px, pz);
+      const py = groundY + 0.8 + Math.random() * 1.0;
 
       const radialSpeed = 4 + Math.random() * 5;
       const upBoost = 5 + Math.random() * 5;
@@ -158,7 +162,7 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
 
         if (grid) {
           const groundY = grid.getHeight(s.px, s.pz);
-          if (s.py <= groundY + 0.1) {
+          if (s.py < groundY + 0.1) {
             s.py = groundY + 0.1;
             s.vx = 0; s.vy = 0; s.vz = 0;
             s.wx = 0; s.wy = 0; s.wz = 0;
