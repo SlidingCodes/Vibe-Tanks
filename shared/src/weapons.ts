@@ -128,7 +128,7 @@ export const WEAPONS: WeaponDefinition[] = [
     damage: 18,
     terrainDamage: 2.4,
     behavior: 'mortar',
-    cooldown: 3.8,
+    cooldown: 2.8,
     behaviorConfig: {
       mortarShellCount: 5,
       mortarSpread: 5.5,
