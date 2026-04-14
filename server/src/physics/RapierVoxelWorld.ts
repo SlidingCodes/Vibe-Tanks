@@ -231,25 +231,30 @@ export class RapierVoxelWorld {
         moveZ = -fwdZ * BACKWARD_SPEED * dt;
       }
 
-      // Integrate gravity manually (kinematic bodies ignore world gravity).
+      // Raycast-based grounded check. KCC.computedGrounded() reports true
+      // whenever the sphere grazes a rim corner sideways, which kept
+      // verticalVel pinned at 0 over crater edges — the tank couldn't fall
+      // in. A short downward ray from just below the sphere is strict:
+      // only actual ground within 10 cm counts as grounded.
+      const pos = body.translation();
+      const rayOrigin = { x: pos.x, y: pos.y - HULL_RADIUS - 0.01, z: pos.z };
+      const downRay = new RAPIER.Ray(rayOrigin, { x: 0, y: -1, z: 0 });
+      const grounded = this.world.castRay(downRay, 0.1, true) !== null;
+
+      if (grounded) entry.verticalVel = 0;
+      // Always integrate gravity — if we're over a pit, verticalVel builds
+      // up each tick and KCC below lets the tank drop.
       entry.verticalVel += GRAVITY * dt;
       const moveY = entry.verticalVel * dt;
 
       this.kcc.computeColliderMovement(entry.collider, { x: moveX, y: moveY, z: moveZ });
       const corrected = this.kcc.computedMovement();
-      const pos = body.translation();
       body.setNextKinematicTranslation({
         x: pos.x + corrected.x,
         y: pos.y + corrected.y,
         z: pos.z + corrected.z,
       });
       body.setNextKinematicRotation(quatFromYaw(entry.yaw));
-
-      // Reset accumulated fall velocity when the KCC reports grounded so we
-      // don't build up downward momentum against the floor.
-      if (this.kcc.computedGrounded()) {
-        entry.verticalVel = 0;
-      }
     }
   }
 
