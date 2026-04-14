@@ -18,13 +18,23 @@ export interface HeightmapSampler {
 }
 
 /**
- * Dense 3D voxel grid. Shadow state mirrored from the heightmap: seeded at
- * boot / match reset and carved alongside every heightmap patch (V2).
- * Storage is a single Uint8Array (0 = empty, >0 = solid density).
- * Index layout: y-slice major, then z-row, then x.
+ * Isosurface threshold. Values strictly above are "solid"; at or below are "empty".
+ * Encoding: density = 128 at the surface; saturates to 255 about 1 cell below,
+ * to 0 about 1 cell above. Surface nets uses the densities to interpolate the
+ * exact crossing position on each edge — giving sub-cell smooth geometry even
+ * at cellSize = 1.
+ */
+export const DENSITY_THRESHOLD = 128;
+const DENSITY_SCALE = 127;
+
+/**
+ * Dense 3D voxel grid. Stores a signed-distance-ish density per cell: 255 deep
+ * inside, 128 at the surface, 0 deep outside. The density gradient lets the
+ * client surface-nets renderer place triangle vertices at the actual isosurface
+ * crossing on each cube edge instead of at cube centers — so a 1-unit grid
+ * produces smooth terrain.
  *
  * World-Y span: [minYCells * cellSize, (minYCells + sizeY) * cellSize].
- * minYCells is typically negative so the grid can represent underground voxels.
  */
 export class VoxelGrid {
   readonly sizeX: number;
@@ -77,9 +87,10 @@ export class VoxelGrid {
     );
   }
 
+  /** True if the density at (ix, iy, iz) is above the surface threshold. */
   isSolid(ix: number, iy: number, iz: number): boolean {
     if (!this.inBounds(ix, iy, iz)) return false;
-    return this.data[this.index(ix, iy, iz)] > 0;
+    return this.data[this.index(ix, iy, iz)] > DENSITY_THRESHOLD - 1;
   }
 
   getDensity(ix: number, iy: number, iz: number): number {
@@ -96,26 +107,37 @@ export class VoxelGrid {
     this.data.fill(0);
   }
 
-  /** Fill columns up to the sampled heightmap surface (rounded to nearest cell). */
+  /**
+   * Seed densities from a heightmap sampler. The density at voxel (ix,iy,iz)
+   * represents the scalar field sampled at the CELL CENTER
+   * ((ix+0.5)*cs, (iy+0.5+minY)*cs, (iz+0.5)*cs). Signed distance to the
+   * surface is scaled into [0, 255] with the threshold at 128.
+   * This convention keeps cuberille looking like the old binary seed (cells
+   * with center below the surface are solid) while still letting SN read a
+   * smooth density gradient.
+   */
   seedFromHeightmap(heightmap: HeightmapSampler): void {
-    this.clear();
+    const cs = this.cellSize;
     for (let iz = 0; iz < this.sizeZ; iz++) {
-      const wz = iz * this.cellSize;
+      const wz = (iz + 0.5) * cs;
       for (let ix = 0; ix < this.sizeX; ix++) {
-        const wx = ix * this.cellSize;
+        const wx = (ix + 0.5) * cs;
         const h = heightmap.getHeight(wx, wz);
-        const topAbs = Math.round(h / this.cellSize);
-        const topLocal = Math.max(0, Math.min(this.sizeY, topAbs - this.minYCells));
-        for (let iy = 0; iy < topLocal; iy++) {
-          this.data[this.index(ix, iy, iz)] = 255;
+        for (let iy = 0; iy < this.sizeY; iy++) {
+          const worldY = (this.minYCells + iy + 0.5) * cs;
+          const signed = (h - worldY) * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const d = signed <= 0 ? 0 : signed >= 255 ? 255 : Math.round(signed);
+          this.data[this.index(ix, iy, iz)] = d;
         }
       }
     }
   }
 
   /**
-   * Boolean sphere carve: every voxel whose center is inside the sphere is
-   * fully emptied. Conservative AABB iteration.
+   * Smooth sphere carve: voxels well inside the sphere are set to 0; the
+   * outer 15 % forms a smoothstep blend back to the existing density. That
+   * keeps carves crisp inside but gives the surface-nets crossings a soft
+   * rim, avoiding stair-stepping on the crater lip.
    */
   carveSphere(center: Vec3, radius: number): void {
     if (radius <= 0) return;
@@ -126,7 +148,7 @@ export class VoxelGrid {
     const izMax = Math.min(this.sizeZ - 1, Math.ceil((center.z + radius) / cs));
     const iyMin = Math.max(0, Math.floor((center.y - radius) / cs) - this.minYCells);
     const iyMax = Math.min(this.sizeY - 1, Math.ceil((center.y + radius) / cs) - this.minYCells);
-    const r2 = radius * radius;
+    const invR = 1 / radius;
 
     for (let iy = iyMin; iy <= iyMax; iy++) {
       const wy = (this.minYCells + iy + 0.5) * cs;
@@ -137,18 +159,28 @@ export class VoxelGrid {
         for (let ix = ixMin; ix <= ixMax; ix++) {
           const wx = (ix + 0.5) * cs;
           const dx = wx - center.x;
-          if (dx * dx + dy * dy + dz * dz < r2) {
-            this.data[this.index(ix, iy, iz)] = 0;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (d >= radius) continue;
+          const idx = this.index(ix, iy, iz);
+          const u = d * invR;
+          let keep: number;
+          if (u < 0.85) keep = 0;
+          else {
+            const t = (u - 0.85) / 0.15;
+            keep = t * t * (3 - 2 * t);
           }
+          const existing = this.data[idx];
+          const newD = Math.round(existing * keep);
+          if (newD < existing) this.data[idx] = newD;
         }
       }
     }
   }
 
   /**
-   * Boolean cone carve: apex + t*direction for t ∈ [0, length], radius ramping
-   * from 0 at apex to baseRadius at the far end. `direction` is normalized
-   * internally.
+   * Smooth cone carve: same falloff shape as carveSphere but on perpendicular
+   * distance to the axis, with radius ramping from 0 at apex to baseRadius
+   * at the far end.
    */
   carveCone(apex: Vec3, direction: Vec3, length: number, baseRadius: number): void {
     if (length <= 0 || baseRadius <= 0) return;
@@ -183,14 +215,24 @@ export class VoxelGrid {
           const dx = wx - apex.x, dy = wy - apex.y, dz = wz - apex.z;
           const along = dx * nx + dy * ny + dz * nz;
           if (along < 0 || along > length) continue;
+          const rAt = baseRadius * along * invLength;
+          if (rAt <= 0) continue;
           const perpX = dx - along * nx;
           const perpY = dy - along * ny;
           const perpZ = dz - along * nz;
           const perp = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
-          const rAt = baseRadius * along * invLength;
-          if (perp < rAt && rAt > 0) {
-            this.data[this.index(ix, iy, iz)] = 0;
+          if (perp >= rAt) continue;
+          const idx = this.index(ix, iy, iz);
+          const u = perp / rAt;
+          let keep: number;
+          if (u < 0.85) keep = 0;
+          else {
+            const t = (u - 0.85) / 0.15;
+            keep = t * t * (3 - 2 * t);
           }
+          const existing = this.data[idx];
+          const newD = Math.round(existing * keep);
+          if (newD < existing) this.data[idx] = newD;
         }
       }
     }
@@ -208,19 +250,31 @@ export class VoxelGrid {
     };
   }
 
-  /** World-space height of the topmost solid voxel at cell (ix, iz). */
+  /** World-space height at cell (ix, iz) by finding the iso-threshold crossing. */
   private columnTopHeight(ix: number, iz: number): number {
     const cix = Math.max(0, Math.min(this.sizeX - 1, ix));
     const ciz = Math.max(0, Math.min(this.sizeZ - 1, iz));
     for (let iy = this.sizeY - 1; iy >= 0; iy--) {
-      if (this.data[this.index(cix, iy, ciz)] > 0) {
-        return (this.minYCells + iy + 1) * this.cellSize;
+      const d = this.data[this.index(cix, iy, ciz)];
+      if (d >= DENSITY_THRESHOLD) {
+        const dAbove = iy + 1 < this.sizeY
+          ? this.data[this.index(cix, iy + 1, ciz)]
+          : 0;
+        if (dAbove >= DENSITY_THRESHOLD) {
+          // Column is solid all the way to the top of the grid.
+          return (this.minYCells + iy + 1) * this.cellSize;
+        }
+        // Crossing between cell-center sample iy (solid) and iy+1 (empty).
+        // Samples live at y = (iy+0.5+minY)*cs and (iy+1.5+minY)*cs; the
+        // surface sits at crossing fraction f along that span.
+        const f = (DENSITY_THRESHOLD - d) / (dAbove - d);
+        return (this.minYCells + iy + 0.5 + f) * this.cellSize;
       }
     }
     return this.minYCells * this.cellSize;
   }
 
-  /** World-space height of the topmost solid voxel at (wx, wz). Cell-quantized. */
+  /** World-space surface height at (wx, wz), nearest column. */
   getHeight(wx: number, wz: number): number {
     return this.columnTopHeight(
       Math.round(wx / this.cellSize),
@@ -228,8 +282,7 @@ export class VoxelGrid {
     );
   }
 
-  /** Bilinear-interpolated height across the 4 neighboring column tops. Use for
-   *  smooth physics — avoids sub-cell staircase steps. */
+  /** Bilinear-interpolated surface height for smooth tank physics. */
   getHeightInterpolated(wx: number, wz: number): number {
     const fx = wx / this.cellSize;
     const fz = wz / this.cellSize;

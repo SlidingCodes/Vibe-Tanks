@@ -1,18 +1,35 @@
 import * as THREE from 'three';
-import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { VoxelGrid, DENSITY_THRESHOLD } from '@shared/terrain/VoxelGrid';
 import { Vec3 } from '@shared/types/index';
 
 const CHUNK_SIZE = 16;
-const DUAL_W = CHUNK_SIZE + 2; // +1 padding on each side so chunk-seam edges have their dual cubes
+const DUAL_W = CHUNK_SIZE + 2;
 const DUAL_STRIDE_YZ = DUAL_W * DUAL_W;
 const DUAL_IDX_CACHE = new Int32Array(DUAL_W * DUAL_W * DUAL_W);
 
+// 12 cube edges as pairs of corner offsets. Corners are (a, b, c) ∈ {0,1}³ where
+// a selects ±X, b selects ±Y, c selects ±Z from the dual cube's low corner.
+const EDGES: ReadonlyArray<readonly [readonly [number, number, number], readonly [number, number, number]]> = [
+  [[0, 0, 0], [1, 0, 0]],
+  [[0, 1, 0], [1, 1, 0]],
+  [[0, 0, 1], [1, 0, 1]],
+  [[0, 1, 1], [1, 1, 1]],
+  [[0, 0, 0], [0, 1, 0]],
+  [[1, 0, 0], [1, 1, 0]],
+  [[0, 0, 1], [0, 1, 1]],
+  [[1, 0, 1], [1, 1, 1]],
+  [[0, 0, 0], [0, 0, 1]],
+  [[1, 0, 0], [1, 0, 1]],
+  [[0, 1, 0], [0, 1, 1]],
+  [[1, 1, 0], [1, 1, 1]],
+];
+
 /**
- * Naive surface nets meshing per 16³ chunk. For every "dual cube" that straddles
- * the surface (mixed solid/empty corners), place one vertex at the cube center.
- * Connect vertices around each crossing edge into a quad. Vertex normals come
- * from the density gradient at the dual cube, so the shading is smooth without
- * needing per-face normal computation.
+ * Surface-nets meshing using the voxel density gradient. For each dual cube
+ * that straddles the surface, the vertex is placed at the centroid of edge
+ * crossings (interpolated from the endpoint densities against the threshold),
+ * giving sub-cell smooth geometry. Vertex normals come from the density
+ * gradient, so lighting stays smooth across chunks.
  */
 function buildChunkGeometry(
   grid: VoxelGrid,
@@ -36,50 +53,92 @@ function buildChunkGeometry(
   const dualKey = (i: number, j: number, k: number): number =>
     (j - baseIy + 1) * DUAL_STRIDE_YZ + (k - baseIz + 1) * DUAL_W + (i - baseIx + 1);
 
-  const solidAt = (i: number, j: number, k: number): number => (grid.isSolid(i, j, k) ? 1 : 0);
+  const densityAt = (i: number, j: number, k: number): number => grid.getDensity(i, j, k);
+  const solidAt = (i: number, j: number, k: number): number => (densityAt(i, j, k) >= DENSITY_THRESHOLD ? 1 : 0);
 
-  // Pass 1: dual cube vertices with gradient-based normals.
+  // Pass 1: one vertex per straddling dual cube, placed at the centroid of
+  // its edge crossings. Normal from the density gradient.
   for (let cj = baseIy - 1; cj < baseIy + CHUNK_SIZE; cj++) {
     for (let ck = baseIz - 1; ck < baseIz + CHUNK_SIZE; ck++) {
       for (let ci = baseIx - 1; ci < baseIx + CHUNK_SIZE; ci++) {
-        const s000 = solidAt(ci,     cj,     ck    );
-        const s100 = solidAt(ci + 1, cj,     ck    );
-        const s010 = solidAt(ci,     cj + 1, ck    );
-        const s110 = solidAt(ci + 1, cj + 1, ck    );
-        const s001 = solidAt(ci,     cj,     ck + 1);
-        const s101 = solidAt(ci + 1, cj,     ck + 1);
-        const s011 = solidAt(ci,     cj + 1, ck + 1);
-        const s111 = solidAt(ci + 1, cj + 1, ck + 1);
-        const count = s000 + s100 + s010 + s110 + s001 + s101 + s011 + s111;
-        if (count === 0 || count === 8) continue;
+        const d000 = densityAt(ci,     cj,     ck    );
+        const d100 = densityAt(ci + 1, cj,     ck    );
+        const d010 = densityAt(ci,     cj + 1, ck    );
+        const d110 = densityAt(ci + 1, cj + 1, ck    );
+        const d001 = densityAt(ci,     cj,     ck + 1);
+        const d101 = densityAt(ci + 1, cj,     ck + 1);
+        const d011 = densityAt(ci,     cj + 1, ck + 1);
+        const d111 = densityAt(ci + 1, cj + 1, ck + 1);
 
-        const gx = (s100 + s110 + s101 + s111) - (s000 + s010 + s001 + s011);
-        const gy = (s010 + s110 + s011 + s111) - (s000 + s100 + s001 + s101);
-        const gz = (s001 + s101 + s011 + s111) - (s000 + s100 + s010 + s110);
+        const cornerDensities = [d000, d100, d010, d110, d001, d101, d011, d111];
+        const solidCount =
+          (d000 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d100 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d010 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d110 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d001 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d101 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d011 >= DENSITY_THRESHOLD ? 1 : 0) +
+          (d111 >= DENSITY_THRESHOLD ? 1 : 0);
+        if (solidCount === 0 || solidCount === 8) continue;
+
+        let sumX = 0, sumY = 0, sumZ = 0, crossings = 0;
+        for (let e = 0; e < EDGES.length; e++) {
+          const ea = EDGES[e][0];
+          const eb = EDGES[e][1];
+          const ia = (ea[0] | (ea[1] << 1) | (ea[2] << 2));
+          const ib = (eb[0] | (eb[1] << 1) | (eb[2] << 2));
+          const dA = cornerDensities[ia];
+          const dB = cornerDensities[ib];
+          const sA = dA >= DENSITY_THRESHOLD;
+          const sB = dB >= DENSITY_THRESHOLD;
+          if (sA === sB) continue;
+          // Linear crossing toward the threshold.
+          const denom = dB - dA;
+          const f = denom === 0 ? 0.5 : (DENSITY_THRESHOLD - dA) / denom;
+          sumX += (ea[0] + f * (eb[0] - ea[0]));
+          sumY += (ea[1] + f * (eb[1] - ea[1]));
+          sumZ += (ea[2] + f * (eb[2] - ea[2]));
+          crossings++;
+        }
+        // At least one edge always crosses for a mixed cube.
+        const invN = 1 / crossings;
+        const ox = sumX * invN; // 0..1 within cube
+        const oy = sumY * invN;
+        const oz = sumZ * invN;
+
+        // Samples are cell-centered, so a voxel at local index (ci,cj,ck) sits
+        // at world ((ci+0.5)*cs, (cj+0.5+minY)*cs, (ck+0.5)*cs). The crossing
+        // centroid (ox,oy,oz) is expressed relative to the 8 voxel samples,
+        // so the world position shifts by +0.5 cell.
+        const wx = (ci + 0.5 + ox) * cs;
+        const wy = (minY + cj + 0.5 + oy) * cs;
+        const wz = (ck + 0.5 + oz) * cs;
+
+        // Gradient from corner density differences.
+        const gx = (d100 + d110 + d101 + d111) - (d000 + d010 + d001 + d011);
+        const gy = (d010 + d110 + d011 + d111) - (d000 + d100 + d001 + d101);
+        const gz = (d001 + d101 + d011 + d111) - (d000 + d100 + d010 + d110);
         const mag = Math.sqrt(gx * gx + gy * gy + gz * gz);
         const invMag = mag > 0 ? 1 / mag : 0;
 
-        const wx = (ci + 0.5) * cs;
-        const wy = (minY + cj + 0.5) * cs;
-        const wz = (ck + 0.5) * cs;
-
         const idx = positions.length / 3;
         positions.push(wx, wy, wz);
-        // Outward normal = -gradient (gradient points empty→solid).
+        // Outward normal points from solid to empty = -gradient.
         normals.push(-gx * invMag, -gy * invMag, -gz * invMag);
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
     }
   }
 
-  // Pass 2: emit quads for each crossing edge within the chunk's owned range.
-  // Winding is per-axis and sign-aware so every triangle's face normal points
-  // outward (from solid → empty), matching the gradient vertex normals.
+  // Pass 2: emit a quad for each edge that crosses the isosurface, connecting
+  // the four dual cubes around that edge. Sign-aware winding keeps every
+  // triangle's face normal aligned with the gradient normals.
   for (let cj = baseIy; cj < baseIy + CHUNK_SIZE; cj++) {
     for (let ck = baseIz; ck < baseIz + CHUNK_SIZE; ck++) {
       for (let ci = baseIx; ci < baseIx + CHUNK_SIZE; ci++) {
         const sA = solidAt(ci, cj, ck);
-        // +X edge: (a,b,d,c) gives +X normal when sA=solid. Reverse for sA=empty.
+        // +X edge
         if (sA !== solidAt(ci + 1, cj, ck)) {
           const a = dualIdx[dualKey(ci, cj - 1, ck - 1)];
           const b = dualIdx[dualKey(ci, cj,     ck - 1)];
@@ -90,7 +149,7 @@ function buildChunkGeometry(
             else          indices.push(a, c, d, a, d, b);
           }
         }
-        // +Y edge: (a,c,d,b) gives +Y normal when sA=solid below.
+        // +Y edge
         if (sA !== solidAt(ci, cj + 1, ck)) {
           const a = dualIdx[dualKey(ci - 1, cj, ck - 1)];
           const b = dualIdx[dualKey(ci,     cj, ck - 1)];
@@ -101,7 +160,7 @@ function buildChunkGeometry(
             else          indices.push(a, b, d, a, d, c);
           }
         }
-        // +Z edge: same structure as +X.
+        // +Z edge
         if (sA !== solidAt(ci, cj, ck + 1)) {
           const a = dualIdx[dualKey(ci - 1, cj - 1, ck)];
           const b = dualIdx[dualKey(ci,     cj - 1, ck)];
