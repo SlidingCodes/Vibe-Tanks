@@ -3,6 +3,8 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
+import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -164,16 +166,34 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 });
 
+let voxelGrid: VoxelGrid | null = null;
+let voxelTerrain: VoxelTerrainHandle | null = null;
+let voxelVisible = false;
+
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
-  const bytes = snap.data instanceof ArrayBuffer ? new Uint8Array(snap.data) : new Uint8Array(snap.data as ArrayBufferLike);
-  let solid = 0;
-  for (let i = 0; i < bytes.length; i++) if (bytes[i] > 0) solid++;
-  const totalCells = snap.sizeX * snap.sizeY * snap.sizeZ;
+  voxelGrid = VoxelGrid.fromSnapshot(snap);
+  if (!voxelTerrain) {
+    voxelTerrain = createVoxelTerrain(voxelGrid, scene);
+    voxelTerrain.setVisible(voxelVisible);
+  } else {
+    voxelTerrain.rebuild(voxelGrid);
+    voxelTerrain.setVisible(voxelVisible);
+  }
   // eslint-disable-next-line no-console
   console.log(
-    `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells} — ` +
-      `${(bytes.length / 1024).toFixed(1)} KB, ${solid}/${totalCells} solid (${((solid / totalCells) * 100).toFixed(1)}%)`,
+    `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
   );
+});
+
+window.addEventListener('keydown', (ev) => {
+  if (ev.key.toLowerCase() === 'v' && !ev.repeat) {
+    voxelVisible = !voxelVisible;
+    voxelTerrain?.setVisible(voxelVisible);
+    const hmMesh = getTerrainMesh();
+    if (hmMesh) hmMesh.visible = !voxelVisible;
+    // eslint-disable-next-line no-console
+    console.log(`[voxel] mesh ${voxelVisible ? 'shown' : 'hidden'} (heightmap ${voxelVisible ? 'hidden' : 'shown'})`);
+  }
 });
 
 socket.on('state_update', (state: RoomStateUpdate) => {

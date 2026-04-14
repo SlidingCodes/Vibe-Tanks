@@ -32,7 +32,7 @@ import {
 import { WEAPONS } from '../../../shared/src/weapons';
 import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
-import { VoxelGrid } from '../terrain/VoxelGrid';
+import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
 import {
   DamageTotals,
   applyImpact,

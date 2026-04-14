@@ -1,5 +1,4 @@
-import { Vec3, VoxelSnapshot } from '../../../shared/src/types/index';
-import { Heightmap } from './Heightmap';
+import { Vec3, VoxelSnapshot } from '../types/index';
 
 export interface VoxelGridOptions {
   sizeX: number;
@@ -8,6 +7,14 @@ export interface VoxelGridOptions {
   cellSize: number;
   /** World-Y of the grid's bottom (in cell units, can be negative). Default 0. */
   minYCells?: number;
+}
+
+/** Minimal heightmap surface sampler shape. Satisfied by the server Heightmap class. */
+export interface HeightmapSampler {
+  readonly width: number;
+  readonly height: number;
+  readonly cellSize: number;
+  getHeight(wx: number, wz: number): number;
 }
 
 /**
@@ -36,6 +43,26 @@ export class VoxelGrid {
     this.minYCells = options.minYCells ?? 0;
     this.sliceStride = this.sizeX * this.sizeZ;
     this.data = new Uint8Array(this.sliceStride * this.sizeY);
+  }
+
+  /** Build a grid from a wire snapshot. Copies the data bytes. */
+  static fromSnapshot(snap: VoxelSnapshot): VoxelGrid {
+    const grid = new VoxelGrid({
+      sizeX: snap.sizeX,
+      sizeY: snap.sizeY,
+      sizeZ: snap.sizeZ,
+      cellSize: snap.cellSize,
+      minYCells: snap.minYCells,
+    });
+    grid.loadSnapshot(snap);
+    return grid;
+  }
+
+  loadSnapshot(snap: VoxelSnapshot): void {
+    const src = snap.data instanceof ArrayBuffer
+      ? new Uint8Array(snap.data)
+      : new Uint8Array((snap.data as ArrayBufferLike));
+    this.data.set(src);
   }
 
   private index(ix: number, iy: number, iz: number): number {
@@ -70,14 +97,13 @@ export class VoxelGrid {
   }
 
   /** Fill columns up to the sampled heightmap surface (rounded to nearest cell). */
-  seedFromHeightmap(heightmap: Heightmap): void {
+  seedFromHeightmap(heightmap: HeightmapSampler): void {
     this.clear();
     for (let iz = 0; iz < this.sizeZ; iz++) {
       const wz = iz * this.cellSize;
       for (let ix = 0; ix < this.sizeX; ix++) {
         const wx = ix * this.cellSize;
         const h = heightmap.getHeight(wx, wz);
-        // Absolute top-cell index in grid-local coords; may be negative.
         const topAbs = Math.round(h / this.cellSize);
         const topLocal = Math.max(0, Math.min(this.sizeY, topAbs - this.minYCells));
         for (let iy = 0; iy < topLocal; iy++) {
@@ -90,8 +116,6 @@ export class VoxelGrid {
   /**
    * Boolean sphere carve: every voxel whose center is inside the sphere is
    * fully emptied. Conservative AABB iteration.
-   * Note: V3's marching cubes renderer may later want a density gradient at
-   * the rim for smoother isosurfaces — revisit then.
    */
   carveSphere(center: Vec3, radius: number): void {
     if (radius <= 0) return;
@@ -124,7 +148,7 @@ export class VoxelGrid {
   /**
    * Boolean cone carve: apex + t*direction for t ∈ [0, length], radius ramping
    * from 0 at apex to baseRadius at the far end. `direction` is normalized
-   * internally. Intended for V2+ Digger-style cone digs.
+   * internally.
    */
   carveCone(apex: Vec3, direction: Vec3, length: number, baseRadius: number): void {
     if (length <= 0 || baseRadius <= 0) return;
