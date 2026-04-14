@@ -33,6 +33,7 @@ import { WEAPONS } from '../../../shared/src/weapons';
 import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
 import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
+import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
 import {
   DamageTotals,
   applyImpact,
@@ -105,8 +106,12 @@ export class Room {
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
   /** Voxel shadow. Seeded from the heightmap, carved alongside every patch;
-   *  not yet consumed by gameplay. */
+   *  now authoritative for tank ground Y. */
   voxels: VoxelGrid;
+  /** V4a: Rapier world with per-chunk TriMesh colliders generated from the
+   *  voxel grid. Not yet consumed by tank physics — tanks still run through
+   *  stepTankPhysics kinematically. V4b will swap them onto Rapier bodies. */
+  physics: RapierVoxelWorld;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -140,6 +145,7 @@ export class Room {
     });
     this.voxels.seedFromHeightmap(this.heightmap);
     this.logVoxelSanityCheck('initial seed');
+    this.physics = new RapierVoxelWorld(this.voxels);
     this.scheduleReset();
   }
 
@@ -185,6 +191,7 @@ export class Room {
     this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
     this.voxels.seedFromHeightmap(this.heightmap);
     this.logVoxelSanityCheck('match reset');
+    this.physics.setGrid(this.voxels);
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
       tank.position = pos;
@@ -444,6 +451,7 @@ export class Room {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
         this.voxels.carveSphere(step.endPoint, step.blastRadius);
+        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -466,6 +474,7 @@ export class Room {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
       this.voxels.carveSphere(step.endPoint, step.blastRadius);
+      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
@@ -739,6 +748,9 @@ export class Room {
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
+      // Step Rapier. No dynamic bodies yet, but keeps the world in sync with
+      // carve-driven collider rebuilds and confirms the wasm loop is healthy.
+      this.physics.step(simDt);
     }, simDt * 1000);
 
     this.broadcastInterval = setInterval(() => {
