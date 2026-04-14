@@ -143,17 +143,6 @@ export class Room {
     this.scheduleReset();
   }
 
-  /** Temporary V2 observability: log the surface drop each time we carve. */
-  private carveVoxelSphereLogged(center: Vec3, radius: number): void {
-    const before = this.voxels.getHeight(center.x, center.z);
-    this.voxels.carveSphere(center, radius);
-    const after = this.voxels.getHeight(center.x, center.z);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[voxel] carve @ (${center.x.toFixed(0)},${center.z.toFixed(0)}) r=${radius.toFixed(1)} drop=${(before - after).toFixed(1)}`,
-    );
-  }
-
   private logVoxelSanityCheck(label: string): void {
     // Sample at grid-aligned positions to isolate vertical quantization error
     // from horizontal sampling asymmetry. Expected dev ≤ 0.5 * cellSize.
@@ -454,7 +443,7 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
-        this.carveVoxelSphereLogged(step.endPoint, step.blastRadius);
+        this.voxels.carveSphere(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -476,7 +465,7 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
-      this.carveVoxelSphereLogged(step.endPoint, step.blastRadius);
+      this.voxels.carveSphere(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
