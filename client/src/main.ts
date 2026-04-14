@@ -291,6 +291,15 @@ socket.on('shot_resolved', (result) => {
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
   for (const step of result.steps) {
+    if (step.terrainPatch && voxelGrid && voxelTerrain) {
+      const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
+      const grid = voxelGrid;
+      const terrain = voxelTerrain;
+      setTimeout(() => {
+        grid.carveSphere(step.endPoint, step.blastRadius);
+        terrain.invalidateSphere(step.endPoint, step.blastRadius);
+      }, carveDelay * 1000);
+    }
     if (step.eventType !== 'impact') continue;
     const delay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
     setTimeout(() => {

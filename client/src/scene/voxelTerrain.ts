@@ -1,12 +1,9 @@
 import * as THREE from 'three';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { Vec3 } from '@shared/types/index';
 
 const CHUNK_SIZE = 16;
 
-/**
- * Per-face emission data: 4 corner offsets (in voxel-local units) wound CCW
- * from outside, plus the face normal.
- */
 interface FaceDef {
   nx: number; ny: number; nz: number;
   corners: Array<[number, number, number]>;
@@ -14,15 +11,14 @@ interface FaceDef {
 
 // Cube corner reference: v0=(0,0,0) v1=(1,0,0) v2=(1,1,0) v3=(0,1,0)
 //                        v4=(0,0,1) v5=(1,0,1) v6=(1,1,1) v7=(0,1,1)
-// Each face's corners are listed CCW as viewed from outside (triangle fan
-// a-b-c, a-c-d → both triangles have the stated normal).
+// Each face's corners are listed CCW as viewed from outside.
 const FACES: FaceDef[] = [
-  { nx:  1, ny:  0, nz:  0, corners: [[1,0,0], [1,1,0], [1,1,1], [1,0,1]] }, // +X: v1,v2,v6,v5
-  { nx: -1, ny:  0, nz:  0, corners: [[0,0,0], [0,0,1], [0,1,1], [0,1,0]] }, // -X: v0,v4,v7,v3
-  { nx:  0, ny:  1, nz:  0, corners: [[0,1,0], [0,1,1], [1,1,1], [1,1,0]] }, // +Y: v3,v7,v6,v2
-  { nx:  0, ny: -1, nz:  0, corners: [[0,0,0], [1,0,0], [1,0,1], [0,0,1]] }, // -Y: v0,v1,v5,v4
-  { nx:  0, ny:  0, nz:  1, corners: [[0,0,1], [1,0,1], [1,1,1], [0,1,1]] }, // +Z: v4,v5,v6,v7
-  { nx:  0, ny:  0, nz: -1, corners: [[0,0,0], [0,1,0], [1,1,0], [1,0,0]] }, // -Z: v0,v3,v2,v1
+  { nx:  1, ny:  0, nz:  0, corners: [[1,0,0], [1,1,0], [1,1,1], [1,0,1]] }, // +X
+  { nx: -1, ny:  0, nz:  0, corners: [[0,0,0], [0,0,1], [0,1,1], [0,1,0]] }, // -X
+  { nx:  0, ny:  1, nz:  0, corners: [[0,1,0], [0,1,1], [1,1,1], [1,1,0]] }, // +Y
+  { nx:  0, ny: -1, nz:  0, corners: [[0,0,0], [1,0,0], [1,0,1], [0,0,1]] }, // -Y
+  { nx:  0, ny:  0, nz:  1, corners: [[0,0,1], [1,0,1], [1,1,1], [0,1,1]] }, // +Z
+  { nx:  0, ny:  0, nz: -1, corners: [[0,0,0], [0,1,0], [1,1,0], [1,0,0]] }, // -Z
 ];
 
 function buildChunkGeometry(
@@ -71,10 +67,13 @@ function buildChunkGeometry(
   return geom;
 }
 
+const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
+
 export interface VoxelTerrainHandle {
   group: THREE.Group;
   dispose(): void;
   rebuild(grid: VoxelGrid): void;
+  invalidateSphere(center: Vec3, radius: number): void;
   setVisible(v: boolean): void;
 }
 
@@ -90,52 +89,108 @@ export function createVoxelTerrain(grid: VoxelGrid, scene: THREE.Scene): VoxelTe
   group.name = '__voxel_terrain';
   scene.add(group);
 
-  function build(g: VoxelGrid): void {
-    for (const child of group.children) {
-      const m = child as THREE.Mesh;
-      m.geometry.dispose();
+  const chunks = new Map<string, THREE.Mesh>();
+  // Current grid being rendered. Swapped by rebuild().
+  let activeGrid = grid;
+
+  function setChunkMesh(cx: number, cy: number, cz: number): void {
+    const key = chunkKey(cx, cy, cz);
+    const prev = chunks.get(key);
+    const geom = buildChunkGeometry(activeGrid, cx, cy, cz);
+    if (prev) {
+      prev.geometry.dispose();
+      if (!geom) {
+        group.remove(prev);
+        chunks.delete(key);
+        return;
+      }
+      prev.geometry = geom;
+      return;
     }
-    group.clear();
+    if (!geom) return;
+    const mesh = new THREE.Mesh(geom, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    chunks.set(key, mesh);
+  }
+
+  function wipeChunks(): void {
+    for (const mesh of chunks.values()) {
+      mesh.geometry.dispose();
+      group.remove(mesh);
+    }
+    chunks.clear();
+  }
+
+  function rebuildAll(g: VoxelGrid): void {
+    activeGrid = g;
+    wipeChunks();
     const nx = Math.ceil(g.sizeX / CHUNK_SIZE);
     const ny = Math.ceil(g.sizeY / CHUNK_SIZE);
     const nz = Math.ceil(g.sizeZ / CHUNK_SIZE);
-    let chunkCount = 0;
     let triCount = 0;
     for (let cx = 0; cx < nx; cx++) {
       for (let cy = 0; cy < ny; cy++) {
         for (let cz = 0; cz < nz; cz++) {
-          const geom = buildChunkGeometry(g, cx, cy, cz);
-          if (!geom) continue;
-          const mesh = new THREE.Mesh(geom, material);
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
-          group.add(mesh);
-          chunkCount++;
-          const idx = geom.getIndex();
-          if (idx) triCount += idx.count / 3;
+          setChunkMesh(cx, cy, cz);
+          const mesh = chunks.get(chunkKey(cx, cy, cz));
+          if (mesh) {
+            const idx = mesh.geometry.getIndex();
+            if (idx) triCount += idx.count / 3;
+          }
         }
       }
     }
     // eslint-disable-next-line no-console
-    console.log(`[voxel] built ${chunkCount} chunk meshes (${triCount} tris)`);
+    console.log(`[voxel] built ${chunks.size} chunk meshes (${triCount} tris)`);
   }
 
-  build(grid);
+  rebuildAll(grid);
+
+  function invalidateSphere(center: Vec3, radius: number): void {
+    const cs = activeGrid.cellSize;
+    // Expand AABB by 1 voxel on each side so chunks whose boundary faces
+    // flipped (neighbor voxel across the chunk seam changed) also get rebuilt.
+    const ixMin = Math.floor((center.x - radius) / cs) - 1;
+    const ixMax = Math.ceil((center.x + radius) / cs) + 1;
+    const iyMinAbs = Math.floor((center.y - radius) / cs) - 1;
+    const iyMaxAbs = Math.ceil((center.y + radius) / cs) + 1;
+    const izMin = Math.floor((center.z - radius) / cs) - 1;
+    const izMax = Math.ceil((center.z + radius) / cs) + 1;
+    const iyMin = iyMinAbs - activeGrid.minYCells;
+    const iyMax = iyMaxAbs - activeGrid.minYCells;
+
+    const nx = Math.ceil(activeGrid.sizeX / CHUNK_SIZE);
+    const ny = Math.ceil(activeGrid.sizeY / CHUNK_SIZE);
+    const nz = Math.ceil(activeGrid.sizeZ / CHUNK_SIZE);
+    const cixMin = Math.max(0, Math.floor(ixMin / CHUNK_SIZE));
+    const cixMax = Math.min(nx - 1, Math.floor(ixMax / CHUNK_SIZE));
+    const ciyMin = Math.max(0, Math.floor(iyMin / CHUNK_SIZE));
+    const ciyMax = Math.min(ny - 1, Math.floor(iyMax / CHUNK_SIZE));
+    const cizMin = Math.max(0, Math.floor(izMin / CHUNK_SIZE));
+    const cizMax = Math.min(nz - 1, Math.floor(izMax / CHUNK_SIZE));
+
+    for (let cx = cixMin; cx <= cixMax; cx++) {
+      for (let cy = ciyMin; cy <= ciyMax; cy++) {
+        for (let cz = cizMin; cz <= cizMax; cz++) {
+          setChunkMesh(cx, cy, cz);
+        }
+      }
+    }
+  }
 
   return {
     group,
     dispose(): void {
-      for (const child of group.children) {
-        const m = child as THREE.Mesh;
-        m.geometry.dispose();
-      }
-      group.clear();
+      wipeChunks();
       material.dispose();
       scene.remove(group);
     },
     rebuild(g: VoxelGrid): void {
-      build(g);
+      rebuildAll(g);
     },
+    invalidateSphere,
     setVisible(v: boolean): void {
       group.visible = v;
     },
