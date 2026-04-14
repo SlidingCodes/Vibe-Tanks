@@ -15,9 +15,6 @@ const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
 const MAX_SLOPE_CLIMB_DEG = 45;
-const AUTOSTEP_HEIGHT = 0.4;
-const AUTOSTEP_MIN_WIDTH = 0.15;
-const SNAP_TO_GROUND = 0.5;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -76,8 +73,9 @@ export class RapierVoxelWorld {
     // to tolerate the carve density gradient without snagging.
     this.kcc = this.world.createCharacterController(0.02);
     this.kcc.setMaxSlopeClimbAngle((MAX_SLOPE_CLIMB_DEG * Math.PI) / 180);
-    this.kcc.enableAutostep(AUTOSTEP_HEIGHT, AUTOSTEP_MIN_WIDTH, true);
-    this.kcc.enableSnapToGround(SNAP_TO_GROUND);
+    // No autostep, no snap-to-ground: we WANT tanks to drop into pits/craters
+    // instead of being stuck on the rim. Slope-climb limit alone still keeps
+    // overhangs from being climbed.
     this.kcc.setApplyImpulsesToDynamicBodies(false);
     this.rebuildAll();
   }
