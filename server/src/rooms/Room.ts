@@ -104,7 +104,8 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
-  /** V1 voxel shadow. Seeded from the heightmap; not yet consumed by gameplay. */
+  /** Voxel shadow. Seeded from the heightmap, carved alongside every patch;
+   *  not yet consumed by gameplay. */
   voxels: VoxelGrid;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
@@ -440,6 +441,7 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
+        this.voxels.carveSphere(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -461,6 +463,7 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
+      this.voxels.carveSphere(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
