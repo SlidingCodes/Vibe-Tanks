@@ -328,7 +328,8 @@ export class Heightmap {
   /** Compute the crater patch without mutating. Caller applies via applyPatch. */
   computeCraterPatch(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {
     const { gx: cx, gz: cz } = this.worldToGrid(impact.x, impact.z);
-    const gridRadius = Math.ceil(blastRadius / this.cellSize);
+    // Expand the stencil a bit so noise-driven bulges at the rim fit in the patch.
+    const gridRadius = Math.ceil((blastRadius * 1.15) / this.cellSize);
 
     const startX = Math.max(0, cx - gridRadius);
     const startZ = Math.max(0, cz - gridRadius);
@@ -337,6 +338,9 @@ export class Heightmap {
     const patchW = endX - startX + 1;
     const patchH = endZ - startZ + 1;
 
+    // Per-crater salt keeps each impact's noise pattern unique so repeated
+    // craters at nearby spots don't re-draw the same lobes.
+    const craterSalt = (Math.floor(impact.x * 1000) ^ Math.floor(impact.z * 1000) ^ 0x9e3779b1) >>> 0;
     const patchDeltas: number[] = [];
     for (let z = startZ; z <= endZ; z++) {
       for (let x = startX; x <= endX; x++) {
@@ -344,10 +348,17 @@ export class Heightmap {
         const dz = (z - cz) * this.cellSize;
         const dist = Math.sqrt(dx * dx + dz * dz);
         let delta = 0;
-        if (dist < blastRadius) {
-          const t = dist / blastRadius;
-          const falloff = 1 - t * t * (3 - 2 * t);
-          delta = -terrainDamage * falloff;
+        if (dist < blastRadius * 1.25) {
+          // Two-octave signed noise wobbles the radial distance so the rim is
+          // bitten rather than a perfect circle; magnitude 0.22 of blastRadius.
+          const bumpLow = this.signedNoise(x * 0.35, z * 0.35, craterSalt);
+          const bumpHigh = this.signedNoise(x * 0.9, z * 0.9, craterSalt ^ 0x51);
+          const bump = bumpLow * 0.16 + bumpHigh * 0.06;
+          const t = Math.max(0, Math.min(1, dist / blastRadius + bump));
+          if (t < 1) {
+            const falloff = 1 - t * t * (3 - 2 * t);
+            delta = -terrainDamage * falloff;
+          }
         }
         patchDeltas.push(delta);
       }

@@ -4,6 +4,7 @@ import { TerrainConfig, TerrainPatch } from '@shared/types/index';
 let terrainMesh: THREE.Mesh | null = null;
 let terrainGeometry: THREE.PlaneGeometry | null = null;
 let terrainHeights: number[] = [];
+let terrainScorch: Float32Array = new Float32Array(0);
 let gridWidth = 0;
 let gridHeight = 0;
 let cellSize = 1;
@@ -11,6 +12,10 @@ let cellSize = 1;
 const LOW_COLOR = new THREE.Color(0x7b7b7b);
 const MID_COLOR = new THREE.Color(0x7a5937);
 const HIGH_COLOR = new THREE.Color(0x5f9b45);
+const SCORCH_COLOR = new THREE.Color(0x1a0e07);
+// 1m of carving lands full scorch on a vertex; partial deltas give partial
+// darkening so the smoothstep rim of a crater fades naturally to clean ground.
+const SCORCH_DELTA_TO_INTENSITY = 1.0;
 const scratchColor = new THREE.Color();
 
 function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
@@ -52,6 +57,9 @@ function applyColorsToGeometry(geometry: THREE.PlaneGeometry, heights: number[])
       scratchColor.copy(MID_COLOR).lerp(HIGH_COLOR, smoothStep01((t - 0.5) / 0.5));
     }
 
+    const scorch = terrainScorch[i] ?? 0;
+    if (scorch > 0) scratchColor.lerp(SCORCH_COLOR, Math.min(1, scorch));
+
     const colorIndex = i * 3;
     colors[colorIndex] = scratchColor.r;
     colors[colorIndex + 1] = scratchColor.g;
@@ -60,6 +68,49 @@ function applyColorsToGeometry(geometry: THREE.PlaneGeometry, heights: number[])
 
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.attributes.color.needsUpdate = true;
+}
+
+function updateColorsForVertices(
+  geometry: THREE.PlaneGeometry,
+  heights: number[],
+  touchedVertexIndices: Set<number>,
+): void {
+  if (touchedVertexIndices.size === 0) return;
+  const positions = geometry.attributes.position;
+  const colorAttr = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!colorAttr) {
+    applyColorsToGeometry(geometry, heights);
+    return;
+  }
+
+  // Keep the gradient anchored to the same min/max the full-rebuild path
+  // would produce, so a partial update can't warp the palette.
+  let minHeight = Number.POSITIVE_INFINITY;
+  let maxHeight = Number.NEGATIVE_INFINITY;
+  for (const height of heights) {
+    if (height < minHeight) minHeight = height;
+    if (height > maxHeight) maxHeight = height;
+  }
+  const heightRange = Math.max(0.001, maxHeight - minHeight);
+
+  for (const i of touchedVertexIndices) {
+    if (i < 0 || i >= positions.count) continue;
+    const height = heights[i] ?? minHeight;
+    const t = (height - minHeight) / heightRange;
+
+    if (t < 0.5) {
+      scratchColor.copy(LOW_COLOR).lerp(MID_COLOR, smoothStep01(t / 0.5));
+    } else {
+      scratchColor.copy(MID_COLOR).lerp(HIGH_COLOR, smoothStep01((t - 0.5) / 0.5));
+    }
+
+    const scorch = terrainScorch[i] ?? 0;
+    if (scorch > 0) scratchColor.lerp(SCORCH_COLOR, Math.min(1, scorch));
+
+    colorAttr.setXYZ(i, scratchColor.r, scratchColor.g, scratchColor.b);
+  }
+
+  colorAttr.needsUpdate = true;
 }
 
 function applyHeightsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]): void {
@@ -83,6 +134,13 @@ function syncTerrainGeometry(config: TerrainConfig): void {
   gridHeight = config.gridHeight;
   cellSize = config.cellSize;
   terrainHeights = config.heights.slice();
+
+  const scorchLength = gridWidth * gridHeight;
+  if (terrainScorch.length !== scorchLength) {
+    terrainScorch = new Float32Array(scorchLength);
+  } else {
+    terrainScorch.fill(0);
+  }
 
   if (dimsChanged) {
     const nextGeometry = buildGeometry(gridWidth, gridHeight, cellSize);
@@ -138,7 +196,7 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
   if (!terrainGeometry || !terrainMesh) return;
 
   const positions = terrainGeometry.attributes.position;
-  let changed = false;
+  const touched = new Set<number>();
 
   for (let pz = 0; pz < patch.height; pz++) {
     for (let px = 0; px < patch.width; px++) {
@@ -153,13 +211,17 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
 
       terrainHeights[vertexIndex] = (terrainHeights[vertexIndex] ?? 0) + delta;
       positions.setY(vertexIndex, terrainHeights[vertexIndex]);
-      changed = true;
+      if (delta < 0) {
+        const add = Math.min(1, -delta * SCORCH_DELTA_TO_INTENSITY);
+        terrainScorch[vertexIndex] = Math.min(1, (terrainScorch[vertexIndex] ?? 0) + add);
+      }
+      touched.add(vertexIndex);
     }
   }
 
-  if (!changed) return;
+  if (touched.size === 0) return;
   positions.needsUpdate = true;
-  applyColorsToGeometry(terrainGeometry, terrainHeights);
+  updateColorsForVertices(terrainGeometry, terrainHeights, touched);
   terrainGeometry.computeVertexNormals();
 }
 

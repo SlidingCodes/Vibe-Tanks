@@ -401,6 +401,75 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
   animate();
 }
 
+function showDustPuff(center: Vec3, blastRadius: number, scene: THREE.Scene): void {
+  const count = Math.max(14, Math.min(48, Math.round(blastRadius * 7)));
+  const positions = new Float32Array(count * 3);
+  const velocities = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spawnRadius = Math.random() * blastRadius * 0.45;
+    positions[i * 3] = center.x + Math.cos(angle) * spawnRadius;
+    positions[i * 3 + 1] = center.y + 0.18 + Math.random() * 0.3;
+    positions[i * 3 + 2] = center.z + Math.sin(angle) * spawnRadius;
+
+    const speed = blastRadius * (0.9 + Math.random() * 1.1);
+    velocities[i * 3] = Math.cos(angle) * speed * 0.55;
+    velocities[i * 3 + 1] = speed * (0.45 + Math.random() * 0.6);
+    velocities[i * 3 + 2] = Math.sin(angle) * speed * 0.55;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0x8a6a48,
+    size: Math.max(0.35, blastRadius * 0.18),
+    transparent: true,
+    opacity: 0.88,
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  const lifetime = 1.2;
+  let elapsed = 0;
+  let lastTime = performance.now();
+  const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
+
+  const tick = () => {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastTime) / 1000);
+    lastTime = now;
+    elapsed += dt;
+
+    const drag = Math.max(0, 1 - dt * 1.6);
+    for (let i = 0; i < count; i++) {
+      const b = i * 3;
+      positions[b] += velocities[b] * dt;
+      positions[b + 1] += velocities[b + 1] * dt;
+      positions[b + 2] += velocities[b + 2] * dt;
+      velocities[b] *= drag;
+      velocities[b + 1] -= 5 * dt;
+      velocities[b + 2] *= drag;
+    }
+    posAttr.needsUpdate = true;
+
+    const t = elapsed / lifetime;
+    mat.opacity = Math.max(0, 0.88 * (1 - t));
+    mat.size = (Math.max(0.35, blastRadius * 0.18)) * (1 + t * 1.1);
+
+    if (elapsed < lifetime) {
+      requestAnimationFrame(tick);
+    } else {
+      scene.remove(points);
+      geo.dispose();
+      mat.dispose();
+    }
+  };
+  tick();
+}
+
 function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
   const geo = new THREE.SphereGeometry(0.45, 12, 12);
   const mat = new THREE.MeshBasicMaterial({ color: 0x88ddff, transparent: true, opacity: 0.85 });
@@ -701,6 +770,7 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showDeployFlash(step, scene);
       } else {
         showExplosion(step, scene);
+        if (step.terrainPatch) showDustPuff(step.endPoint, step.blastRadius, scene);
       }
       step.onComplete(step.terrainPatch);
       shots.splice(i, 1);
