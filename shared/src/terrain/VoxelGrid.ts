@@ -208,15 +208,41 @@ export class VoxelGrid {
     };
   }
 
-  /** World-space height of the topmost solid voxel at (wx, wz). minY*cellSize if the column is empty. */
-  getHeight(wx: number, wz: number): number {
-    const ix = Math.max(0, Math.min(this.sizeX - 1, Math.round(wx / this.cellSize)));
-    const iz = Math.max(0, Math.min(this.sizeZ - 1, Math.round(wz / this.cellSize)));
+  /** World-space height of the topmost solid voxel at cell (ix, iz). */
+  private columnTopHeight(ix: number, iz: number): number {
+    const cix = Math.max(0, Math.min(this.sizeX - 1, ix));
+    const ciz = Math.max(0, Math.min(this.sizeZ - 1, iz));
     for (let iy = this.sizeY - 1; iy >= 0; iy--) {
-      if (this.data[this.index(ix, iy, iz)] > 0) {
+      if (this.data[this.index(cix, iy, ciz)] > 0) {
         return (this.minYCells + iy + 1) * this.cellSize;
       }
     }
     return this.minYCells * this.cellSize;
+  }
+
+  /** World-space height of the topmost solid voxel at (wx, wz). Cell-quantized. */
+  getHeight(wx: number, wz: number): number {
+    return this.columnTopHeight(
+      Math.round(wx / this.cellSize),
+      Math.round(wz / this.cellSize),
+    );
+  }
+
+  /** Bilinear-interpolated height across the 4 neighboring column tops. Use for
+   *  smooth physics — avoids sub-cell staircase steps. */
+  getHeightInterpolated(wx: number, wz: number): number {
+    const fx = wx / this.cellSize;
+    const fz = wz / this.cellSize;
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const tx = fx - x0;
+    const tz = fz - z0;
+    const h00 = this.columnTopHeight(x0,     z0    );
+    const h10 = this.columnTopHeight(x0 + 1, z0    );
+    const h01 = this.columnTopHeight(x0,     z0 + 1);
+    const h11 = this.columnTopHeight(x0 + 1, z0 + 1);
+    const h0 = h00 * (1 - tx) + h10 * tx;
+    const h1 = h01 * (1 - tx) + h11 * tx;
+    return h0 * (1 - tz) + h1 * tz;
   }
 }

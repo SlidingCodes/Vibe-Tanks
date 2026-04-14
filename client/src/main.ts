@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh, setTerrainHeightSampler } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
@@ -201,6 +201,9 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   } else {
     voxelDebris.clear();
   }
+  // V3d: voxels become the authoritative ground sampler on the client too.
+  const g = voxelGrid;
+  setTerrainHeightSampler((x, z) => g.getHeightInterpolated(x, z));
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,

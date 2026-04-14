@@ -765,7 +765,9 @@ export class Room {
   private tickMovement(dt: number): void {
     const mapW = this.heightmap.width * this.heightmap.cellSize;
     const mapH = this.heightmap.height * this.heightmap.cellSize;
-    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
+    // V3d: voxels are authoritative for ground contact. Interpolated to avoid
+    // sub-cell staircase jitter. Heightmap still drives shot simulation.
+    const sample = (x: number, z: number) => this.voxels.getHeightInterpolated(x, z);
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
@@ -968,7 +970,7 @@ export class Room {
   private regroundAliveTanks(): void {
     for (const tank of this.tanks.values()) {
       if (tank.alive) {
-        tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
+        tank.position.y = this.voxels.getHeightInterpolated(tank.position.x, tank.position.z);
       }
     }
   }
