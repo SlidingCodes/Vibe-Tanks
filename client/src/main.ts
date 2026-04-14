@@ -4,6 +4,7 @@ import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
+import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
@@ -168,16 +169,30 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
 let voxelGrid: VoxelGrid | null = null;
 let voxelTerrain: VoxelTerrainHandle | null = null;
-let voxelVisible = false;
+let surfaceNets: SurfaceNetsHandle | null = null;
+let cuberilleVisible = false;
+let surfaceNetsVisible = false;
+
+function syncHeightmapVisibility(): void {
+  const hmMesh = getTerrainMesh();
+  if (hmMesh) hmMesh.visible = !(cuberilleVisible || surfaceNetsVisible);
+}
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
   if (!voxelTerrain) {
     voxelTerrain = createVoxelTerrain(voxelGrid, scene);
-    voxelTerrain.setVisible(voxelVisible);
+    voxelTerrain.setVisible(cuberilleVisible);
   } else {
     voxelTerrain.rebuild(voxelGrid);
-    voxelTerrain.setVisible(voxelVisible);
+    voxelTerrain.setVisible(cuberilleVisible);
+  }
+  if (!surfaceNets) {
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene);
+    surfaceNets.setVisible(surfaceNetsVisible);
+  } else {
+    surfaceNets.rebuild(voxelGrid);
+    surfaceNets.setVisible(surfaceNetsVisible);
   }
   // eslint-disable-next-line no-console
   console.log(
@@ -186,13 +201,19 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
 });
 
 window.addEventListener('keydown', (ev) => {
-  if (ev.key.toLowerCase() === 'v' && !ev.repeat) {
-    voxelVisible = !voxelVisible;
-    voxelTerrain?.setVisible(voxelVisible);
-    const hmMesh = getTerrainMesh();
-    if (hmMesh) hmMesh.visible = !voxelVisible;
+  const k = ev.key.toLowerCase();
+  if (k === 'v' && !ev.repeat) {
+    cuberilleVisible = !cuberilleVisible;
+    voxelTerrain?.setVisible(cuberilleVisible);
+    syncHeightmapVisibility();
     // eslint-disable-next-line no-console
-    console.log(`[voxel] mesh ${voxelVisible ? 'shown' : 'hidden'} (heightmap ${voxelVisible ? 'hidden' : 'shown'})`);
+    console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
+  } else if (k === 'b' && !ev.repeat) {
+    surfaceNetsVisible = !surfaceNetsVisible;
+    surfaceNets?.setVisible(surfaceNetsVisible);
+    syncHeightmapVisibility();
+    // eslint-disable-next-line no-console
+    console.log(`[voxel] surface nets ${surfaceNetsVisible ? 'shown' : 'hidden'}`);
   }
 });
 
@@ -291,13 +312,15 @@ socket.on('shot_resolved', (result) => {
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
   for (const step of result.steps) {
-    if (step.terrainPatch && voxelGrid && voxelTerrain) {
+    if (step.terrainPatch && voxelGrid) {
       const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
       const grid = voxelGrid;
-      const terrain = voxelTerrain;
+      const cuberille = voxelTerrain;
+      const sn = surfaceNets;
       setTimeout(() => {
         grid.carveSphere(step.endPoint, step.blastRadius);
-        terrain.invalidateSphere(step.endPoint, step.blastRadius);
+        cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        sn?.invalidateSphere(step.endPoint, step.blastRadius);
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
