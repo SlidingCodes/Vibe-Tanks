@@ -12,37 +12,17 @@ interface FaceDef {
   corners: Array<[number, number, number]>;
 }
 
+// Cube corner reference: v0=(0,0,0) v1=(1,0,0) v2=(1,1,0) v3=(0,1,0)
+//                        v4=(0,0,1) v5=(1,0,1) v6=(1,1,1) v7=(0,1,1)
+// Each face's corners are listed CCW as viewed from outside (triangle fan
+// a-b-c, a-c-d → both triangles have the stated normal).
 const FACES: FaceDef[] = [
-  // +X: looking toward -X, winding CCW
-  {
-    nx: 1, ny: 0, nz: 0,
-    corners: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]],
-  },
-  // -X
-  {
-    nx: -1, ny: 0, nz: 0,
-    corners: [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]],
-  },
-  // +Y (top)
-  {
-    nx: 0, ny: 1, nz: 0,
-    corners: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]],
-  },
-  // -Y (bottom)
-  {
-    nx: 0, ny: -1, nz: 0,
-    corners: [[0, 0, 1], [1, 0, 1], [1, 0, 0], [0, 0, 0]],
-  },
-  // +Z
-  {
-    nx: 0, ny: 0, nz: 1,
-    corners: [[1, 0, 1], [1, 1, 1], [0, 1, 1], [0, 0, 1]],
-  },
-  // -Z
-  {
-    nx: 0, ny: 0, nz: -1,
-    corners: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]],
-  },
+  { nx:  1, ny:  0, nz:  0, corners: [[1,0,0], [1,1,0], [1,1,1], [1,0,1]] }, // +X: v1,v2,v6,v5
+  { nx: -1, ny:  0, nz:  0, corners: [[0,0,0], [0,0,1], [0,1,1], [0,1,0]] }, // -X: v0,v4,v7,v3
+  { nx:  0, ny:  1, nz:  0, corners: [[0,1,0], [0,1,1], [1,1,1], [1,1,0]] }, // +Y: v3,v7,v6,v2
+  { nx:  0, ny: -1, nz:  0, corners: [[0,0,0], [1,0,0], [1,0,1], [0,0,1]] }, // -Y: v0,v1,v5,v4
+  { nx:  0, ny:  0, nz:  1, corners: [[0,0,1], [1,0,1], [1,1,1], [0,1,1]] }, // +Z: v4,v5,v6,v7
+  { nx:  0, ny:  0, nz: -1, corners: [[0,0,0], [0,1,0], [1,1,0], [1,0,0]] }, // -Z: v0,v3,v2,v1
 ];
 
 function buildChunkGeometry(
