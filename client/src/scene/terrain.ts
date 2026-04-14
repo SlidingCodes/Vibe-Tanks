@@ -5,6 +5,8 @@ let terrainMesh: THREE.Mesh | null = null;
 let terrainGeometry: THREE.PlaneGeometry | null = null;
 let terrainHeights: number[] = [];
 let terrainScorch: Float32Array = new Float32Array(0);
+let undergroundMesh: THREE.Mesh | null = null;
+let terrainScene: THREE.Scene | null = null;
 let gridWidth = 0;
 let gridHeight = 0;
 let cellSize = 1;
@@ -13,9 +15,16 @@ const LOW_COLOR = new THREE.Color(0x7b7b7b);
 const MID_COLOR = new THREE.Color(0x7a5937);
 const HIGH_COLOR = new THREE.Color(0x5f9b45);
 const SCORCH_COLOR = new THREE.Color(0x1a0e07);
+const UNDERGROUND_COLOR = new THREE.Color(0x2e1e10);
 // Low coefficient so a single hit only tints lightly; repeated bombardment of
 // the same spot accumulates toward full black over several impacts.
 const SCORCH_DELTA_TO_INTENSITY = 0.15;
+// Box top sits just below the heightmap's natural minimum so deep craters
+// reveal "bedrock" instead of sky/void. Bottom matches the Rapier floor so
+// the visual aligns with where physics actually catches falling bodies.
+const UNDERGROUND_TOP_OFFSET = 0.4;
+const UNDERGROUND_BOTTOM_Y = -15;
+const UNDERGROUND_XZ_BUFFER = 30;
 const scratchColor = new THREE.Color();
 
 function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
@@ -163,6 +172,7 @@ function syncTerrainGeometry(config: TerrainConfig): void {
 }
 
 export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.Mesh {
+  terrainScene = scene;
   syncTerrainGeometry(config);
 
   if (!terrainGeometry) {
@@ -182,6 +192,7 @@ export function createTerrain(config: TerrainConfig, scene: THREE.Scene): THREE.
   }
 
   terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
+  rebuildUndergroundMesh(config);
   return terrainMesh;
 }
 
@@ -190,6 +201,47 @@ export function rebuildTerrain(config: TerrainConfig): void {
   if (!terrainMesh) return;
   syncTerrainGeometry(config);
   terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
+  rebuildUndergroundMesh(config);
+}
+
+function rebuildUndergroundMesh(config: TerrainConfig): void {
+  if (!terrainScene) return;
+
+  if (undergroundMesh) {
+    terrainScene.remove(undergroundMesh);
+    undergroundMesh.geometry.dispose();
+    const mat = undergroundMesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+    else mat.dispose();
+    undergroundMesh = null;
+  }
+
+  let minHeight = Number.POSITIVE_INFINITY;
+  for (const h of config.heights) if (h < minHeight) minHeight = h;
+  if (!Number.isFinite(minHeight)) minHeight = 0;
+
+  const topY = minHeight - UNDERGROUND_TOP_OFFSET;
+  const boxHeight = Math.max(1, topY - UNDERGROUND_BOTTOM_Y);
+  const footprintX = config.gridWidth * config.cellSize;
+  const footprintZ = config.gridHeight * config.cellSize;
+  const sizeX = footprintX + UNDERGROUND_XZ_BUFFER * 2;
+  const sizeZ = footprintZ + UNDERGROUND_XZ_BUFFER * 2;
+
+  const geo = new THREE.BoxGeometry(sizeX, boxHeight, sizeZ);
+  const mat = new THREE.MeshStandardMaterial({
+    color: UNDERGROUND_COLOR,
+    roughness: 0.95,
+    metalness: 0,
+    flatShading: true,
+  });
+  undergroundMesh = new THREE.Mesh(geo, mat);
+  undergroundMesh.position.set(
+    footprintX * 0.5,
+    (topY + UNDERGROUND_BOTTOM_Y) * 0.5,
+    footprintZ * 0.5,
+  );
+  undergroundMesh.receiveShadow = true;
+  terrainScene.add(undergroundMesh);
 }
 
 export function applyTerrainPatch(patch: TerrainPatch): void {

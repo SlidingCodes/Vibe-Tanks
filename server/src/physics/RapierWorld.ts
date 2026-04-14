@@ -66,6 +66,8 @@ const DEBRIS_COLLISION_GROUPS = interactionGroups(GROUP_DEBRIS, GROUP_TERRAIN);
 // Terrain heightfield is split into tiles so craters only rebuild a small
 // region of the collider instead of the whole map.
 const TILE_CELLS = 16;
+// Catch-all floor well below any natural terrain height.
+const FLOOR_Y = -15;
 
 // ── Debris tuning ──────────────────────────────────────────────────
 const DEBRIS_LIFETIME = 7.0;
@@ -142,6 +144,8 @@ export class RapierWorld {
   private eventQueue: RAPIER.EventQueue;
   private terrainTiles: Map<string, TerrainTile> = new Map();
   private terrainColliderHandles: Set<number> = new Set();
+  private floorBody: RAPIER.RigidBody | null = null;
+  private floorCollider: RAPIER.Collider | null = null;
   private tanks: Map<PlayerId, TankEntry> = new Map();
   private tankColliderOwners: Map<number, PlayerId> = new Map();
   private projectiles: Map<string, ProjectileEntry> = new Map();
@@ -159,16 +163,41 @@ export class RapierWorld {
 
   rebuildTerrain(): void {
     for (const key of Array.from(this.terrainTiles.keys())) this.removeTile(key);
+    this.removeFloor();
 
     const tilesX = Math.max(1, Math.ceil((this.heightmap.width - 1) / TILE_CELLS));
     const tilesZ = Math.max(1, Math.ceil((this.heightmap.height - 1) / TILE_CELLS));
     for (let tz = 0; tz < tilesZ; tz++) {
       for (let tx = 0; tx < tilesX; tx++) this.buildTile(tx, tz);
     }
+    this.buildFloor();
 
     for (const entry of this.tanks.values()) entry.body.wakeUp();
     for (const entry of this.projectiles.values()) entry.body.wakeUp();
     for (const entry of this.debris.values()) entry.body.wakeUp();
+  }
+
+  private buildFloor(): void {
+    // Catch-all floor far below the terrain so debris that clips through
+    // tile seams or future falling chunks settle instead of going to −∞.
+    const footprintX = Math.max(10, this.heightmap.width * this.heightmap.cellSize);
+    const footprintZ = Math.max(10, this.heightmap.height * this.heightmap.cellSize);
+    const bodyDesc = RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(footprintX * 0.5, FLOOR_Y, footprintZ * 0.5);
+    this.floorBody = this.world.createRigidBody(bodyDesc);
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(footprintX * 0.6, 0.5, footprintZ * 0.6)
+      .setFriction(1.0)
+      .setCollisionGroups(TERRAIN_COLLISION_GROUPS);
+    this.floorCollider = this.world.createCollider(colliderDesc, this.floorBody);
+    this.terrainColliderHandles.add(this.floorCollider.handle);
+  }
+
+  private removeFloor(): void {
+    if (!this.floorBody) return;
+    if (this.floorCollider) this.terrainColliderHandles.delete(this.floorCollider.handle);
+    this.world.removeRigidBody(this.floorBody);
+    this.floorBody = null;
+    this.floorCollider = null;
   }
 
   rebuildTerrainRegion(region: TerrainRegion): void {
