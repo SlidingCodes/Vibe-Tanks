@@ -32,6 +32,7 @@ import {
 import { WEAPONS } from '../../../shared/src/weapons';
 import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
+import { VoxelGrid } from '../terrain/VoxelGrid';
 import {
   DamageTotals,
   applyImpact,
@@ -103,6 +104,8 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
+  /** V1 voxel shadow. Seeded from the heightmap; not yet consumed by gameplay. */
+  voxels: VoxelGrid;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -127,7 +130,40 @@ export class Room {
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
+    this.voxels = new VoxelGrid({
+      sizeX: this.heightmap.width,
+      sizeY: 48,
+      sizeZ: this.heightmap.height,
+      cellSize: this.heightmap.cellSize,
+      minYCells: -16,
+    });
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('initial seed');
     this.scheduleReset();
+  }
+
+  private logVoxelSanityCheck(label: string): void {
+    // Sample at grid-aligned positions to isolate vertical quantization error
+    // from horizontal sampling asymmetry. Expected dev ≤ 0.5 * cellSize.
+    const cs = this.heightmap.cellSize;
+    const samples = 64;
+    let maxDev = 0;
+    let sumDev = 0;
+    for (let i = 0; i < samples; i++) {
+      const ix = Math.floor(Math.random() * this.heightmap.width);
+      const iz = Math.floor(Math.random() * this.heightmap.height);
+      const wx = ix * cs;
+      const wz = iz * cs;
+      const hHeight = this.heightmap.getHeight(wx, wz);
+      const vHeight = this.voxels.getHeight(wx, wz);
+      const dev = Math.abs(hHeight - vHeight);
+      if (dev > maxDev) maxDev = dev;
+      sumDev += dev;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[voxel V1] ${label} (${this.terrainPresetId}): maxDev=${maxDev.toFixed(3)} avgDev=${(sumDev / samples).toFixed(3)} (cellSize=${cs})`,
+    );
   }
 
   private scheduleReset(): void {
@@ -146,6 +182,8 @@ export class Room {
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('match reset');
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
       tank.position = pos;
