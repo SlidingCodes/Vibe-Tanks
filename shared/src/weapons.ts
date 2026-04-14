@@ -140,6 +140,22 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
+    id: 'dig',
+    name: 'Digger',
+    projectileSpeed: 22,
+    blastRadius: 0.8,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'dig',
+    cooldown: 1.2,
+    behaviorConfig: {
+      digLength: 6,
+      digStartRadius: 1.0,
+      digEndRadius: 2.4,
+      digDepth: 4.5,
+    },
+  },
+  {
     id: 'mine',
     name: 'Mine Layer',
     projectileSpeed: 14,

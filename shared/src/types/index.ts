@@ -56,7 +56,8 @@ export type WeaponBehavior =
   | 'seeker'
   | 'rail'
   | 'mortar'
-  | 'mine';
+  | 'mine'
+  | 'dig';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -74,7 +75,8 @@ export type ShotVisualStyle =
   | 'rail'
   | 'mortar_shell'
   | 'mine_deploy'
-  | 'mine_burst';
+  | 'mine_burst'
+  | 'dig_shell';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -117,6 +119,10 @@ export interface WeaponBehaviorConfig {
   mineBlastRadius?: number;
   mineDamage?: number;
   mineTerrainDamage?: number;
+  digLength?: number;
+  digStartRadius?: number;
+  digEndRadius?: number;
+  digDepth?: number;
 }
 
 export interface WeaponDefinition {

@@ -234,6 +234,18 @@ function getVisualSpec(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xffb000,
         explosionScale: 0.9,
       };
+    case 'dig_shell':
+      return {
+        projectileRadius: 0.28,
+        projectileColor: 0xc59365,
+        emissiveColor: 0x5a3210,
+        trailColor: 0xa6794a,
+        trailSize: 0.24,
+        pathColor: 0x8a5c30,
+        pathOpacity: 0.35,
+        explosionColor: 0x6a4a30,
+        explosionScale: 0.6,
+      };
     case 'standard':
     default:
       return {

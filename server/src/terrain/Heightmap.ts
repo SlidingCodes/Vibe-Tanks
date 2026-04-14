@@ -397,6 +397,80 @@ export class Heightmap {
     return patch;
   }
 
+  /** Compute a forward-facing cone dig patch (no mutation). Origin is where
+   *  the projectile hit, direction is the travel direction projected onto XZ.
+   *  The cone starts narrow and widens along its length, and digs uniformly
+   *  deep in its centre with a smooth falloff at the rim. */
+  computeDigConePatch(
+    origin: Vec3,
+    direction: Vec3,
+    length: number,
+    startRadius: number,
+    endRadius: number,
+    digDepth: number,
+  ): TerrainPatch {
+    const horizLen = Math.sqrt(direction.x * direction.x + direction.z * direction.z) || 1;
+    const dx = direction.x / horizLen;
+    const dz = direction.z / horizLen;
+    const perpX = -dz;
+    const perpZ = dx;
+
+    const maxRadius = Math.max(startRadius, endRadius);
+    const tipX = origin.x + dx * length;
+    const tipZ = origin.z + dz * length;
+    const bboxMinX = Math.min(origin.x, tipX) - maxRadius;
+    const bboxMaxX = Math.max(origin.x, tipX) + maxRadius;
+    const bboxMinZ = Math.min(origin.z, tipZ) - maxRadius;
+    const bboxMaxZ = Math.max(origin.z, tipZ) + maxRadius;
+
+    const startX = Math.max(0, Math.floor(bboxMinX / this.cellSize));
+    const startZ = Math.max(0, Math.floor(bboxMinZ / this.cellSize));
+    const endX = Math.min(this.width - 1, Math.ceil(bboxMaxX / this.cellSize));
+    const endZ = Math.min(this.height - 1, Math.ceil(bboxMaxZ / this.cellSize));
+    const patchW = Math.max(0, endX - startX + 1);
+    const patchH = Math.max(0, endZ - startZ + 1);
+
+    const patchDeltas: number[] = [];
+    for (let z = startZ; z <= endZ; z++) {
+      for (let x = startX; x <= endX; x++) {
+        const wx = x * this.cellSize;
+        const wz = z * this.cellSize;
+        const relX = wx - origin.x;
+        const relZ = wz - origin.z;
+        const axisT = relX * dx + relZ * dz;
+        let delta = 0;
+        if (axisT >= 0 && axisT <= length) {
+          const perpDist = Math.abs(relX * perpX + relZ * perpZ);
+          const radiusAtT = startRadius + (endRadius - startRadius) * (axisT / length);
+          if (perpDist < radiusAtT) {
+            const radialT = perpDist / radiusAtT;
+            const radialFalloff = 1 - radialT * radialT * (3 - 2 * radialT);
+            // Slight tail drop-off so the back of the cone isn't razor-sharp.
+            const axisNorm = axisT / length;
+            const axisFalloff = axisNorm < 0.15 ? axisNorm / 0.15 : 1;
+            delta = -digDepth * radialFalloff * axisFalloff;
+          }
+        }
+        patchDeltas.push(delta);
+      }
+    }
+
+    return { startX, startZ, width: patchW, height: patchH, heightDeltas: patchDeltas };
+  }
+
+  applyDigCone(
+    origin: Vec3,
+    direction: Vec3,
+    length: number,
+    startRadius: number,
+    endRadius: number,
+    digDepth: number,
+  ): TerrainPatch {
+    const patch = this.computeDigConePatch(origin, direction, length, startRadius, endRadius, digDepth);
+    this.applyPatch(patch);
+    return patch;
+  }
+
   toConfig(): TerrainConfig {
     return {
       gridWidth: this.width,

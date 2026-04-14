@@ -144,6 +144,7 @@ export class RapierWorld {
   private terrainColliderHandles: Set<number> = new Set();
   private floorBody: RAPIER.RigidBody | null = null;
   private floorCollider: RAPIER.Collider | null = null;
+  private edgeWalls: Array<{ body: RAPIER.RigidBody; collider: RAPIER.Collider }> = [];
   private tanks: Map<PlayerId, TankEntry> = new Map();
   private tankColliderOwners: Map<number, PlayerId> = new Map();
   private projectiles: Map<string, ProjectileEntry> = new Map();
@@ -162,6 +163,7 @@ export class RapierWorld {
   rebuildTerrain(): void {
     for (const key of Array.from(this.terrainTiles.keys())) this.removeTile(key);
     this.removeFloor();
+    this.removeEdgeWalls();
 
     const tilesX = Math.max(1, Math.ceil((this.heightmap.width - 1) / TILE_CELLS));
     const tilesZ = Math.max(1, Math.ceil((this.heightmap.height - 1) / TILE_CELLS));
@@ -169,6 +171,7 @@ export class RapierWorld {
       for (let tx = 0; tx < tilesX; tx++) this.buildTile(tx, tz);
     }
     this.buildFloor();
+    this.buildEdgeWalls();
 
     for (const entry of this.tanks.values()) entry.body.wakeUp();
     for (const entry of this.projectiles.values()) entry.body.wakeUp();
@@ -196,6 +199,47 @@ export class RapierWorld {
     this.world.removeRigidBody(this.floorBody);
     this.floorBody = null;
     this.floorCollider = null;
+  }
+
+  private buildEdgeWalls(): void {
+    // Invisible perimeter walls so a tank driving hard at the edge of the
+    // heightfield can't slide off the side into the void. The heightfield
+    // is just a surface with no side collider — without these walls, fast
+    // travel past the last vertex drops the tank through to the floor.
+    const w = this.heightmap.width;
+    const h = this.heightmap.height;
+    const cell = this.heightmap.cellSize;
+    const extentX = (w - 1) * cell;
+    const extentZ = (h - 1) * cell;
+    const wallThickness = 1.0;
+    const wallTopY = 60; // well above any natural or peak terrain
+    const wallBottomY = TERRAIN_FLOOR_Y - 2;
+    const wallCY = (wallTopY + wallBottomY) * 0.5;
+    const wallHalfY = (wallTopY - wallBottomY) * 0.5;
+
+    this.pushEdgeWall(-wallThickness * 0.5, wallCY, extentZ * 0.5, wallThickness * 0.5, wallHalfY, extentZ * 0.5 + wallThickness);
+    this.pushEdgeWall(extentX + wallThickness * 0.5, wallCY, extentZ * 0.5, wallThickness * 0.5, wallHalfY, extentZ * 0.5 + wallThickness);
+    this.pushEdgeWall(extentX * 0.5, wallCY, -wallThickness * 0.5, extentX * 0.5 + wallThickness, wallHalfY, wallThickness * 0.5);
+    this.pushEdgeWall(extentX * 0.5, wallCY, extentZ + wallThickness * 0.5, extentX * 0.5 + wallThickness, wallHalfY, wallThickness * 0.5);
+  }
+
+  private pushEdgeWall(cx: number, cy: number, cz: number, hx: number, hy: number, hz: number): void {
+    const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(cx, cy, cz);
+    const body = this.world.createRigidBody(bodyDesc);
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(hx, hy, hz)
+      .setFriction(0.4)
+      .setCollisionGroups(TERRAIN_COLLISION_GROUPS);
+    const collider = this.world.createCollider(colliderDesc, body);
+    this.terrainColliderHandles.add(collider.handle);
+    this.edgeWalls.push({ body, collider });
+  }
+
+  private removeEdgeWalls(): void {
+    for (const { body, collider } of this.edgeWalls) {
+      this.terrainColliderHandles.delete(collider.handle);
+      this.world.removeRigidBody(body);
+    }
+    this.edgeWalls = [];
   }
 
   rebuildTerrainRegion(region: TerrainRegion): void {
