@@ -5,6 +5,7 @@ import { WEAPONS } from '@shared/weapons';
 import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
+import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
@@ -170,6 +171,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 let voxelGrid: VoxelGrid | null = null;
 let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
+let voxelDebris: VoxelDebrisHandle | null = null;
 let cuberilleVisible = false;
 let surfaceNetsVisible = false;
 
@@ -193,6 +195,11 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   } else {
     surfaceNets.rebuild(voxelGrid);
     surfaceNets.setVisible(surfaceNetsVisible);
+  }
+  if (!voxelDebris) {
+    voxelDebris = createVoxelDebris(scene, voxelGrid.cellSize);
+  } else {
+    voxelDebris.clear();
   }
   // eslint-disable-next-line no-console
   console.log(
@@ -317,7 +324,10 @@ socket.on('shot_resolved', (result) => {
       const grid = voxelGrid;
       const cuberille = voxelTerrain;
       const sn = surfaceNets;
+      const debris = voxelDebris;
       setTimeout(() => {
+        // Sample debris origins BEFORE carving (they must still be solid).
+        debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
         grid.carveSphere(step.endPoint, step.blastRadius);
         cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
         sn?.invalidateSphere(step.endPoint, step.blastRadius);
@@ -544,6 +554,8 @@ function animate(): void {
     }
     updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints(), meshPositions);
   }
+
+  voxelDebris?.update(dt, voxelGrid);
 
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
