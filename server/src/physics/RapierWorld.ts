@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { DebrisState, MovementInput, PlayerId, TankState, TerrainRegion, Vec3 } from '../../../shared/src/types/index';
-import { GRAVITY, TANK_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
+import { GRAVITY, TANK_SPEED, SIM_TICK_RATE, TERRAIN_FLOOR_Y } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
 let rapierReady: Promise<void> | null = null;
@@ -66,8 +66,6 @@ const DEBRIS_COLLISION_GROUPS = interactionGroups(GROUP_DEBRIS, GROUP_TERRAIN);
 // Terrain heightfield is split into tiles so craters only rebuild a small
 // region of the collider instead of the whole map.
 const TILE_CELLS = 16;
-// Catch-all floor well below any natural terrain height.
-const FLOOR_Y = -15;
 
 // ── Debris tuning ──────────────────────────────────────────────────
 const DEBRIS_LIFETIME = 7.0;
@@ -183,7 +181,7 @@ export class RapierWorld {
     const footprintX = Math.max(10, this.heightmap.width * this.heightmap.cellSize);
     const footprintZ = Math.max(10, this.heightmap.height * this.heightmap.cellSize);
     const bodyDesc = RAPIER.RigidBodyDesc.fixed()
-      .setTranslation(footprintX * 0.5, FLOOR_Y, footprintZ * 0.5);
+      .setTranslation(footprintX * 0.5, TERRAIN_FLOOR_Y, footprintZ * 0.5);
     this.floorBody = this.world.createRigidBody(bodyDesc);
     const colliderDesc = RAPIER.ColliderDesc.cuboid(footprintX * 0.6, 0.5, footprintZ * 0.6)
       .setFriction(1.0)

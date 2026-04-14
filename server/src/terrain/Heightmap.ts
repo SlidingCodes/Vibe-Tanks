@@ -1,3 +1,4 @@
+import { TERRAIN_FLOOR_Y } from '../../../shared/src/constants';
 import { DEFAULT_TERRAIN_SETTINGS } from '../../../shared/src/terrain';
 import { TerrainConfig, TerrainGenerationParams, TerrainPatch, TerrainRegion, TerrainSettings, Vec3 } from '../../../shared/src/types/index';
 
@@ -195,7 +196,10 @@ export class Heightmap {
           }
         }
 
-        this.data[z * this.width + x] = p.baseHeight + p.heightScale * shape * edgeFactor;
+        const rawHeight = p.baseHeight + p.heightScale * shape * edgeFactor;
+        // Natural generation stays at least a small margin above the floor so
+        // the initial map isn't born already touching bedrock in valleys.
+        this.data[z * this.width + x] = Math.max(TERRAIN_FLOOR_Y + 0.2, rawHeight);
       }
     }
   }
@@ -373,7 +377,9 @@ export class Heightmap {
         const patchIndex = j * patch.width + i;
         const delta = patch.heightDeltas[patchIndex];
         if (!delta) continue;
-        this.data[(patch.startZ + j) * this.width + (patch.startX + i)] += delta;
+        const dataIndex = (patch.startZ + j) * this.width + (patch.startX + i);
+        const nextY = this.data[dataIndex] + delta;
+        this.data[dataIndex] = nextY < TERRAIN_FLOOR_Y ? TERRAIN_FLOOR_Y : nextY;
       }
     }
     this.onChange?.({

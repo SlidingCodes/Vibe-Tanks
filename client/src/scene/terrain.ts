@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TERRAIN_FLOOR_Y } from '@shared/constants';
 import { TerrainConfig, TerrainPatch } from '@shared/types/index';
 
 let terrainMesh: THREE.Mesh | null = null;
@@ -19,12 +20,6 @@ const UNDERGROUND_COLOR = new THREE.Color(0x2e1e10);
 // Low coefficient so a single hit only tints lightly; repeated bombardment of
 // the same spot accumulates toward full black over several impacts.
 const SCORCH_DELTA_TO_INTENSITY = 0.15;
-// Box top sits just below the heightmap's natural minimum so deep craters
-// reveal "bedrock" instead of sky/void. Bottom matches the Rapier floor so
-// the visual aligns with where physics actually catches falling bodies.
-const UNDERGROUND_TOP_OFFSET = 0.4;
-const UNDERGROUND_BOTTOM_Y = -15;
-const UNDERGROUND_XZ_BUFFER = 30;
 const scratchColor = new THREE.Color();
 
 function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
@@ -216,32 +211,74 @@ function rebuildUndergroundMesh(config: TerrainConfig): void {
     undergroundMesh = null;
   }
 
-  let minHeight = Number.POSITIVE_INFINITY;
-  for (const h of config.heights) if (h < minHeight) minHeight = h;
-  if (!Number.isFinite(minHeight)) minHeight = 0;
-
-  const topY = minHeight - UNDERGROUND_TOP_OFFSET;
-  const boxHeight = Math.max(1, topY - UNDERGROUND_BOTTOM_Y);
-  const footprintX = config.gridWidth * config.cellSize;
-  const footprintZ = config.gridHeight * config.cellSize;
-  const sizeX = footprintX + UNDERGROUND_XZ_BUFFER * 2;
-  const sizeZ = footprintZ + UNDERGROUND_XZ_BUFFER * 2;
-
-  const geo = new THREE.BoxGeometry(sizeX, boxHeight, sizeZ);
+  const geometry = buildTerrainSkirtGeometry(config);
   const mat = new THREE.MeshStandardMaterial({
     color: UNDERGROUND_COLOR,
     roughness: 0.95,
     metalness: 0,
     flatShading: true,
+    side: THREE.DoubleSide,
   });
-  undergroundMesh = new THREE.Mesh(geo, mat);
-  undergroundMesh.position.set(
-    footprintX * 0.5,
-    (topY + UNDERGROUND_BOTTOM_Y) * 0.5,
-    footprintZ * 0.5,
-  );
+  undergroundMesh = new THREE.Mesh(geometry, mat);
   undergroundMesh.receiveShadow = true;
   terrainScene.add(undergroundMesh);
+}
+
+// Builds 4 perimeter walls that follow the heightmap's edge heights straight
+// down to the floor, plus a flat bottom plane. No horizontal top inside the
+// map footprint, so tanks driving inside deep craters are never occluded.
+function buildTerrainSkirtGeometry(config: TerrainConfig): THREE.BufferGeometry {
+  const w = config.gridWidth;
+  const h = config.gridHeight;
+  const cell = config.cellSize;
+  const heights = config.heights;
+  const floorY = TERRAIN_FLOOR_Y;
+  const worldW = (w - 1) * cell;
+  const worldH = (h - 1) * cell;
+
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  const pushEdge = (
+    samples: number,
+    topAt: (i: number) => { x: number; y: number; z: number },
+  ): void => {
+    const base = positions.length / 3;
+    for (let i = 0; i < samples; i++) {
+      const p = topAt(i);
+      positions.push(p.x, p.y, p.z);
+      positions.push(p.x, floorY, p.z);
+    }
+    for (let i = 0; i < samples - 1; i++) {
+      const tl = base + i * 2;
+      const bl = tl + 1;
+      const tr = tl + 2;
+      const br = tl + 3;
+      indices.push(tl, tr, br);
+      indices.push(tl, br, bl);
+    }
+  };
+
+  pushEdge(w, (x) => ({ x: x * cell, y: heights[x], z: 0 }));
+  pushEdge(w, (x) => ({ x: x * cell, y: heights[(h - 1) * w + x], z: worldH }));
+  pushEdge(h, (z) => ({ x: 0, y: heights[z * w], z: z * cell }));
+  pushEdge(h, (z) => ({ x: worldW, y: heights[z * w + (w - 1)], z: z * cell }));
+
+  // Flat floor covering the whole footprint so looking straight down into a
+  // crater that reached the floor shows a solid bedrock surface.
+  const floorBase = positions.length / 3;
+  positions.push(0, floorY, 0);
+  positions.push(worldW, floorY, 0);
+  positions.push(worldW, floorY, worldH);
+  positions.push(0, floorY, worldH);
+  indices.push(floorBase + 0, floorBase + 1, floorBase + 2);
+  indices.push(floorBase + 0, floorBase + 2, floorBase + 3);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
 export function applyTerrainPatch(patch: TerrainPatch): void {
@@ -261,7 +298,8 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
       const delta = patch.heightDeltas[patchIndex] ?? 0;
       if (!delta) continue;
 
-      terrainHeights[vertexIndex] = (terrainHeights[vertexIndex] ?? 0) + delta;
+      const next = (terrainHeights[vertexIndex] ?? 0) + delta;
+      terrainHeights[vertexIndex] = next < TERRAIN_FLOOR_Y ? TERRAIN_FLOOR_Y : next;
       positions.setY(vertexIndex, terrainHeights[vertexIndex]);
       if (delta < 0) {
         const add = Math.min(1, -delta * SCORCH_DELTA_TO_INTENSITY);

@@ -17,3 +17,8 @@ export const MIN_PLAYERS_TO_START = 1;
 export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
 export const SERVER_PORT = 3001;
+
+// Lowest height any vertex (natural or cratered) can reach. Matches the
+// Rapier catch-all floor's Y, so heavily bombarded craters bottom out on
+// visible/physical bedrock instead of punching through to the void.
+export const TERRAIN_FLOOR_Y = -10;
