@@ -7,7 +7,7 @@ const DEBRIS_LIFETIME = 3.0;
 const DEBRIS_FADE_TIME = 0.4;
 const DEBRIS_GRAVITY = 22;
 const DEBRIS_DRAG_PER_SECOND = 0.55; // multiplicative velocity retention per second
-const DEBRIS_SIZE_RATIO = 0.65;
+const DEBRIS_SIZE_RATIO = 0.85;
 
 interface DebrisState {
   px: number; py: number; pz: number;
@@ -30,9 +30,10 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
   const size = DEBRIS_SIZE_RATIO * cellSize;
   const geom = new THREE.BoxGeometry(size, size, size);
   const material = new THREE.MeshStandardMaterial({
-    color: 0x8a5a2b,
-    roughness: 0.9,
+    color: 0xd97a35,
+    roughness: 0.85,
     metalness: 0,
+    emissive: 0x331200,
   });
   const mesh = new THREE.InstancedMesh(geom, material, MAX_DEBRIS);
   mesh.castShadow = true;
@@ -118,8 +119,18 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
       s.life = DEBRIS_LIFETIME;
       s.active = true;
       s.settled = false;
+
+      // Write matrix immediately so the first rendered frame after spawn isn't
+      // blank (otherwise the instance stays on hiddenMatrix until next update).
+      dummy.position.set(s.px, s.py, s.pz);
+      dummy.rotation.set(s.rx, s.ry, s.rz);
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(slot, dummy.matrix);
+
       spawned++;
     }
+    if (spawned > 0) mesh.instanceMatrix.needsUpdate = true;
   }
 
   function update(dt: number, grid: VoxelGrid | null): void {

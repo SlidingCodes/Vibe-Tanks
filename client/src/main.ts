@@ -214,12 +214,18 @@ window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
   if (k === 'v' && !ev.repeat) {
     cuberilleVisible = !cuberilleVisible;
+    // Mutually exclusive with surface nets: avoid overlapping meshes that
+    // read as "small cubes poking through big cubes".
+    if (cuberilleVisible) surfaceNetsVisible = false;
     voxelTerrain?.setVisible(cuberilleVisible);
+    surfaceNets?.setVisible(surfaceNetsVisible);
     syncHeightmapVisibility();
     // eslint-disable-next-line no-console
     console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
   } else if (k === 'b' && !ev.repeat) {
     surfaceNetsVisible = !surfaceNetsVisible;
+    if (surfaceNetsVisible) cuberilleVisible = false;
+    voxelTerrain?.setVisible(cuberilleVisible);
     surfaceNets?.setVisible(surfaceNetsVisible);
     syncHeightmapVisibility();
     // eslint-disable-next-line no-console

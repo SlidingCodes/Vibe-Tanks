@@ -73,40 +73,43 @@ function buildChunkGeometry(
   }
 
   // Pass 2: emit quads for each crossing edge within the chunk's owned range.
-  // Material is DoubleSide so winding consistency isn't required for visibility;
-  // vertex normals already carry the orientation for lighting.
+  // Winding is per-axis and sign-aware so every triangle's face normal points
+  // outward (from solid → empty), matching the gradient vertex normals.
   for (let cj = baseIy; cj < baseIy + CHUNK_SIZE; cj++) {
     for (let ck = baseIz; ck < baseIz + CHUNK_SIZE; ck++) {
       for (let ci = baseIx; ci < baseIx + CHUNK_SIZE; ci++) {
         const sA = solidAt(ci, cj, ck);
-        // +X edge
+        // +X edge: (a,b,d,c) gives +X normal when sA=solid. Reverse for sA=empty.
         if (sA !== solidAt(ci + 1, cj, ck)) {
           const a = dualIdx[dualKey(ci, cj - 1, ck - 1)];
           const b = dualIdx[dualKey(ci, cj,     ck - 1)];
           const c = dualIdx[dualKey(ci, cj - 1, ck    )];
           const d = dualIdx[dualKey(ci, cj,     ck    )];
           if (a >= 0 && b >= 0 && c >= 0 && d >= 0) {
-            indices.push(a, b, d, a, d, c);
+            if (sA === 1) indices.push(a, b, d, a, d, c);
+            else          indices.push(a, c, d, a, d, b);
           }
         }
-        // +Y edge
+        // +Y edge: (a,c,d,b) gives +Y normal when sA=solid below.
         if (sA !== solidAt(ci, cj + 1, ck)) {
           const a = dualIdx[dualKey(ci - 1, cj, ck - 1)];
           const b = dualIdx[dualKey(ci,     cj, ck - 1)];
           const c = dualIdx[dualKey(ci - 1, cj, ck    )];
           const d = dualIdx[dualKey(ci,     cj, ck    )];
           if (a >= 0 && b >= 0 && c >= 0 && d >= 0) {
-            indices.push(a, b, d, a, d, c);
+            if (sA === 1) indices.push(a, c, d, a, d, b);
+            else          indices.push(a, b, d, a, d, c);
           }
         }
-        // +Z edge
+        // +Z edge: same structure as +X.
         if (sA !== solidAt(ci, cj, ck + 1)) {
           const a = dualIdx[dualKey(ci - 1, cj - 1, ck)];
           const b = dualIdx[dualKey(ci,     cj - 1, ck)];
           const c = dualIdx[dualKey(ci - 1, cj,     ck)];
           const d = dualIdx[dualKey(ci,     cj,     ck)];
           if (a >= 0 && b >= 0 && c >= 0 && d >= 0) {
-            indices.push(a, b, d, a, d, c);
+            if (sA === 1) indices.push(a, b, d, a, d, c);
+            else          indices.push(a, c, d, a, d, b);
           }
         }
       }
@@ -136,7 +139,6 @@ export function createSurfaceNetsTerrain(grid: VoxelGrid, scene: THREE.Scene): S
     color: 0x9c6a38,
     roughness: 0.85,
     metalness: 0,
-    side: THREE.DoubleSide,
   });
 
   const group = new THREE.Group();
