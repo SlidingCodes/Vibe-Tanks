@@ -13,10 +13,9 @@ const BODY_Y_OFFSET = HULL_HALF.y;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
-/** Per-tick impulse gain that drives current forward velocity toward target. */
-const ACCEL_K = 9;
-const LINEAR_DAMPING = 0.5;
-const ANGULAR_DAMPING = 8;
+/** Per-tick blend toward the target horizontal velocity. 0 = no response,
+ *  1 = snap. 0.25 at 60 Hz ≈ 70 ms time constant — arcade-responsive. */
+const VEL_BLEND = 0.25;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -156,13 +155,14 @@ export class RapierVoxelWorld {
       .setRotation(quatFromYaw(tank.bodyRotation))
       // Pitch/roll locked for stability on voxel terrain — tank stays upright
       // regardless of slope. Tradeoff is no visual tilt; revisit post-V4.
-      .enabledRotations(false, true, false)
-      .setLinearDamping(LINEAR_DAMPING)
-      .setAngularDamping(ANGULAR_DAMPING);
+      .enabledRotations(false, true, false);
     const body = this.world.createRigidBody(bodyDesc);
+    // Low friction on the hull because locomotion is driven by setLinvel;
+    // friction would otherwise fight the direct velocity commands and the
+    // tank would drift back toward rest (the rubber-band bug in V4b).
     const colliderDesc = RAPIER.ColliderDesc.cuboid(HULL_HALF.x, HULL_HALF.y, HULL_HALF.z)
       .setMass(HULL_MASS)
-      .setFriction(0.8)
+      .setFriction(0.1)
       .setRestitution(0);
     const collider = this.world.createCollider(colliderDesc, body);
     this.tanks.set(tank.playerId, { body, collider, input: { ...ZERO_INPUT } });
@@ -193,8 +193,11 @@ export class RapierVoxelWorld {
     entry.input = { ...input };
   }
 
-  /** Translate per-tank input into forces/angular velocity on each tick.
-   *  Must be called before stepping the world. */
+  /** Translate per-tank input into body velocity on each tick. Must be
+   *  called before stepping the world. Uses direct setLinvel (arcade-style)
+   *  to sidestep terrain friction — impulse control fights friction and the
+   *  tank never moves. Y is preserved so gravity + collision response still
+   *  handle falls into pits and bumps into walls. */
   applyTankInputs(): void {
     for (const entry of this.tanks.values()) {
       const input = entry.input;
@@ -205,20 +208,26 @@ export class RapierVoxelWorld {
       const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
       body.setAngvel({ x: 0, y: turn * TURN_ANGVEL, z: 0 }, true);
 
-      // Forward drive: body-local +Z direction (convention from shared code:
-      // fwdX = sin(yaw), fwdZ = cos(yaw)).
+      // Forward drive in body-local +Z (convention: fwdX=sin(yaw), fwdZ=cos(yaw)).
       const yaw = yawFromQuat(body.rotation());
       const fwdX = Math.sin(yaw);
       const fwdZ = Math.cos(yaw);
 
-      let targetSpeed = 0;
-      if (input.forward) targetSpeed = FORWARD_SPEED;
-      else if (input.backward) targetSpeed = -BACKWARD_SPEED;
+      let targetVx = 0, targetVz = 0;
+      if (input.forward) {
+        targetVx = fwdX * FORWARD_SPEED;
+        targetVz = fwdZ * FORWARD_SPEED;
+      } else if (input.backward) {
+        targetVx = -fwdX * BACKWARD_SPEED;
+        targetVz = -fwdZ * BACKWARD_SPEED;
+      }
 
       const vel = body.linvel();
-      const fwdVel = vel.x * fwdX + vel.z * fwdZ;
-      const impulse = (targetSpeed - fwdVel) * ACCEL_K;
-      body.applyImpulse({ x: fwdX * impulse, y: 0, z: fwdZ * impulse }, true);
+      body.setLinvel({
+        x: vel.x + (targetVx - vel.x) * VEL_BLEND,
+        y: vel.y,
+        z: vel.z + (targetVz - vel.z) * VEL_BLEND,
+      }, true);
     }
   }
 
