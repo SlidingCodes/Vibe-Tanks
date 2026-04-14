@@ -13,9 +13,9 @@ const LOW_COLOR = new THREE.Color(0x7b7b7b);
 const MID_COLOR = new THREE.Color(0x7a5937);
 const HIGH_COLOR = new THREE.Color(0x5f9b45);
 const SCORCH_COLOR = new THREE.Color(0x1a0e07);
-// 1m of carving lands full scorch on a vertex; partial deltas give partial
-// darkening so the smoothstep rim of a crater fades naturally to clean ground.
-const SCORCH_DELTA_TO_INTENSITY = 1.0;
+// Low coefficient so a single hit only tints lightly; repeated bombardment of
+// the same spot accumulates toward full black over several impacts.
+const SCORCH_DELTA_TO_INTENSITY = 0.15;
 const scratchColor = new THREE.Color();
 
 function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
