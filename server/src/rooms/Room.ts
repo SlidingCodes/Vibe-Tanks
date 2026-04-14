@@ -30,7 +30,6 @@ import {
   getTerrainSettingsForPreset,
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
 import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
 import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
@@ -57,8 +56,6 @@ interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
-  velX: number;
-  velZ: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -205,11 +202,10 @@ export class Room {
       tank.barrelPitch = 0.2;
       const player = this.players.get(pid);
       if (player) {
-        player.velX = 0;
-        player.velZ = 0;
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
       }
+      this.physics.resetTank(pid, tank.position, 0);
     }
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
@@ -226,8 +222,6 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
-      velX: 0,
-      velZ: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
     });
@@ -251,6 +245,7 @@ export class Room {
 
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
+    this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
 
@@ -307,6 +302,7 @@ export class Room {
       color: safeColor,
     };
     this.tanks.set(playerId, tank);
+    this.physics.addTank(tank);
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -725,9 +721,8 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
-    player.velX = 0;
-    player.velZ = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    this.physics.resetTank(playerId, tank.position, 0);
   }
 
   private startMatch(): void {
@@ -748,9 +743,6 @@ export class Room {
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
-      // Step Rapier. No dynamic bodies yet, but keeps the world in sync with
-      // carve-driven collider rebuilds and confirms the wasm loop is healthy.
-      this.physics.step(simDt);
     }, simDt * 1000);
 
     this.broadcastInterval = setInterval(() => {
@@ -764,20 +756,31 @@ export class Room {
   }
 
   private tickMovement(dt: number): void {
+    // V4b: tanks are Rapier dynamic bodies. Push input → Rapier, step the
+    // world once, then copy the body state back onto TankState.
     const mapW = this.heightmap.width * this.heightmap.cellSize;
     const mapH = this.heightmap.height * this.heightmap.cellSize;
-    // V3d: voxels are authoritative for ground contact. Interpolated to avoid
-    // sub-cell staircase jitter. Heightmap still drives shot simulation.
-    const sample = (x: number, z: number) => this.voxels.getHeightInterpolated(x, z);
+    const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false };
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
-      if (!tank || !tank.alive) continue;
+      if (!tank) continue;
+      this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
+    }
 
-      const vel = { x: player.velX, z: player.velZ };
-      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH, this.heightmap.cellSize);
-      player.velX = vel.x;
-      player.velZ = vel.z;
+    this.physics.applyTankInputs();
+    this.physics.step(dt);
+
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      this.physics.readbackTank(pid, tank);
+      // Cheap border clamp — Rapier has no world edge walls yet, so keep
+      // tanks inside the playable square.
+      const border = Math.max(1, this.heightmap.cellSize);
+      if (tank.position.x < border) tank.position.x = border;
+      else if (tank.position.x > mapW - border) tank.position.x = mapW - border;
+      if (tank.position.z < border) tank.position.z = border;
+      else if (tank.position.z > mapH - border) tank.position.z = mapH - border;
     }
   }
 
