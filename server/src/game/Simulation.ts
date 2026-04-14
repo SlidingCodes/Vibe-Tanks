@@ -603,8 +603,42 @@ export function simulateShot(
       return simulateBounceShot(shooter, weapon, heightmap, allTanks);
     case 'rail':
       return simulateRailShot(shooter, weapon, heightmap, allTanks);
+    case 'dig':
+      return simulateDigShot(shooter, weapon, heightmap);
     case 'standard':
     default:
       return simulateStandardShot(shooter, weapon, heightmap, allTanks);
   }
+}
+
+function simulateDigShot(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  heightmap: Heightmap,
+): ShotResult {
+  const muzzle = computeMuzzle(shooter);
+  const digLength = weapon.behaviorConfig?.digLength ?? 6;
+  const digStartRadius = weapon.behaviorConfig?.digStartRadius ?? 1.0;
+  const digEndRadius = weapon.behaviorConfig?.digEndRadius ?? 2.4;
+  const digDepth = weapon.behaviorConfig?.digDepth ?? 4.5;
+
+  const origin: Vec3 = { ...muzzle.origin };
+  const tip: Vec3 = {
+    x: origin.x + muzzle.direction.x * digLength,
+    y: origin.y + muzzle.direction.y * digLength,
+    z: origin.z + muzzle.direction.z * digLength,
+  };
+
+  const terrainPatch = heightmap.computeDigConePatch(
+    origin,
+    muzzle.direction,
+    digLength,
+    digStartRadius,
+    digEndRadius,
+    digDepth,
+  );
+
+  return createShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, [origin, tip], tip, 'beam', terrainPatch, digEndRadius, 'dig_shell'),
+  ]);
 }

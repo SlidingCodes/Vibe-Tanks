@@ -90,7 +90,6 @@ interface ActiveProjectileRuntime extends ActiveProjectileState {
   drillBlastRadius: number;
   drillDamage: number;
   drillTerrainDamage: number;
-  digCone: { length: number; startRadius: number; endRadius: number; depth: number } | null;
 }
 
 interface ActiveHazardRuntime extends HazardState {
@@ -389,8 +388,6 @@ export class Room {
           this.fireMine(tank, weapon);
           break;
         case 'dig':
-          this.fireDigShell(tank, weapon);
-          break;
         case 'rail': {
           const result = simulateShot(
             tank,
@@ -539,12 +536,6 @@ export class Room {
     }));
   }
 
-  private fireDigShell(tank: TankState, weapon: WeaponDefinition): void {
-    this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
-      visualStyle: 'dig_shell',
-    }));
-  }
-
   private fireSeeker(tank: TankState, weapon: WeaponDefinition): void {
     const startPos = createMuzzlePosition(tank, this.heightmap);
     this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
@@ -671,12 +662,6 @@ export class Room {
       drillBlastRadius: overrides.drillBlastRadius ?? weapon.blastRadius,
       drillDamage: overrides.drillDamage ?? weapon.damage,
       drillTerrainDamage: overrides.drillTerrainDamage ?? weapon.terrainDamage,
-      digCone: overrides.digCone ?? (weapon.behavior === 'dig' ? {
-        length: weapon.behaviorConfig?.digLength ?? 6,
-        startRadius: weapon.behaviorConfig?.digStartRadius ?? 1.0,
-        endRadius: weapon.behaviorConfig?.digEndRadius ?? 2.4,
-        depth: weapon.behaviorConfig?.digDepth ?? 4.5,
-      } : null),
     };
   }
 
@@ -775,45 +760,24 @@ export class Room {
     const visualStyle = options.visualStyle ?? projectile.visualStyle;
     const damageTotals: DamageTotals = new Map();
 
-    let terrainPatch: TerrainPatch | null = null;
-    if (projectile.digCone) {
-      // Project the incoming velocity onto XZ for the cone axis. Fallback to
-      // the previous velocity in case the projectile just had its velocity
-      // zeroed by the impact response.
-      const vel = projectile.previousVelocity;
-      const horiz = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-      const direction = horiz > 0.001
-        ? { x: vel.x, y: 0, z: vel.z }
-        : { x: Math.cos(this.tanks.get(projectile.ownerId)?.turretRotation ?? 0), y: 0, z: Math.sin(this.tanks.get(projectile.ownerId)?.turretRotation ?? 0) };
-      terrainPatch = this.heightmap.applyDigCone(
-        point,
-        direction,
-        projectile.digCone.length,
-        projectile.digCone.startRadius,
-        projectile.digCone.endRadius,
-        projectile.digCone.depth,
-      );
-      this.regroundAliveTanks();
-    } else {
-      terrainPatch = applyImpact({
-        point,
-        blastRadius: projectile.blastRadius,
-        damage: projectile.damage,
-        terrainDamage,
-      }, this.heightmap, this.getTankList(), damageTotals);
-    }
+    const terrainPatch = applyImpact({
+      point,
+      blastRadius: projectile.blastRadius,
+      damage: projectile.damage,
+      terrainDamage,
+    }, this.heightmap, this.getTankList(), damageTotals);
 
     this.physics.applyExplosionImpulse(
       point,
-      Math.max(projectile.blastRadius, projectile.digCone ? 0.6 : 0),
-      projectile.digCone ? 0 : Math.max(projectile.damage * 18, projectile.blastRadius * 120),
+      projectile.blastRadius,
+      Math.max(projectile.damage * 18, projectile.blastRadius * 120),
     );
 
     const result = buildImpactResult(
       projectile.ownerId,
       projectile.weaponId,
       point,
-      Math.max(projectile.blastRadius, projectile.digCone ? projectile.digCone.endRadius : 0),
+      projectile.blastRadius,
       visualStyle,
       terrainPatch,
       damageTotals,
