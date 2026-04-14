@@ -39,6 +39,12 @@ export function createVoxelDebris(scene: THREE.Scene, cellSize: number): VoxelDe
   mesh.castShadow = true;
   mesh.receiveShadow = false;
   mesh.count = MAX_DEBRIS;
+  // InstancedMesh bounding only covers the base geometry at the mesh origin
+  // (0,0,0), so the perspective camera frustum-culls the whole mesh whenever
+  // it looks away from origin — instances themselves can be anywhere. Shadow
+  // pass uses the directional light's wide ortho camera, which is why shadows
+  // showed without the cubes. Disable culling; one draw call regardless.
+  mesh.frustumCulled = false;
   scene.add(mesh);
 
   const states: DebrisState[] = Array.from({ length: MAX_DEBRIS }, () => ({
