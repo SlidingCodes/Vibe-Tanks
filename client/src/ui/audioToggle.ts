@@ -21,9 +21,9 @@ export function setupAudioToggle(): void {
 
   // Load saved volumes
   const savedMusic = localStorage.getItem(MUSIC_KEY);
-  const musicVol = savedMusic !== null ? parseFloat(savedMusic) : 0.35;
+  const musicVol = savedMusic !== null ? parseFloat(savedMusic) : 0.5;
   const savedSFX = localStorage.getItem(SFX_KEY);
-  const sfxVol = savedSFX !== null ? parseFloat(savedSFX) : 0.5;
+  const sfxVol = savedSFX !== null ? parseFloat(savedSFX) : 1.0;
 
   // Apply startup states
   setMusicVolume(musicVol);
