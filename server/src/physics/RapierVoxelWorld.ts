@@ -14,7 +14,11 @@ const BODY_Y_OFFSET = HULL_RADIUS;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
-const MAX_SLOPE_CLIMB_DEG = 45;
+/** Near-90°. A TriMesh crater rim is close to vertical (~79°); any lower
+ *  limit makes KCC treat the rim as a wall and block the tank from entering.
+ *  With 89°, only exactly-vertical surfaces are walls — natural voxel terrain
+ *  is still walkable, but tanks can drop into craters. */
+const MAX_SLOPE_CLIMB_DEG = 89;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -231,15 +235,28 @@ export class RapierVoxelWorld {
         moveZ = -fwdZ * BACKWARD_SPEED * dt;
       }
 
-      // Raycast-based grounded check. KCC.computedGrounded() reports true
-      // whenever the sphere grazes a rim corner sideways, which kept
-      // verticalVel pinned at 0 over crater edges — the tank couldn't fall
-      // in. A short downward ray from just below the sphere is strict:
-      // only actual ground within 10 cm counts as grounded.
+      // Raycast-based grounded check, strict: only real TriMesh within
+      // 10 cm of the sphere bottom counts as grounded. KCC.computedGrounded()
+      // reports true on any rim-edge grazing contact, which kept verticalVel
+      // pinned at 0 and prevented falls.
+      // Rays must START above the mesh surface and cast downward — TriMesh
+      // is an open surface, not a solid volume, so "inside terrain" isn't
+      // a thing; we cast from body center and exclude the tank's own
+      // collider so the ball doesn't self-hit.
       const pos = body.translation();
-      const rayOrigin = { x: pos.x, y: pos.y - HULL_RADIUS - 0.01, z: pos.z };
-      const downRay = new RAPIER.Ray(rayOrigin, { x: 0, y: -1, z: 0 });
-      const grounded = this.world.castRay(downRay, 0.1, true) !== null;
+      const downRay = new RAPIER.Ray(
+        { x: pos.x, y: pos.y, z: pos.z },
+        { x: 0, y: -1, z: 0 },
+      );
+      const hit = this.world.castRay(
+        downRay,
+        HULL_RADIUS + 0.1,
+        true,
+        undefined,
+        undefined,
+        entry.collider,
+      );
+      const grounded = hit !== null;
 
       if (grounded) entry.verticalVel = 0;
       // Always integrate gravity — if we're over a pit, verticalVel builds
