@@ -181,15 +181,9 @@ export class RapierWorld {
     const tileMaxX = Math.min(tilesX - 1, Math.floor((region.startX + region.width - 1) / TILE_CELLS));
     const tileMaxZ = Math.min(tilesZ - 1, Math.floor((region.startZ + region.height - 1) / TILE_CELLS));
 
-    let rebuilt = 0;
     for (let tz = tileMinZ; tz <= tileMaxZ; tz++) {
-      for (let tx = tileMinX; tx <= tileMaxX; tx++) {
-        this.buildTile(tx, tz);
-        rebuilt++;
-      }
+      for (let tx = tileMinX; tx <= tileMaxX; tx++) this.buildTile(tx, tz);
     }
-    const total = tilesX * tilesZ;
-    console.log(`[terrain] rebuildTerrainRegion: ${rebuilt}/${total} tiles (patch ${region.width}x${region.height} at ${region.startX},${region.startZ})`);
 
     // Bodies sitting inside the rebuilt area might otherwise sleep on the
     // (now removed) old collider; wake them so Rapier re-resolves contacts.
