@@ -147,7 +147,10 @@ export class Room {
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
     this.physics = new RapierWorld(this.heightmap);
-    this.heightmap.onChange = () => this.physics.rebuildTerrain();
+    this.heightmap.onChange = (region) => {
+      if (region) this.physics.rebuildTerrainRegion(region);
+      else this.physics.rebuildTerrain();
+    };
     this.scheduleReset();
   }
 

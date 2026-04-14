@@ -1,5 +1,5 @@
 import { DEFAULT_TERRAIN_SETTINGS } from '../../../shared/src/terrain';
-import { TerrainConfig, TerrainGenerationParams, TerrainPatch, TerrainSettings, Vec3 } from '../../../shared/src/types/index';
+import { TerrainConfig, TerrainGenerationParams, TerrainPatch, TerrainRegion, TerrainSettings, Vec3 } from '../../../shared/src/types/index';
 
 const UINT32_MAX = 0xffffffff;
 
@@ -33,8 +33,9 @@ export class Heightmap {
   generator: TerrainSettings['generator'];
   params: TerrainGenerationParams;
   data: Float32Array;
-  /** Subscribers notified whenever the height grid changes (regen or patch). */
-  onChange: (() => void) | null = null;
+  /** Subscribers notified whenever the height grid changes. Region narrows
+   *  partial updates (patches); null means the whole grid was replaced. */
+  onChange: ((region: TerrainRegion | null) => void) | null = null;
 
   constructor(settings: TerrainSettings = DEFAULT_TERRAIN_SETTINGS, seed = createRandomTerrainSeed()) {
     this.width = 0;
@@ -201,7 +202,7 @@ export class Heightmap {
 
   regenerate(seed = createRandomTerrainSeed(), settings: TerrainSettings = this.getSettings()): void {
     this.configure(settings, seed);
-    this.onChange?.();
+    this.onChange?.(null);
   }
 
   /** Bilinear-interpolated terrain height (smooth everywhere, including craters). */
@@ -364,7 +365,12 @@ export class Heightmap {
         this.data[(patch.startZ + j) * this.width + (patch.startX + i)] += delta;
       }
     }
-    this.onChange?.();
+    this.onChange?.({
+      startX: patch.startX,
+      startZ: patch.startZ,
+      width: patch.width,
+      height: patch.height,
+    });
   }
 
   /** Convenience: compute the crater patch and apply it in one call. */

@@ -172,11 +172,14 @@ export interface TerrainSettings {
   params: TerrainGenerationParams;
 }
 
-export interface TerrainPatch {
+export interface TerrainRegion {
   startX: number;
   startZ: number;
   width: number;
   height: number;
+}
+
+export interface TerrainPatch extends TerrainRegion {
   heightDeltas: number[];
 }
 

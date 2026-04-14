@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { DebrisState, MovementInput, PlayerId, TankState, Vec3 } from '../../../shared/src/types/index';
+import { DebrisState, MovementInput, PlayerId, TankState, TerrainRegion, Vec3 } from '../../../shared/src/types/index';
 import { GRAVITY, TANK_SPEED, SIM_TICK_RATE } from '../../../shared/src/constants';
 import { Heightmap } from '../terrain/Heightmap';
 
@@ -63,6 +63,10 @@ const TANK_COLLISION_GROUPS = interactionGroups(GROUP_TANK, GROUP_TERRAIN | GROU
 const PROJECTILE_COLLISION_GROUPS = interactionGroups(GROUP_PROJECTILE, GROUP_TERRAIN | GROUP_TANK);
 const DEBRIS_COLLISION_GROUPS = interactionGroups(GROUP_DEBRIS, GROUP_TERRAIN);
 
+// Terrain heightfield is split into tiles so craters only rebuild a small
+// region of the collider instead of the whole map.
+const TILE_CELLS = 16;
+
 // ── Debris tuning ──────────────────────────────────────────────────
 const DEBRIS_LIFETIME = 7.0;
 const DEBRIS_FADE_WINDOW = 0.6; // last seconds of lifetime, client uses for fade
@@ -99,6 +103,11 @@ interface DebrisEntry {
   remainingLife: number;
 }
 
+interface TerrainTile {
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+}
+
 export interface ProjectileSpawnConfig {
   projectileId: string;
   ownerId: PlayerId;
@@ -131,8 +140,8 @@ export class RapierWorld {
   world: RAPIER.World;
   private heightmap: Heightmap;
   private eventQueue: RAPIER.EventQueue;
-  private terrainBody: RAPIER.RigidBody | null = null;
-  private terrainCollider: RAPIER.Collider | null = null;
+  private terrainTiles: Map<string, TerrainTile> = new Map();
+  private terrainColliderHandles: Set<number> = new Set();
   private tanks: Map<PlayerId, TankEntry> = new Map();
   private tankColliderOwners: Map<number, PlayerId> = new Map();
   private projectiles: Map<string, ProjectileEntry> = new Map();
@@ -149,35 +158,84 @@ export class RapierWorld {
   }
 
   rebuildTerrain(): void {
-    if (this.terrainCollider) this.world.removeCollider(this.terrainCollider, false);
-    if (this.terrainBody) this.world.removeRigidBody(this.terrainBody);
+    for (const key of Array.from(this.terrainTiles.keys())) this.removeTile(key);
+
+    const tilesX = Math.max(1, Math.ceil((this.heightmap.width - 1) / TILE_CELLS));
+    const tilesZ = Math.max(1, Math.ceil((this.heightmap.height - 1) / TILE_CELLS));
+    for (let tz = 0; tz < tilesZ; tz++) {
+      for (let tx = 0; tx < tilesX; tx++) this.buildTile(tx, tz);
+    }
+
+    for (const entry of this.tanks.values()) entry.body.wakeUp();
+    for (const entry of this.projectiles.values()) entry.body.wakeUp();
+    for (const entry of this.debris.values()) entry.body.wakeUp();
+  }
+
+  rebuildTerrainRegion(region: TerrainRegion): void {
+    const tilesX = Math.max(1, Math.ceil((this.heightmap.width - 1) / TILE_CELLS));
+    const tilesZ = Math.max(1, Math.ceil((this.heightmap.height - 1) / TILE_CELLS));
+    // Offset by −1 so patches landing exactly on a tile border also refresh
+    // the neighbour that shares that edge vertex.
+    const tileMinX = Math.max(0, Math.floor((region.startX - 1) / TILE_CELLS));
+    const tileMinZ = Math.max(0, Math.floor((region.startZ - 1) / TILE_CELLS));
+    const tileMaxX = Math.min(tilesX - 1, Math.floor((region.startX + region.width - 1) / TILE_CELLS));
+    const tileMaxZ = Math.min(tilesZ - 1, Math.floor((region.startZ + region.height - 1) / TILE_CELLS));
+
+    for (let tz = tileMinZ; tz <= tileMaxZ; tz++) {
+      for (let tx = tileMinX; tx <= tileMaxX; tx++) this.buildTile(tx, tz);
+    }
+
+    // Bodies sitting inside the rebuilt area might otherwise sleep on the
+    // (now removed) old collider; wake them so Rapier re-resolves contacts.
+    for (const entry of this.debris.values()) entry.body.wakeUp();
+    for (const entry of this.tanks.values()) entry.body.wakeUp();
+  }
+
+  private buildTile(tx: number, tz: number): void {
+    const key = tileKey(tx, tz);
+    this.removeTile(key);
 
     const w = this.heightmap.width;
     const h = this.heightmap.height;
     const cell = this.heightmap.cellSize;
-    const nrows = w - 1;
-    const ncols = h - 1;
 
-    const flat = new Float32Array(w * h);
-    for (let z = 0; z < h; z++) {
-      for (let x = 0; x < w; x++) {
-        flat[x * h + z] = this.heightmap.data[z * w + x];
+    const startX = tx * TILE_CELLS;
+    const startZ = tz * TILE_CELLS;
+    const endX = Math.min(w - 1, startX + TILE_CELLS);
+    const endZ = Math.min(h - 1, startZ + TILE_CELLS);
+    const vertsX = endX - startX + 1;
+    const vertsZ = endZ - startZ + 1;
+    const nrows = vertsX - 1;
+    const ncols = vertsZ - 1;
+    if (nrows <= 0 || ncols <= 0) return;
+
+    const flat = new Float32Array(vertsX * vertsZ);
+    for (let z = 0; z < vertsZ; z++) {
+      for (let x = 0; x < vertsX; x++) {
+        flat[x * vertsZ + z] = this.heightmap.data[(startZ + z) * w + (startX + x)];
       }
     }
 
-    const scale = { x: (w - 1) * cell, y: 1.0, z: (h - 1) * cell };
-    const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(
-      (w - 1) * cell * 0.5, 0, (h - 1) * cell * 0.5,
-    );
-    this.terrainBody = this.world.createRigidBody(bodyDesc);
+    const centerX = (startX + endX) * 0.5 * cell;
+    const centerZ = (startZ + endZ) * 0.5 * cell;
+    const scale = { x: nrows * cell, y: 1.0, z: ncols * cell };
+    const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(centerX, 0, centerZ);
+    const body = this.world.createRigidBody(bodyDesc);
     const colliderDesc = RAPIER.ColliderDesc.heightfield(nrows, ncols, flat, scale)
       .setFriction(1.0)
       .setCollisionGroups(TERRAIN_COLLISION_GROUPS);
-    this.terrainCollider = this.world.createCollider(colliderDesc, this.terrainBody);
+    const collider = this.world.createCollider(colliderDesc, body);
 
-    // Wake all tanks and projectiles so they resettle onto the new surface immediately.
-    for (const entry of this.tanks.values()) entry.body.wakeUp();
-    for (const entry of this.projectiles.values()) entry.body.wakeUp();
+    this.terrainTiles.set(key, { body, collider });
+    this.terrainColliderHandles.add(collider.handle);
+  }
+
+  private removeTile(key: string): void {
+    const existing = this.terrainTiles.get(key);
+    if (!existing) return;
+    this.terrainColliderHandles.delete(existing.collider.handle);
+    this.world.removeRigidBody(existing.body);
+    this.terrainTiles.delete(key);
   }
 
   addTank(tank: TankState): void {
@@ -522,7 +580,7 @@ export class RapierWorld {
 
       const otherHandle = projectileIdA ? handle2 : handle1;
       const hitTankId = this.tankColliderOwners.get(otherHandle) ?? null;
-      const hitTerrain = this.terrainCollider?.handle === otherHandle;
+      const hitTerrain = this.terrainColliderHandles.has(otherHandle);
       if (!hitTerrain && !hitTankId) return;
 
       const point = projectile.body.translation();
@@ -558,6 +616,10 @@ function clamp(value: number, min: number, max: number): number {
 
 function interactionGroups(membership: number, filter: number): number {
   return (membership << 16) | filter;
+}
+
+function tileKey(tx: number, tz: number): string {
+  return `${tx}_${tz}`;
 }
 
 
