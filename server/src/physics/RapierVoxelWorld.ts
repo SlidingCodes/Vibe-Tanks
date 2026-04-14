@@ -5,17 +5,21 @@ import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../../../shared/
 import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '../../../shared/src/constants';
 
 // ── Tank tuning ─────────────────────────────────────────────────────
-const HULL_HALF = { x: 1.1, y: 0.45, z: 1.4 };
+/** Sphere collider for the tank hull. Using a ball means tunnel entrances
+ *  and crater lips don't "catch" the front of a cuboid and get deflected
+ *  upward by Rapier's collision response — a sphere rolls into openings.
+ *  Direction of motion still comes from the body's yaw. */
+const HULL_RADIUS = 0.85;
 const HULL_MASS = 900;
-/** How far above tank.position.y to place the body center at spawn (so the
- *  cuboid sits flush on the ground after a brief settle). */
-const BODY_Y_OFFSET = HULL_HALF.y;
+/** Y offset from tank.position.y to the body center so the sphere sits flush
+ *  on the ground. */
+const BODY_Y_OFFSET = HULL_RADIUS;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
-/** Per-tick blend toward the target horizontal velocity. 0 = no response,
- *  1 = snap. 0.25 at 60 Hz ≈ 70 ms time constant — arcade-responsive. */
-const VEL_BLEND = 0.25;
+/** Per-tick blend toward the target horizontal velocity. 0.4 at 60 Hz ≈
+ *  40 ms time constant — very responsive. */
+const VEL_BLEND = 0.4;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -151,7 +155,7 @@ export class RapierVoxelWorld {
   addTank(tank: TankState): void {
     if (this.tanks.has(tank.playerId)) this.removeTank(tank.playerId);
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(tank.position.x, tank.position.y + BODY_Y_OFFSET + 0.5, tank.position.z)
+      .setTranslation(tank.position.x, tank.position.y + BODY_Y_OFFSET + 0.3, tank.position.z)
       .setRotation(quatFromYaw(tank.bodyRotation))
       // Pitch/roll locked for stability on voxel terrain — tank stays upright
       // regardless of slope. Tradeoff is no visual tilt; revisit post-V4.
@@ -160,7 +164,7 @@ export class RapierVoxelWorld {
     // Low friction on the hull because locomotion is driven by setLinvel;
     // friction would otherwise fight the direct velocity commands and the
     // tank would drift back toward rest (the rubber-band bug in V4b).
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(HULL_HALF.x, HULL_HALF.y, HULL_HALF.z)
+    const colliderDesc = RAPIER.ColliderDesc.ball(HULL_RADIUS)
       .setMass(HULL_MASS)
       .setFriction(0.1)
       .setRestitution(0);
@@ -180,7 +184,7 @@ export class RapierVoxelWorld {
   resetTank(id: PlayerId, pos: Vec3, yaw: number): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
-    entry.body.setTranslation({ x: pos.x, y: pos.y + BODY_Y_OFFSET + 0.5, z: pos.z }, true);
+    entry.body.setTranslation({ x: pos.x, y: pos.y + BODY_Y_OFFSET + 0.3, z: pos.z }, true);
     entry.body.setRotation(quatFromYaw(yaw), true);
     entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
