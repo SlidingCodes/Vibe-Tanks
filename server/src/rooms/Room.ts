@@ -143,6 +143,17 @@ export class Room {
     this.scheduleReset();
   }
 
+  /** Temporary V2 observability: log the surface drop each time we carve. */
+  private carveVoxelSphereLogged(center: Vec3, radius: number): void {
+    const before = this.voxels.getHeight(center.x, center.z);
+    this.voxels.carveSphere(center, radius);
+    const after = this.voxels.getHeight(center.x, center.z);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[voxel] carve @ (${center.x.toFixed(0)},${center.z.toFixed(0)}) r=${radius.toFixed(1)} drop=${(before - after).toFixed(1)}`,
+    );
+  }
+
   private logVoxelSanityCheck(label: string): void {
     // Sample at grid-aligned positions to isolate vertical quantization error
     // from horizontal sampling asymmetry. Expected dev ≤ 0.5 * cellSize.
@@ -207,6 +218,7 @@ export class Room {
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -228,6 +240,7 @@ export class Room {
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
+    socket.emit('voxel_snapshot', this.voxels.toSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -441,7 +454,7 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
-        this.voxels.carveSphere(step.endPoint, step.blastRadius);
+        this.carveVoxelSphereLogged(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -463,7 +476,7 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
-      this.voxels.carveSphere(step.endPoint, step.blastRadius);
+      this.carveVoxelSphereLogged(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
@@ -722,6 +735,7 @@ export class Room {
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
     this.startLoop();
   }
 

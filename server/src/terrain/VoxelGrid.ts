@@ -1,4 +1,4 @@
-import { Vec3 } from '../../../shared/src/types/index';
+import { Vec3, VoxelSnapshot } from '../../../shared/src/types/index';
 import { Heightmap } from './Heightmap';
 
 export interface VoxelGridOptions {
@@ -170,6 +170,18 @@ export class VoxelGrid {
         }
       }
     }
+  }
+
+  /** Wire-format snapshot of the full grid. `data` is the Uint8Array's buffer. */
+  toSnapshot(): VoxelSnapshot {
+    return {
+      sizeX: this.sizeX,
+      sizeY: this.sizeY,
+      sizeZ: this.sizeZ,
+      cellSize: this.cellSize,
+      minYCells: this.minYCells,
+      data: this.data.buffer as ArrayBuffer,
+    };
   }
 
   /** World-space height of the topmost solid voxel at (wx, wz). minY*cellSize if the column is empty. */

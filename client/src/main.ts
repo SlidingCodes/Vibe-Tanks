@@ -30,7 +30,7 @@ import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
@@ -162,6 +162,18 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   } else {
     hud.showWaiting(false);
   }
+});
+
+socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
+  const bytes = snap.data instanceof ArrayBuffer ? new Uint8Array(snap.data) : new Uint8Array(snap.data as ArrayBufferLike);
+  let solid = 0;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] > 0) solid++;
+  const totalCells = snap.sizeX * snap.sizeY * snap.sizeZ;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells} — ` +
+      `${(bytes.length / 1024).toFixed(1)} KB, ${solid}/${totalCells} solid (${((solid / totalCells) * 100).toFixed(1)}%)`,
+  );
 });
 
 socket.on('state_update', (state: RoomStateUpdate) => {
