@@ -11,7 +11,7 @@ const io = new Server<ClientEvents, ServerEvents>(httpServer, {
   cors: { origin: '*' },
 });
 
-let mainRoom: Room;
+let mainRoom: Room | null = null;
 initRapier().then(() => {
   mainRoom = new Room('main', io, getRandomTerrainPresetId());
 });

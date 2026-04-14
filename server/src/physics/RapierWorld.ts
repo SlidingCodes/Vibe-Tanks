@@ -12,21 +12,21 @@ export function initRapier(): Promise<void> {
 // ── Tank tuning ────────────────────────────────────────────────────
 const HULL_HALF = { x: 0.85, y: 0.35, z: 1.0 };
 const HULL_MASS = 900;
-const WHEEL_RADIUS = 0.35;
-const SUSPENSION_REST = 0.3;
-const SUSPENSION_STIFF = 90;
-const SUSPENSION_DAMPING_COMPRESSION = 3.4;
-const SUSPENSION_DAMPING_RELAX = 2.8;
-const MAX_SUSPENSION_TRAVEL = 0.07;
-const MAX_SUSPENSION_FORCE = HULL_MASS * 45;
-const FRICTION_SLIP = 6.2;
-const WHEEL_SIDE_FRICTION = 0.25;
-const BALLAST_MASS = HULL_MASS * 1.0;
-const BALLAST_OFFSET_Y = -0.55;
+const WHEEL_RADIUS = 0.38;
+const SUSPENSION_REST = 0.24;
+const SUSPENSION_STIFF = 125;
+const SUSPENSION_DAMPING_COMPRESSION = 5.2;
+const SUSPENSION_DAMPING_RELAX = 4.6;
+const MAX_SUSPENSION_TRAVEL = 0.05;
+const MAX_SUSPENSION_FORCE = HULL_MASS * 60;
+const FRICTION_SLIP = 6.6;
+const WHEEL_SIDE_FRICTION = 0.42;
+const BALLAST_MASS = HULL_MASS * 1.15;
+const BALLAST_OFFSET_Y = -0.62;
 const EXTRA_ANGULAR_INERTIA = {
-  x: HULL_MASS * 5.5,
-  y: HULL_MASS * 0.03,
-  z: HULL_MASS * 2.0,
+  x: HULL_MASS * 6.5,
+  y: HULL_MASS * 0.06,
+  z: HULL_MASS * 2.8,
 };
 const IDLE_BRAKE_FACTOR = 0.12;
 const REVERSAL_BRAKE_FACTOR = 0.65;
@@ -253,8 +253,8 @@ export class RapierWorld {
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(tank.position.x, yCenter, tank.position.z)
       .setRotation(quatFromEulerYXZ(0, tank.bodyRotation, 0))
-      .setLinearDamping(0.65)
-      .setAngularDamping(1.35)
+      .setLinearDamping(0.82)
+      .setAngularDamping(1.75)
       .setAdditionalMassProperties(
         BALLAST_MASS,
         { x: 0, y: BALLAST_OFFSET_Y, z: 0 },

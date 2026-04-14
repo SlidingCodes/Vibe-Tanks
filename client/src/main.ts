@@ -12,13 +12,13 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation, fl
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
-  setVirtualWeaponSlot, getVirtualAimDirect, setAimContext, setEnemyPositions,
+  setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -96,6 +96,7 @@ function getSelectedWeapon() {
 // animate-loop handler picks it up uniformly.
 const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
 hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
+setWeaponCount(WEAPONS.length);
 
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();
@@ -258,6 +259,19 @@ socket.on('shot_resolved', (result) => {
     scheduleShotTimeout(() => {
       const scale = Math.min(1, step.blastRadius / 6);
       playExplosion(scale);
+
+      const myMesh = getAllTankMeshes().get(myId);
+      if (!myMesh) return;
+      const dx = myMesh.group.position.x - step.endPoint.x;
+      const dy = myMesh.group.position.y - step.endPoint.y;
+      const dz = myMesh.group.position.z - step.endPoint.z;
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const range = Math.max(6, step.blastRadius * 5.5);
+      if (distance > range) return;
+
+      const proximity = 1 - distance / range;
+      const intensity = (0.26 + step.blastRadius * 0.05) * proximity;
+      addImpactCameraShake(intensity, 0.32);
     }, delay * 1000);
   }
 
