@@ -338,15 +338,17 @@ export class VoxelGrid {
     return this.minYCells * this.cellSize;
   }
 
-  /** World-space surface height at (wx, wz), nearest column. */
+  /** World-space surface height at (wx, wz). Bilinear-interpolated across
+   *  the 4 neighbouring columns so shell trajectories, tank physics and the
+   *  trajectory preview all sample the same smooth surface the Surface Nets
+   *  mesh renders. The nearest-column crossing is an implementation detail
+   *  (`columnTopHeight`, private). */
   getHeight(wx: number, wz: number): number {
-    return this.columnTopHeight(
-      Math.round(wx / this.cellSize),
-      Math.round(wz / this.cellSize),
-    );
+    return this.getHeightInterpolated(wx, wz);
   }
 
-  /** Bilinear-interpolated surface height for smooth tank physics. */
+  /** Bilinear-interpolated surface height for smooth tank physics. Kept as
+   *  a named export so existing callers continue to work. */
   getHeightInterpolated(wx: number, wz: number): number {
     const fx = wx / this.cellSize;
     const fz = wz / this.cellSize;
