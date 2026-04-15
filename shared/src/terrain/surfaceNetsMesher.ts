@@ -36,21 +36,29 @@ export interface SurfaceNetsChunkMesh {
 }
 
 export interface SurfaceNetsOptions {
-  /** Optional scorch sampler (voxel index → 0..255). When provided, the mesher
-   *  emits per-vertex colors blending a base dirt tone with a dark burnt tint
-   *  proportional to the interpolated scorch around each dual cube. */
+  /** Optional scorch sampler (voxel index → 0..255). When provided, the
+   *  per-vertex base color is darkened toward BURNT proportional to the
+   *  8-corner scorch average around each dual cube. */
   scorchAt?: (ix: number, iy: number, iz: number) => number;
+  /** Min/max terrain elevation in world units. When provided, the per-vertex
+   *  base color follows a gray (low) → brown (mid) → green (high) palette
+   *  matching the original heightmap renderer. */
+  elevationRange?: { min: number; max: number };
 }
 
-// Base material tone (matches voxelSurfaceNets material color 0x9c6a38) and
-// the target color at full scorch. Nearly black so the burn ring reads
-// cleanly against the brown terrain.
-const BASE_R = 0x9c / 255;
-const BASE_G = 0x6a / 255;
-const BASE_B = 0x38 / 255;
-const BURNT_R = 0x08 / 255;
-const BURNT_G = 0x05 / 255;
-const BURNT_B = 0x03 / 255;
+// Heightmap-style elevation palette (matches client/scene/terrain.ts).
+const LOW_R  = 0x7b / 255, LOW_G  = 0x7b / 255, LOW_B  = 0x7b / 255; // gray
+const MID_R  = 0x7a / 255, MID_G  = 0x59 / 255, MID_B  = 0x37 / 255; // brown
+const HIGH_R = 0x5f / 255, HIGH_G = 0x9b / 255, HIGH_B = 0x45 / 255; // green
+// Fallback dirt tone if no elevation range is supplied.
+const BASE_R = 0x9c / 255, BASE_G = 0x6a / 255, BASE_B = 0x38 / 255;
+// Target at full scorch — near black for clean burn rings.
+const BURNT_R = 0x08 / 255, BURNT_G = 0x05 / 255, BURNT_B = 0x03 / 255;
+
+function smoothStep01(t: number): number {
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return c * c * (3 - 2 * c);
+}
 
 /**
  * Shared surface-nets mesher. Produces a per-chunk mesh from the voxel grid:
@@ -84,6 +92,10 @@ export function buildSurfaceNetsChunk(
   const indices: number[] = [];
   const colors: number[] = [];
   const scorchAt = options.scorchAt;
+  const elevationRange = options.elevationRange;
+  const emitColors = scorchAt !== undefined || elevationRange !== undefined;
+  const elevMin = elevationRange ? elevationRange.min : 0;
+  const elevSpan = elevationRange ? Math.max(1e-3, elevationRange.max - elevationRange.min) : 1;
 
   const dualKey = (i: number, j: number, k: number): number =>
     (j - baseIy + 1) * DUAL_STRIDE_YZ + (k - baseIz + 1) * DUAL_W + (i - baseIx + 1);
@@ -152,23 +164,44 @@ export function buildSurfaceNetsChunk(
         const idx = positions.length / 3;
         positions.push(wx, wy, wz);
         normals.push(-gx * invMag, -gy * invMag, -gz * invMag);
-        if (scorchAt) {
-          // Average scorch across the 8 dual-cube corners. [0, 1].
-          const avg = (
-            scorchAt(ci,     cj,     ck    ) +
-            scorchAt(ci + 1, cj,     ck    ) +
-            scorchAt(ci,     cj + 1, ck    ) +
-            scorchAt(ci + 1, cj + 1, ck    ) +
-            scorchAt(ci,     cj,     ck + 1) +
-            scorchAt(ci + 1, cj,     ck + 1) +
-            scorchAt(ci,     cj + 1, ck + 1) +
-            scorchAt(ci + 1, cj + 1, ck + 1)
-          ) / (8 * 255);
-          const t = avg > 1 ? 1 : avg;
+        if (emitColors) {
+          // 1) Base tone from the vertex's elevation, matching the original
+          //    heightmap palette (gray → brown → green).
+          let baseR = BASE_R, baseG = BASE_G, baseB = BASE_B;
+          if (elevationRange) {
+            const t = (wy - elevMin) / elevSpan;
+            const tc = t < 0 ? 0 : t > 1 ? 1 : t;
+            if (tc < 0.5) {
+              const u = smoothStep01(tc / 0.5);
+              baseR = LOW_R + (MID_R - LOW_R) * u;
+              baseG = LOW_G + (MID_G - LOW_G) * u;
+              baseB = LOW_B + (MID_B - LOW_B) * u;
+            } else {
+              const u = smoothStep01((tc - 0.5) / 0.5);
+              baseR = MID_R + (HIGH_R - MID_R) * u;
+              baseG = MID_G + (HIGH_G - MID_G) * u;
+              baseB = MID_B + (HIGH_B - MID_B) * u;
+            }
+          }
+          // 2) Scorch darkens the base toward BURNT, additive across hits.
+          let s = 0;
+          if (scorchAt) {
+            const avg = (
+              scorchAt(ci,     cj,     ck    ) +
+              scorchAt(ci + 1, cj,     ck    ) +
+              scorchAt(ci,     cj + 1, ck    ) +
+              scorchAt(ci + 1, cj + 1, ck    ) +
+              scorchAt(ci,     cj,     ck + 1) +
+              scorchAt(ci + 1, cj,     ck + 1) +
+              scorchAt(ci,     cj + 1, ck + 1) +
+              scorchAt(ci + 1, cj + 1, ck + 1)
+            ) / (8 * 255);
+            s = avg > 1 ? 1 : avg;
+          }
           colors.push(
-            BASE_R + (BURNT_R - BASE_R) * t,
-            BASE_G + (BURNT_G - BASE_G) * t,
-            BASE_B + (BURNT_B - BASE_B) * t,
+            baseR + (BURNT_R - baseR) * s,
+            baseG + (BURNT_G - baseG) * s,
+            baseB + (BURNT_B - baseB) * s,
           );
         }
         dualIdx[dualKey(ci, cj, ck)] = idx;
@@ -224,7 +257,7 @@ export function buildSurfaceNetsChunk(
     indices: new Uint32Array(indices),
     normals: new Float32Array(normals),
   };
-  if (scorchAt && colors.length > 0) {
+  if (emitColors && colors.length > 0) {
     result.colors = new Float32Array(colors);
   }
   return result;

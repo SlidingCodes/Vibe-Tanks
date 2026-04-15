@@ -31,16 +31,39 @@ export interface SurfaceNetsHandle {
   setVisible(v: boolean): void;
 }
 
+function computeElevationRange(grid: VoxelGrid): { min: number; max: number } {
+  let min = Infinity;
+  let max = -Infinity;
+  // Sample on a coarse stride — full grid is 200×200, this hits every other
+  // column for ~10k getHeight calls, plenty of resolution for the palette.
+  const stride = 2;
+  for (let iz = 0; iz < grid.sizeZ; iz += stride) {
+    const wz = (iz + 0.5) * grid.cellSize;
+    for (let ix = 0; ix < grid.sizeX; ix += stride) {
+      const wx = (ix + 0.5) * grid.cellSize;
+      const h = grid.getHeight(wx, wz);
+      if (h < min) min = h;
+      if (h > max) max = h;
+    }
+  }
+  if (!isFinite(min)) min = 0;
+  if (!isFinite(max)) max = min + 1;
+  return { min, max };
+}
+
 export function createSurfaceNetsTerrain(
   grid: VoxelGrid,
   scene: THREE.Scene,
   scorch?: VoxelScorch,
 ): SurfaceNetsHandle {
+  // Always vertex-coloured: the mesher emits a heightmap-style gray/brown/
+  // green palette + an optional scorch overlay. Material colour stays white
+  // so the per-vertex colour passes through unmodified.
   const material = new THREE.MeshStandardMaterial({
-    color: scorch ? 0xffffff : 0x9c6a38,
+    color: 0xffffff,
     roughness: 0.85,
     metalness: 0,
-    vertexColors: scorch !== undefined,
+    vertexColors: true,
   });
 
   const group = new THREE.Group();
@@ -50,9 +73,11 @@ export function createSurfaceNetsTerrain(
   const chunks = new Map<string, THREE.Mesh>();
   let activeGrid = grid;
   let activeScorch = scorch;
-  const meshOptions = (): SurfaceNetsOptions => activeScorch
-    ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) }
-    : {};
+  let activeElevation = computeElevationRange(grid);
+  const meshOptions = (): SurfaceNetsOptions => ({
+    elevationRange: activeElevation,
+    ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
+  });
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
     const key = chunkKey(cx, cy, cz);
@@ -88,6 +113,11 @@ export function createSurfaceNetsTerrain(
   function rebuildAll(g: VoxelGrid, s?: VoxelScorch): void {
     activeGrid = g;
     if (s !== undefined) activeScorch = s;
+    // Snapshot terrain bounds for the elevation palette. Recomputed on each
+    // full rebuild — incremental carves don't refresh it, so the palette
+    // drifts very slightly as deep craters appear, but never enough to be
+    // visible mid-match.
+    activeElevation = computeElevationRange(g);
     wipeChunks();
     const nx = Math.ceil(g.sizeX / CHUNK_SIZE);
     const ny = Math.ceil(g.sizeY / CHUNK_SIZE);
