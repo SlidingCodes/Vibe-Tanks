@@ -10,6 +10,9 @@ const waitingOverlay = document.getElementById('waiting-overlay')!;
 const deathOverlay = document.getElementById('death-overlay') as HTMLDivElement;
 const deathTimer = document.getElementById('death-timer')!;
 const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonElement;
+const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
+const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
+
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
 let deathCountdownInterval: ReturnType<typeof setInterval> | null = null;
@@ -151,6 +154,45 @@ export function setWeapons(
 export function showWaiting(show: boolean): void {
   waitingOverlay.style.display = show ? 'block' : 'none';
 }
+
+/** Triggers the visual hitmarker and screen flash when hitting an enemy. */
+export function triggerHitFeedback(killed = false): void {
+  // eslint-disable-next-line no-console
+  console.log(`[UI] Hit triggered! Killed: ${killed}`);
+
+  // Restart flash animation
+
+  hitFlash.classList.remove('active');
+  void hitFlash.offsetWidth; // Force reflow
+  hitFlash.classList.add('active');
+
+  // Restart hitmarker animation
+  hitMarker.classList.remove('active', 'kill');
+  void hitMarker.offsetWidth; // Force reflow
+  if (killed) hitMarker.classList.add('kill');
+  hitMarker.classList.add('active');
+
+  // Spawn visual particles
+  for (let i = 0; i < 12; i++) {
+    const p = document.createElement('div');
+    p.className = 'hit-particle active';
+    const angle = (i / 12) * Math.PI * 2 + (Math.random() * 0.5);
+    const dist = 40 + Math.random() * 80;
+    p.style.setProperty('--tx', `${Math.cos(angle) * dist}px`);
+    p.style.setProperty('--ty', `${Math.sin(angle) * dist}px`);
+    p.style.left = '50%';
+    p.style.top = '50%';
+    if (killed) {
+      p.style.background = '#ff2222';
+      p.style.boxShadow = '0 0 10px #ff0000';
+    }
+    document.body.appendChild(p);
+    setTimeout(() => p.remove(), 600);
+  }
+}
+
+
+
 
 export function showGameOver(winnerId: string): void {
   waitingOverlay.style.display = 'block';

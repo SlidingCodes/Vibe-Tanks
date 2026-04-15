@@ -18,8 +18,11 @@ import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosi
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
+
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
+import { triggerHitFeedback } from './ui/hud';
+
 import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
@@ -371,7 +374,13 @@ socket.on('shot_resolved', (result) => {
     }
     if (result.shooterId === myId && result.damageDealt.length > 0) {
       playHitMarker();
+      const anyKill = result.damageDealt.some((d) => d.killed);
+      triggerHitFeedback(anyKill);
+      // Extra sharp kick for the player when they land a hit
+      addImpactCameraShake(anyKill ? 0.45 : 0.28, 0.2);
     }
+
+
   }, impactMs * 1000);
 });
 
