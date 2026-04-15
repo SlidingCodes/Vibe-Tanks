@@ -18,8 +18,15 @@ import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosi
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
+
 import { createLights } from './scene/lights';
+import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
+import { triggerRecoil } from './entities/tank';
+
+
 import * as hud from './ui/hud';
+import { triggerHitFeedback } from './ui/hud';
+
 import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
@@ -169,6 +176,8 @@ let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
+let atmosphere: AtmosphereHandle | null = null;
+
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
@@ -199,11 +208,15 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
   const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
   updateSceneScale(worldW, worldH);
+  if (!atmosphere) {
+    atmosphere = createAtmosphere(scene);
+  }
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
   );
 });
+
 
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
@@ -304,8 +317,15 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   }
 });
 
-socket.on('shot_resolved', (result) => {
-  playShotAnimation(result, scene);
+socket.on('shot_resolved', (result: ShotResult) => {
+  triggerRecoil(result.shooterId);
+  if (atmosphere) {
+    playShotAnimation(result, scene, atmosphere);
+
+  } else {
+    playShotAnimation(result, scene);
+  }
+
 
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
@@ -367,11 +387,22 @@ socket.on('shot_resolved', (result) => {
   setTimeout(() => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
-      if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
+      if (mesh) {
+        spawnDamagePopup(mesh.group, d.damage, d.killed);
+        if (atmosphere) {
+          atmosphere.spawnImpactSparks(mesh.group.position);
+        }
+      }
     }
     if (result.shooterId === myId && result.damageDealt.length > 0) {
       playHitMarker();
+      const anyKill = result.damageDealt.some((d) => d.killed);
+      triggerHitFeedback(anyKill);
+      // Extra sharp kick for the player when they land a hit
+      addImpactCameraShake(anyKill ? 0.45 : 0.28, 0.2);
     }
+
+
   }, impactMs * 1000);
 });
 
@@ -583,7 +614,37 @@ function animate(): void {
   const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
   updateTankNameLabels(camera, localPos, occlusionObjects, myId);
 
+  if (atmosphere) {
+    atmosphere.update(dt, camera, getAllTankMeshes());
+    for (const [pid, tm] of getAllTankMeshes()) {
+      if (!tm.state.alive) continue;
+      // Estimate speed from velocity or prev state
+      let speed = 0;
+      if (pid === myId) {
+        speed = Math.sqrt(predictedVel.x * predictedVel.x + predictedVel.z * predictedVel.z);
+      } else {
+        // Calculate real speed based on interpolation targets
+        speed = tm.prevPosition.distanceTo(tm.targetPosition) / 0.05; // 0.05 is the 20Hz interval
+      }
+      if (speed > 0.5 && tm.state.alive) {
+        atmosphere.spawnTreadDust(tm.group.position, tm.group.rotation.y, speed);
+      }
+      
+      if (tm.state.alive) {
+        let accelerating = false;
+        if (pid === myId) {
+          accelerating = getMovementInput().forward;
+        } else {
+          // Heuristic for remote tanks: if they are moving at decent speed, assume engine load
+          accelerating = speed > 2.0;
+        }
+        atmosphere.spawnExhaustSmoke(tm.group.position, tm.group.rotation.y, accelerating);
+      }
+    }
+  }
+
   voxelDebris?.update(dt, voxelGrid);
+
 
   surfaceNets?.flushDirtyChunks();
   renderer.render(scene, camera);

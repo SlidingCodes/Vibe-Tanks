@@ -11,8 +11,10 @@ function smoothTilt(group: THREE.Object3D, targetPitch: number, targetRoll: numb
 
 export interface TankMesh {
   group: THREE.Group;
+  chassisGroup: THREE.Group; // Group for recoil/suspension tilt
   body: THREE.Mesh;
   turretGroup: THREE.Group;  // pivots on Y for turret rotation
+
   turret: THREE.Mesh;
   barrel: THREE.Mesh;
   leftTread: THREE.Mesh;
@@ -30,7 +32,14 @@ export interface TankMesh {
   respawnAnim: number;
   /** Seconds remaining to show the skull emoji after death. */
   deathTimer: number;
+  // Recoil & Suspension Visual State
+  barrelRecoil: number;     // 0-1 (displacement)
+  chassisTilt: number;      // Radian pitch offset
+  chassisTiltVel: number;   // Velocity for spring
+  prevSpeed: number;        // To detect acceleration
 }
+
+
 
 const RESPAWN_ANIM_DURATION = 0.6; // seconds to fade the tank back in
 
@@ -52,13 +61,17 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   // YXZ: yaw first, then pitch, then roll (all in tank local frame).
   group.rotation.order = 'YXZ';
 
+  // Inner group for recoil/suspension (avoids conflict with terrain tilt)
+  const chassisGroup = new THREE.Group();
+  group.add(chassisGroup);
+
   // Body
   const bodyGeo = new THREE.BoxGeometry(1.2, 0.6, 1.6);
   const bodyMat = new THREE.MeshStandardMaterial({ color: tank.color });
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.position.y = 0.3;
   body.castShadow = true;
-  group.add(body);
+  chassisGroup.add(body);
 
   // Turret group (rotates independently for aiming)
   const turretGroup = new THREE.Group();
@@ -81,7 +94,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   barrel.castShadow = true;
   turretGroup.add(barrel);
 
-  group.add(turretGroup);
+  chassisGroup.add(turretGroup);
 
   // Treads: chunky black boxes on either side of the body, slightly longer.
   const treadGeo = new THREE.BoxGeometry(0.35, 0.5, 2.0);
@@ -89,11 +102,12 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const leftTread = new THREE.Mesh(treadGeo, treadMat);
   leftTread.position.set(-TREAD_HALF_WIDTH, 0.25, 0);
   leftTread.castShadow = true;
-  group.add(leftTread);
+  chassisGroup.add(leftTread);
   const rightTread = new THREE.Mesh(treadGeo, treadMat);
   rightTread.position.set(TREAD_HALF_WIDTH, 0.25, 0);
   rightTread.castShadow = true;
-  group.add(rightTread);
+  chassisGroup.add(rightTread);
+
 
   const pos = new THREE.Vector3(tank.position.x, tank.position.y, tank.position.z);
   group.position.copy(pos);
@@ -111,8 +125,9 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   group.add(nameLabel);
 
   const tm: TankMesh = {
-    group, body, turretGroup, turret, barrel,
+    group, chassisGroup, body, turretGroup, turret, barrel,
     leftTread, rightTread,
+
     nameLabel,
     state: tank,
     prevPosition: pos.clone(),
@@ -123,7 +138,13 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     interpDuration: SERVER_BROADCAST_INTERVAL,
     respawnAnim: 0,
     deathTimer: 0,
+    barrelRecoil: 0,
+    chassisTilt: 0,
+    chassisTiltVel: 0,
+    prevSpeed: 0,
   };
+
+
   tankMeshes.set(tank.playerId, tm);
   return tm;
 }
@@ -183,8 +204,46 @@ export function tickTankEffects(dt: number): void {
     if (tm.deathTimer > 0) {
       tm.deathTimer = Math.max(0, tm.deathTimer - dt);
     }
+
+    // ── Recoil & Suspension Physics (Spring-Damper) ──
+    // Body Tilt
+    const stiffness = 160.0; // Lower stiffness = bigger swing
+    const damping = 10.0;   // Less damping = more wobble
+
+
+    // Estimate horizontal acceleration
+    const currentSpeed = tm.state.velocity ? Math.sqrt(tm.state.velocity.x**2 + tm.state.velocity.z**2) : 0;
+    const accel = (currentSpeed - (tm.prevSpeed || 0)) / dt;
+    
+    // Pitch force from acceleration (nose up when accelerating, nose down when braking)
+    const suspensionForce = -accel * 0.08;
+    
+    const force = -tm.chassisTilt * stiffness - tm.chassisTiltVel * damping + suspensionForce;
+    tm.chassisTiltVel += force * dt;
+    tm.chassisTilt += tm.chassisTiltVel * dt;
+    tm.prevSpeed = currentSpeed;
+
+    // Barrel Recoil
+    if (tm.barrelRecoil > 0) {
+      tm.barrelRecoil = Math.max(0, tm.barrelRecoil - dt * 5.0); // snaps back fast
+    }
+
+    // Apply to mesh
+    // Barrel moves BACK in its local Z
+    tm.barrel.position.z = -tm.barrelRecoil * 0.9;
+    // Chassis tilts around X (Whole tank visuals: body + turret + treads)
+    tm.chassisGroup.rotation.x = tm.chassisTilt;
   }
 }
+
+
+export function triggerRecoil(playerId: string): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  tm.barrelRecoil = 1.0;
+  tm.chassisTiltVel -= 18.0; // Much stronger kick back
+}
+
 
 /** Interpolate remote tanks each frame */
 export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {
