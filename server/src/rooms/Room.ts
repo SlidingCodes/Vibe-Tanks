@@ -324,7 +324,10 @@ export class Room {
     for (let attempt = 0; attempt < 96; attempt++) {
       const x = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, w - edgePadding * 2);
       const z = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, h - edgePadding * 2);
-      const y = this.heightmap.getHeight(x, z);
+      // Sample voxel surface — that's where the tank will actually rest.
+      // Slope/relief stay on heightmap because voxel doesn't expose them and
+      // they're only used as a coarse spawn-quality heuristic.
+      const y = this.voxels.getHeightInterpolated(x, z);
 
       let tooClose = false;
       let nearestTankDistance = Number.POSITIVE_INFINITY;
@@ -363,7 +366,7 @@ export class Room {
 
     const x = centerX;
     const z = centerZ;
-    return { x, y: this.heightmap.getHeight(x, z), z };
+    return { x, y: this.voxels.getHeightInterpolated(x, z), z };
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -628,7 +631,7 @@ export class Room {
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const fallback = simulateSegment(startPos, startVel, this.terrainSampler).endPoint;
     const center = aimPoint
-      ? { x: aimPoint.x, y: this.heightmap.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      ? { x: aimPoint.x, y: this.voxels.getHeightInterpolated(aimPoint.x, aimPoint.z), z: aimPoint.z }
       : fallback;
 
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
@@ -662,7 +665,7 @@ export class Room {
       const radius = Math.random() * spread;
       const x = center.x + Math.cos(angle) * radius;
       const z = center.z + Math.sin(angle) * radius;
-      const position = { x, y: this.heightmap.getHeight(x, z), z };
+      const position = { x, y: this.voxels.getHeightInterpolated(x, z), z };
 
       this.scheduledStrikes.push({
         strikeId: `strike_${this.nextStrikeId++}`,
@@ -857,7 +860,10 @@ export class Room {
       };
 
       let impactPoint: Vec3 | null = null;
-      const terrainY = this.heightmap.getHeight(projectile.position.x, projectile.position.z);
+      // Voxel surface is the authoritative collision target — same surface
+      // the trajectory preview reads, so the seeker impacts where it visually
+      // appears to.
+      const terrainY = this.voxels.getHeightInterpolated(projectile.position.x, projectile.position.z);
       if (projectile.position.y <= terrainY) {
         impactPoint = { x: projectile.position.x, y: terrainY, z: projectile.position.z };
       }
