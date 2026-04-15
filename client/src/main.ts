@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh, setTerrainHeightSampler } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh, setTerrainHeightSampler, flushTerrainUpdates } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
@@ -358,7 +358,10 @@ socket.on('shot_resolved', (result) => {
         // single hit saturates enough voxels for the 8-corner average at
         // SN vertices to read cleanly.
         scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
-        cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        // Only invalidate cuberille chunks when that view is actually visible.
+        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        // Mark surface-nets chunks dirty — flushDirtyChunks() rebuilds them
+        // once per frame before render, even if multiple missiles land this frame.
         sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
       }, carveDelay * 1000);
     }
@@ -606,6 +609,8 @@ function animate(): void {
 
   voxelDebris?.update(dt, voxelGrid);
 
+  flushTerrainUpdates();
+  surfaceNets?.flushDirtyChunks();
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }

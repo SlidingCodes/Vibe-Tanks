@@ -55,8 +55,15 @@ export function onMinimapPatch(patch: TerrainPatch): void {
       heights[gz * gridW + gx] += (patch.heightDeltas[pz * patch.width + px] ?? 0);
     }
   }
-  // Cheap: redraw the whole map (64×64 is tiny). Could localise later.
-  redrawFullMap();
+
+  // Localise redraw to the modified patch area (plus margin for contours sampling neighbors).
+  const margin = 2;
+  const x0 = Math.max(0, patch.startX - margin);
+  const x1 = Math.min(gridW - 1, patch.startX + patch.width + margin);
+  const z0 = Math.max(0, patch.startZ - margin);
+  const z1 = Math.min(gridH - 1, patch.startZ + patch.height + margin);
+
+  redrawPartialMap(x0, z0, x1, z1);
 }
 
 function sampleHeight(gx: number, gz: number): number {
@@ -66,11 +73,15 @@ function sampleHeight(gx: number, gz: number): number {
 }
 
 function redrawFullMap(): void {
-  if (!offCtx || !offscreen) return;
-  const W = offscreen.width;
-  const H = offscreen.height;
+  redrawPartialMap(0, 0, gridW - 1, gridH - 1);
+}
 
-  // Base shade: greener for low, browner/white for high.
+function redrawPartialMap(x0: number, z0: number, x1: number, z1: number): void {
+  if (!offCtx || !offscreen) return;
+
+  // 1) Update base shades in the region.
+  // We still need the global min/max for color normalization, but these
+  // are cheap to compute over the heights array compared to pixel work.
   let minH = Infinity;
   let maxH = -Infinity;
   for (const h of heights) {
@@ -79,46 +90,59 @@ function redrawFullMap(): void {
   }
   const range = Math.max(0.001, maxH - minH);
 
+  const px0 = Math.floor(x0 * cellSize * PX_PER_UNIT);
+  const pz0 = Math.floor(z0 * cellSize * PX_PER_UNIT);
+  const px1 = Math.ceil((x1 + 1) * cellSize * PX_PER_UNIT);
+  const pz1 = Math.ceil((z1 + 1) * cellSize * PX_PER_UNIT);
+  const W = px1 - px0;
+  const H = pz1 - pz0;
+
+  if (W <= 0 || H <= 0) return;
+
   const img = offCtx.createImageData(W, H);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const u = (x / PX_PER_UNIT) / cellSize;
-      const v = (y / PX_PER_UNIT) / cellSize;
-      const x0 = Math.floor(u), z0 = Math.floor(v);
-      const tx = u - x0, tz = v - z0;
-      const h00 = sampleHeight(x0, z0);
-      const h10 = sampleHeight(x0 + 1, z0);
-      const h01 = sampleHeight(x0, z0 + 1);
-      const h11 = sampleHeight(x0 + 1, z0 + 1);
+  for (let py = 0; py < H; py++) {
+    const worldZ = (pz0 + py) / PX_PER_UNIT / cellSize;
+    for (let px = 0; px < W; px++) {
+      const worldX = (px0 + px) / PX_PER_UNIT / cellSize;
+
+      const gx = Math.floor(worldX), gz = Math.floor(worldZ);
+      const tx = worldX - gx, tz = worldZ - gz;
+      const h00 = sampleHeight(gx,     gz);
+      const h10 = sampleHeight(gx + 1, gz);
+      const h01 = sampleHeight(gx,     gz + 1);
+      const h11 = sampleHeight(gx + 1, gz + 1);
       const h = (h00 * (1 - tx) + h10 * tx) * (1 - tz) + (h01 * (1 - tx) + h11 * tx) * tz;
+
       const t = (h - minH) / range;
-      // Green → tan → white ramp.
       const r = Math.round(80 + t * 160);
       const g = Math.round(130 + t * 90);
       const b = Math.round(60 + t * 120);
-      const idx = (y * W + x) * 4;
+
+      const idx = (py * W + px) * 4;
       img.data[idx] = r;
       img.data[idx + 1] = g;
       img.data[idx + 2] = b;
       img.data[idx + 3] = 255;
     }
   }
-  offCtx.putImageData(img, 0, 0);
+  offCtx.putImageData(img, px0, pz0);
 
-  // Contour lines via marching-squares on the cell grid.
-  drawContours(offCtx, minH, maxH);
+  // 2) Update contours in the region.
+  // Since canvas has no "erase path" we have to clear the rect and redraw
+  // the shades for exactly this area (done above by putImageData) then
+  // redraw contours that might cross this rect.
+  drawContoursPartial(offCtx, minH, maxH, x0, z0, x1, z1);
 }
 
-function drawContours(g: CanvasRenderingContext2D, minH: number, maxH: number): void {
+function drawContoursPartial(g: CanvasRenderingContext2D, minH: number, maxH: number, x0: number, z0: number, x1: number, z1: number): void {
   g.lineWidth = 1;
   const firstLevel = Math.ceil(minH / CONTOUR_STEP) * CONTOUR_STEP;
   for (let level = firstLevel; level <= maxH; level += CONTOUR_STEP) {
-    // Emphasise every 5th contour.
     const major = Math.abs(Math.round(level / CONTOUR_STEP) % 5) === 0;
     g.strokeStyle = major ? 'rgba(40,25,10,0.85)' : 'rgba(40,25,10,0.45)';
     g.beginPath();
-    for (let z = 0; z < gridH - 1; z++) {
-      for (let x = 0; x < gridW - 1; x++) {
+    for (let z = z0; z <= z1 && z < gridH - 1; z++) {
+      for (let x = x0; x <= x1 && x < gridW - 1; x++) {
         marchCell(g, x, z, level);
       }
     }

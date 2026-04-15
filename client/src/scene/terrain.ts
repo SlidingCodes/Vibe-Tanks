@@ -20,6 +20,26 @@ const MID_COLOR = new THREE.Color(0x7a5937);
 const HIGH_COLOR = new THREE.Color(0x5f9b45);
 const scratchColor = new THREE.Color();
 
+// ── Deferred update state ────────────────────────────────────────────────
+// applyTerrainPatch only writes heights + positions, then marks dirty.
+// flushTerrainUpdates() (called once per frame before render) does the
+// expensive color + normal work in a single pass — even if 5-6 patches
+// arrived this frame from a mortar spread.
+let terrainDirty = false;
+let dirtyX0 = 0, dirtyX1 = 0, dirtyZ0 = 0, dirtyZ1 = 0;
+// Set when cachedMinHeight changes; forces a full color pass to re-normalise.
+let colorExtremesDirty = false;
+
+// Pre-allocated color buffer — created once per terrain size, reused every
+// frame to avoid GC pressure from repeated `new Float32Array(12288)`.
+let colorBuffer: Float32Array = new Float32Array(0);
+let colorAttribute: THREE.BufferAttribute | null = null;
+
+// Cached height extremes (updated on init/rebuild and incrementally on patch).
+let cachedMinHeight = 0;
+let cachedMaxHeight = 1;
+// ────────────────────────────────────────────────────────────────────────
+
 function buildGeometry(nextGridWidth: number, nextGridHeight: number, nextCellSize: number): THREE.PlaneGeometry {
   const geometry = new THREE.PlaneGeometry(
     nextGridWidth * nextCellSize,
@@ -36,37 +56,83 @@ function smoothStep01(t: number): number {
   return clamped * clamped * (3 - 2 * clamped);
 }
 
-function applyColorsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]): void {
-  const positions = geometry.attributes.position;
-  let minHeight = Number.POSITIVE_INFINITY;
-  let maxHeight = Number.NEGATIVE_INFINITY;
-
-  for (const height of heights) {
-    if (height < minHeight) minHeight = height;
-    if (height > maxHeight) maxHeight = height;
+function computeHeightExtremes(): void {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const h of terrainHeights) {
+    if (h < min) min = h;
+    if (h > max) max = h;
   }
+  cachedMinHeight = Number.isFinite(min) ? min : 0;
+  cachedMaxHeight = Number.isFinite(max) ? max : 1;
+}
 
-  const heightRange = Math.max(0.001, maxHeight - minHeight);
-  const colors = new Float32Array(positions.count * 3);
+/** Ensure the pre-allocated color buffer and its BufferAttribute are ready
+ *  for the current geometry. Called after init/rebuild when geometry may
+ *  have changed size. */
+function ensureColorAttribute(geometry: THREE.PlaneGeometry): void {
+  const count = geometry.attributes.position.count;
+  if (colorBuffer.length !== count * 3) {
+    colorBuffer = new Float32Array(count * 3);
+    colorAttribute = new THREE.BufferAttribute(colorBuffer, 3);
+    geometry.setAttribute('color', colorAttribute);
+  } else if (!colorAttribute || geometry.getAttribute('color') !== colorAttribute) {
+    colorAttribute = new THREE.BufferAttribute(colorBuffer, 3);
+    geometry.setAttribute('color', colorAttribute);
+  }
+}
 
-  for (let i = 0; i < positions.count; i++) {
-    const height = heights[i] ?? minHeight;
-    const t = (height - minHeight) / heightRange;
-
-    if (t < 0.5) {
-      scratchColor.copy(LOW_COLOR).lerp(MID_COLOR, smoothStep01(t / 0.5));
-    } else {
-      scratchColor.copy(MID_COLOR).lerp(HIGH_COLOR, smoothStep01((t - 0.5) / 0.5));
+/** Write vertex colors for the rectangle [x0..x1] × [z0..z1] into the
+ *  pre-allocated colorBuffer. Pass full grid extents for a full pass. */
+function writeColors(x0: number, x1: number, z0: number, z1: number): void {
+  const heightRange = Math.max(0.001, cachedMaxHeight - cachedMinHeight);
+  for (let gz = z0; gz <= z1; gz++) {
+    for (let gx = x0; gx <= x1; gx++) {
+      const i = gz * gridWidth + gx;
+      const height = terrainHeights[i] ?? cachedMinHeight;
+      const t = (height - cachedMinHeight) / heightRange;
+      if (t < 0.5) {
+        scratchColor.copy(LOW_COLOR).lerp(MID_COLOR, smoothStep01(t / 0.5));
+      } else {
+        scratchColor.copy(MID_COLOR).lerp(HIGH_COLOR, smoothStep01((t - 0.5) / 0.5));
+      }
+      const ci = i * 3;
+      colorBuffer[ci] = scratchColor.r;
+      colorBuffer[ci + 1] = scratchColor.g;
+      colorBuffer[ci + 2] = scratchColor.b;
     }
-
-    const colorIndex = i * 3;
-    colors[colorIndex] = scratchColor.r;
-    colors[colorIndex + 1] = scratchColor.g;
-    colors[colorIndex + 2] = scratchColor.b;
   }
+  if (colorAttribute) colorAttribute.needsUpdate = true;
+}
 
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.attributes.color.needsUpdate = true;
+/** Recompute normals for [x0..x1] × [z0..z1] via heightmap finite
+ *  differences — O(patch area) instead of O(full mesh).
+ *
+ *  Formula: n ≈ normalize(hLeft − hRight, 2·cellSize, hUp − hDown)
+ *  Yields (0,1,0) for flat terrain and tilts correctly on slopes. */
+function writePartialNormals(
+  geometry: THREE.PlaneGeometry,
+  x0: number, x1: number, z0: number, z1: number,
+): void {
+  const normals = geometry.attributes.normal;
+  if (!normals) return;
+  const gw = gridWidth, gh = gridHeight, cs = cellSize;
+
+  for (let gz = z0; gz <= z1; gz++) {
+    for (let gx = x0; gx <= x1; gx++) {
+      const hL = terrainHeights[gz * gw + Math.max(0, gx - 1)] ?? 0;
+      const hR = terrainHeights[gz * gw + Math.min(gw - 1, gx + 1)] ?? 0;
+      const hU = terrainHeights[Math.max(0, gz - 1) * gw + gx] ?? 0;
+      const hD = terrainHeights[Math.min(gh - 1, gz + 1) * gw + gx] ?? 0;
+
+      const nx = hL - hR;
+      const ny = 2 * cs;
+      const nz = hU - hD;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      normals.setXYZ(gz * gw + gx, nx / len, ny / len, nz / len);
+    }
+  }
+  normals.needsUpdate = true;
 }
 
 function applyHeightsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]): void {
@@ -75,7 +141,11 @@ function applyHeightsToGeometry(geometry: THREE.PlaneGeometry, heights: number[]
     positions.setY(i, heights[i] ?? 0);
   }
   positions.needsUpdate = true;
-  applyColorsToGeometry(geometry, heights);
+  computeHeightExtremes();
+  ensureColorAttribute(geometry);
+  writeColors(0, gridWidth - 1, 0, gridHeight - 1);
+  // Full normal pass only on init/rebuild — acceptable cost since it's a
+  // one-shot operation. Subsequent patches use writePartialNormals.
   geometry.computeVertexNormals();
 }
 
@@ -90,6 +160,11 @@ function syncTerrainGeometry(config: TerrainConfig): void {
   gridHeight = config.gridHeight;
   cellSize = config.cellSize;
   terrainHeights = config.heights.slice();
+
+  // Reset deferred state on every full sync.
+  terrainDirty = false;
+  colorExtremesDirty = false;
+  colorAttribute = null; // will be re-created by ensureColorAttribute
 
   if (dimsChanged) {
     const nextGeometry = buildGeometry(gridWidth, gridHeight, cellSize);
@@ -141,6 +216,9 @@ export function rebuildTerrain(config: TerrainConfig): void {
   terrainMesh.position.set((gridWidth * cellSize) / 2, 0, (gridHeight * cellSize) / 2);
 }
 
+/** Apply a crater patch: updates heights and position buffer immediately,
+ *  then marks the dirty region for the deferred color+normal flush.
+ *  NO GPU uploads happen here — call flushTerrainUpdates() before render. */
 export function applyTerrainPatch(patch: TerrainPatch): void {
   if (!terrainGeometry || !terrainMesh) return;
 
@@ -158,16 +236,66 @@ export function applyTerrainPatch(patch: TerrainPatch): void {
       const delta = patch.heightDeltas[patchIndex] ?? 0;
       if (!delta) continue;
 
-      terrainHeights[vertexIndex] = (terrainHeights[vertexIndex] ?? 0) + delta;
-      positions.setY(vertexIndex, terrainHeights[vertexIndex]);
+      const newH = (terrainHeights[vertexIndex] ?? 0) + delta;
+      terrainHeights[vertexIndex] = newH;
+      positions.setY(vertexIndex, newH);
+
+      // Patches only lower terrain; track if we deepen below cached min.
+      if (newH < cachedMinHeight) {
+        cachedMinHeight = newH;
+        colorExtremesDirty = true;
+      }
       changed = true;
     }
   }
 
   if (!changed) return;
-  positions.needsUpdate = true;
-  applyColorsToGeometry(terrainGeometry, terrainHeights);
-  terrainGeometry.computeVertexNormals();
+
+  // Expand dirty region by 1 cell so the border normals (which sample
+  // adjacent heights) are also refreshed.
+  const x0 = Math.max(0, patch.startX - 1);
+  const x1 = Math.min(gridWidth - 1, patch.startX + patch.width);
+  const z0 = Math.max(0, patch.startZ - 1);
+  const z1 = Math.min(gridHeight - 1, patch.startZ + patch.height);
+
+  if (!terrainDirty) {
+    dirtyX0 = x0; dirtyX1 = x1;
+    dirtyZ0 = z0; dirtyZ1 = z1;
+  } else {
+    if (x0 < dirtyX0) dirtyX0 = x0;
+    if (x1 > dirtyX1) dirtyX1 = x1;
+    if (z0 < dirtyZ0) dirtyZ0 = z0;
+    if (z1 > dirtyZ1) dirtyZ1 = z1;
+  }
+  terrainDirty = true;
+}
+
+/** Flush all pending terrain patch updates in a single GPU upload cycle.
+ *  Call once per frame, just before renderer.render(), from the animate loop.
+ *  All patches that landed this frame are batched into one color pass and one
+ *  partial normal pass — regardless of how many missiles exploded. */
+export function flushTerrainUpdates(): void {
+  if (!terrainDirty || !terrainGeometry) return;
+  // If the mesh is hidden, we can skip the expensive color and normal recomputation.
+  // We keep the dirty flag set so that it will flush as soon as it becomes visible.
+  if (terrainMesh && !terrainMesh.visible) {
+    return;
+  }
+  terrainDirty = false;
+
+  // Upload the position changes accumulated by applyTerrainPatch calls.
+  terrainGeometry.attributes.position.needsUpdate = true;
+
+  // Color pass: full only when global min changed (rare), partial otherwise.
+  if (colorExtremesDirty) {
+    colorExtremesDirty = false;
+    writeColors(0, gridWidth - 1, 0, gridHeight - 1);
+  } else {
+    writeColors(dirtyX0, dirtyX1, dirtyZ0, dirtyZ1);
+  }
+
+  // Partial normal update — O(patch area) instead of O(full mesh).
+  writePartialNormals(terrainGeometry, dirtyX0, dirtyX1, dirtyZ0, dirtyZ1);
 }
 
 export function getTerrainMesh(): THREE.Mesh | null {
