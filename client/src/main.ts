@@ -315,8 +315,13 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   }
 });
 
-socket.on('shot_resolved', (result) => {
-  playShotAnimation(result, scene);
+socket.on('shot_resolved', (result: ShotResult) => {
+  if (atmosphere) {
+    playShotAnimation(result, scene, atmosphere);
+  } else {
+    playShotAnimation(result, scene);
+  }
+
 
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
@@ -378,7 +383,12 @@ socket.on('shot_resolved', (result) => {
   setTimeout(() => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
-      if (mesh) spawnDamagePopup(mesh.group, d.damage, d.killed);
+      if (mesh) {
+        spawnDamagePopup(mesh.group, d.damage, d.killed);
+        if (atmosphere) {
+          atmosphere.spawnImpactSparks(mesh.group.position);
+        }
+      }
     }
     if (result.shooterId === myId && result.damageDealt.length > 0) {
       playHitMarker();
@@ -615,7 +625,17 @@ function animate(): void {
       if (speed > 0.5 && tm.state.alive) {
         atmosphere.spawnTreadDust(tm.group.position, tm.group.rotation.y, speed);
       }
-
+      
+      if (tm.state.alive) {
+        let accelerating = false;
+        if (pid === myId) {
+          accelerating = getMovementInput().forward;
+        } else {
+          // Heuristic for remote tanks: if they are moving at decent speed, assume engine load
+          accelerating = speed > 2.0;
+        }
+        atmosphere.spawnExhaustSmoke(tm.group.position, tm.group.rotation.y, accelerating);
+      }
     }
   }
 

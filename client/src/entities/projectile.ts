@@ -7,6 +7,8 @@ import {
   ShotStep,
   Vec3,
 } from '@shared/types/index';
+import { AtmosphereHandle } from '../scene/atmosphere';
+
 
 const SECONDS_PER_SAMPLE = 4 / 60;
 
@@ -322,11 +324,29 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
 export function playShotAnimation(
   result: ShotResult,
   scene: THREE.Scene,
+  atmosphere?: AtmosphereHandle,
 ): void {
   const tm = getAllTankMeshes().get(result.shooterId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
 
+  // Trigger Muzzle FX at the start of the first step
+  if (atmosphere && result.steps.length > 0) {
+    const firstStep = result.steps[0];
+    if (firstStep.trajectory.length >= 2) {
+      const p0 = firstStep.trajectory[0];
+      const p1 = firstStep.trajectory[1];
+      const pos = new THREE.Vector3(p0.x, p0.y, p0.z);
+      const dir = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z).normalize();
+      atmosphere.spawnMuzzleFX(pos, dir);
+      
+      if (tm) {
+        atmosphere.spawnShellCasing(tm.group.position, tm.group.rotation.y, tm.state.turretRotation);
+      }
+    }
+  }
+
   for (const step of result.steps) {
+
     shots.push({
       mesh: null,
       trail: null,

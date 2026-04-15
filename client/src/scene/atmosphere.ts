@@ -15,22 +15,56 @@ const MAX_TREAD_DUST = 400;
 const TREAD_DUST_LIFETIME = 1.6;
 const TREAD_DUST_SIZE_BASE = 0.35;
 const TREAD_SPAWN_CHANCE = 0.45; // Only spawn on ~45% of updates when moving
+const MAX_EXHAUST_SMOKE = 300;
+const EXHAUST_LIFETIME = 1.0;
+const EXHAUST_SIZE = 0.25;
+
+const MAX_MUZZLE_SMOKE = 100;
+const MUZZLE_SMOKE_LIFETIME = 1.2;
+const MUZZLE_SMOKE_SIZE = 0.3;
+
+const MAX_FLASH = 10;
+const FLASH_LIFETIME = 0.08;
+
+const MAX_SHELLS = 50;
+const SHELL_LIFETIME = 4.0;
+const SHELL_SIZE = 0.12;
+const SHELL_COLOR = 0xd4af37; // Brass
+
+const MAX_SPARKS = 200;
+const SPARK_LIFETIME = 0.5;
+const SPARK_SIZE = 0.08;
+
+
+
+
 
 
 interface ParticleState {
   px: number; py: number; pz: number;
-  vx: number; vy: number; vz: number;
+  vx: number; vy: number;  vz: number;
   rx: number; ry: number; rz: number; // random rotation
+  wx: number; wy: number; wz: number; // angular velocity
   size: number;
   life: number;
   active: boolean;
+  settled: boolean;
 }
+
 
 
 export interface AtmosphereHandle {
   update(dt: number, camera: THREE.Camera, tanks: Map<string, TankMesh>): void;
   spawnTreadDust(pos: THREE.Vector3, bodyRotation: number, speed: number): void;
+  spawnExhaustSmoke(pos: THREE.Vector3, bodyRotation: number, isAccelerating: boolean): void;
+  spawnMuzzleFX(pos: THREE.Vector3, direction: THREE.Vector3): void;
+  spawnShellCasing(pos: THREE.Vector3, bodyRotation: number, turretRotation: number): void;
+  spawnImpactSparks(pos: THREE.Vector3): void;
   dispose(): void;
+
+
+
+
 }
 
 export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
@@ -83,6 +117,122 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     active: false,
   }));
 
+  // ── Exhaust Smoke ──
+  const exhaustGeom = new THREE.BoxGeometry(1, 1, 1);
+  const exhaustMat = new THREE.MeshStandardMaterial({
+    color: 0x333333,
+    transparent: true,
+    opacity: 0.4,
+    roughness: 1,
+  });
+  const exhaustMesh = new THREE.InstancedMesh(exhaustGeom, exhaustMat, MAX_EXHAUST_SMOKE);
+  exhaustMesh.frustumCulled = false;
+  scene.add(exhaustMesh);
+
+  const exhaustStates: ParticleState[] = Array.from({ length: MAX_EXHAUST_SMOKE }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    size: 0,
+    life: 0,
+    active: false,
+  }));
+
+  let exhaustSpawnCursor = 0;
+
+  // ── Muzzle Smoke ──
+  const msmokeGeom = new THREE.BoxGeometry(1, 1, 1);
+  const msmokeMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.5,
+    roughness: 1,
+  });
+  const msmokeMesh = new THREE.InstancedMesh(msmokeGeom, msmokeMat, MAX_MUZZLE_SMOKE);
+  msmokeMesh.frustumCulled = false;
+  scene.add(msmokeMesh);
+
+  const msmokeStates: ParticleState[] = Array.from({ length: MAX_MUZZLE_SMOKE }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    size: 0,
+    life: 0,
+    active: false,
+  }));
+  let msmokeSpawnCursor = 0;
+
+  // ── Muzzle Flash ──
+  const flashGeom = new THREE.SphereGeometry(1, 8, 8);
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffdd44,
+    transparent: true,
+    opacity: 1,
+  });
+  const flashMesh = new THREE.InstancedMesh(flashGeom, flashMat, MAX_FLASH);
+  flashMesh.frustumCulled = false;
+  scene.add(flashMesh);
+
+  const flashStates: ParticleState[] = Array.from({ length: MAX_FLASH }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    size: 0,
+    life: 0,
+    active: false,
+  }));
+  let flashSpawnCursor = 0;
+
+  // ── Shell Casings ──
+  const shellGeom = new THREE.CylinderGeometry(SHELL_SIZE * 0.4, SHELL_SIZE * 0.4, SHELL_SIZE * 1.5, 6);
+  shellGeom.rotateZ(Math.PI / 2);
+  const shellMat = new THREE.MeshStandardMaterial({
+    color: SHELL_COLOR,
+    metalness: 0.8,
+    roughness: 0.2,
+  });
+  const shellMesh = new THREE.InstancedMesh(shellGeom, shellMat, MAX_SHELLS);
+  shellMesh.frustumCulled = false;
+  scene.add(shellMesh);
+
+  const shellStates: ParticleState[] = Array.from({ length: MAX_SHELLS }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    wx: 0, wy: 0, wz: 0,
+    size: 1,
+    life: 0,
+    active: false,
+    settled: false,
+  }));
+  let shellSpawnCursor = 0;
+
+  // ── Impact Sparks ──
+  const sparkGeom = new THREE.BoxGeometry(1, 1, 1);
+  const sparkMat = new THREE.MeshBasicMaterial({
+    color: 0xffaa00,
+    transparent: true,
+    opacity: 1,
+  });
+  const sparkMesh = new THREE.InstancedMesh(sparkGeom, sparkMat, MAX_SPARKS);
+  sparkMesh.frustumCulled = false;
+  scene.add(sparkMesh);
+
+  const sparkStates: ParticleState[] = Array.from({ length: MAX_SPARKS }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    wx: 0, wy: 0, wz: 0,
+    size: 1,
+    life: 0,
+    active: false,
+    settled: false,
+  }));
+  let sparkSpawnCursor = 0;
+
+
+
+
 
   let treadSpawnCursor = 0;
   let windTime = 0;
@@ -94,6 +244,25 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   for (let i = 0; i < MAX_TREAD_DUST; i++) {
     treadMesh.setMatrixAt(i, hiddenMatrix);
   }
+  for (let i = 0; i < MAX_EXHAUST_SMOKE; i++) {
+    exhaustMesh.setMatrixAt(i, hiddenMatrix);
+  }
+  for (let i = 0; i < MAX_MUZZLE_SMOKE; i++) {
+    msmokeMesh.setMatrixAt(i, hiddenMatrix);
+  }
+  for (let i = 0; i < MAX_FLASH; i++) {
+    flashMesh.setMatrixAt(i, hiddenMatrix);
+  }
+  for (let i = 0; i < MAX_SHELLS; i++) {
+    shellMesh.setMatrixAt(i, hiddenMatrix);
+  }
+  for (let i = 0; i < MAX_SPARKS; i++) {
+    sparkMesh.setMatrixAt(i, hiddenMatrix);
+  }
+
+
+
+
 
   function spawnTreadDust(pos: THREE.Vector3, bodyRotation: number, speed: number): void {
     if (speed < 0.2) return;
@@ -132,9 +301,146 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     }
   }
 
+  function spawnExhaustSmoke(pos: THREE.Vector3, bodyRotation: number, isAccelerating: boolean): void {
+    // Spawn rate: higher when accelerating
+    const spawnChance = isAccelerating ? 0.8 : 0.15;
+    if (Math.random() > spawnChance) return;
+
+    const slot = exhaustSpawnCursor;
+    exhaustSpawnCursor = (exhaustSpawnCursor + 1) % MAX_EXHAUST_SMOKE;
+    const s = exhaustStates[slot];
+
+    // Position at the back and slightly up
+    const offX = (Math.random() - 0.5) * 0.4;
+    const offZ = -0.9;
+    const offY = 0.5;
+
+    const cos = Math.cos(bodyRotation);
+    const sin = Math.sin(bodyRotation);
+
+    s.px = pos.x + (offX * cos + offZ * sin);
+    s.pz = pos.z + (-offX * sin + offZ * cos);
+    s.py = pos.y + offY;
+
+    // Direct smoke away and up
+    const backForce = isAccelerating ? -(0.5 + Math.random()) : -0.2;
+    s.vx = (Math.random() - 0.5) * 0.2 + (sin * backForce);
+    s.vz = (Math.random() - 0.5) * 0.2 + (cos * backForce);
+    s.vy = 0.3 + Math.random() * 0.5;
+
+    s.rx = Math.random() * Math.PI;
+    s.ry = Math.random() * Math.PI;
+    s.rz = Math.random() * Math.PI;
+
+    s.size = EXHAUST_SIZE * (isAccelerating ? 1.5 : 1.0);
+    s.life = EXHAUST_LIFETIME * (isAccelerating ? 1.2 : 0.8);
+    s.active = true;
+
+    // Darker smoke when accelerating
+    const colorVal = isAccelerating ? 0.15 : 0.4;
+    // We can't change color per instance easily without attribute but let's just make it dark enough
+  }
+
+  function spawnMuzzleFX(pos: THREE.Vector3, direction: THREE.Vector3): void {
+    // 1. Flash
+    const fSlot = flashSpawnCursor;
+    flashSpawnCursor = (flashSpawnCursor + 1) % MAX_FLASH;
+    const fs = flashStates[fSlot];
+    fs.px = pos.x; fs.py = pos.y; fs.pz = pos.z;
+    fs.size = 0.8;
+    fs.life = FLASH_LIFETIME;
+    fs.active = true;
+
+    // 2. Smoke
+    const smokeCount = 4 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < smokeCount; i++) {
+      const sSlot = msmokeSpawnCursor;
+      msmokeSpawnCursor = (msmokeSpawnCursor + 1) % MAX_MUZZLE_SMOKE;
+      const ss = msmokeStates[sSlot];
+      
+      ss.px = pos.x + (Math.random() - 0.5) * 0.2;
+      ss.py = pos.y + (Math.random() - 0.5) * 0.2;
+      ss.pz = pos.z + (Math.random() - 0.5) * 0.2;
+      
+      const speed = 1.0 + Math.random() * 2.5;
+      ss.vx = direction.x * speed + (Math.random() - 0.5) * 0.5;
+      ss.vy = direction.y * speed + 0.5 + Math.random() * 0.5;
+      ss.vz = direction.z * speed + (Math.random() - 0.5) * 0.5;
+      
+      ss.rx = Math.random() * Math.PI;
+      ss.ry = Math.random() * Math.PI;
+      ss.size = MUZZLE_SMOKE_SIZE * (0.8 + Math.random() * 1.5);
+      ss.life = MUZZLE_SMOKE_LIFETIME * (0.7 + Math.random() * 0.6);
+      ss.active = true;
+    }
+  }
+
+  function spawnShellCasing(pos: THREE.Vector3, bodyRotation: number, turretRotation: number): void {
+    const slot = shellSpawnCursor;
+    shellSpawnCursor = (shellSpawnCursor + 1) % MAX_SHELLS;
+    const s = shellStates[slot];
+
+    // Position: side of turret
+    const sideOff = 0.5;
+    const backOff = -0.2;
+    const upOff = 0.8;
+
+    const cos = Math.cos(turretRotation);
+    const sin = Math.sin(turretRotation);
+
+    s.px = pos.x + (sideOff * cos + backOff * sin);
+    s.pz = pos.z + (-sideOff * sin + backOff * cos);
+    s.py = pos.y + upOff;
+
+    // Eject velocity: right and slightly up/back
+    const ejectPower = 2.0 + Math.random() * 2.0;
+    s.vx = cos * ejectPower + (Math.random() - 0.5) * 0.5;
+    s.vz = -sin * ejectPower + (Math.random() - 0.5) * 0.5;
+    s.vy = 1.0 + Math.random() * 2.0;
+
+    s.wx = Math.random() * 20 - 10;
+    s.wy = Math.random() * 20 - 10;
+    s.wz = Math.random() * 20 - 10;
+
+    s.life = SHELL_LIFETIME;
+    s.active = true;
+    s.settled = false;
+  }
+
+  function spawnImpactSparks(pos: THREE.Vector3): void {
+    const count = 10 + Math.floor(Math.random() * 10);
+    for (let i = 0; i < count; i++) {
+      const slot = sparkSpawnCursor;
+      sparkSpawnCursor = (sparkSpawnCursor + 1) % MAX_SPARKS;
+      const s = sparkStates[slot];
+
+      s.px = pos.x + (Math.random() - 0.5) * 0.5;
+      s.py = pos.y + (Math.random() - 0.5) * 0.5;
+      s.pz = pos.z + (Math.random() - 0.5) * 0.5;
+
+      const speed = 4.0 + Math.random() * 8.0;
+      const phi = Math.random() * Math.PI * 2;
+      const theta = Math.random() * Math.PI;
+      
+      s.vx = Math.sin(theta) * Math.cos(phi) * speed;
+      s.vy = Math.cos(theta) * speed + 2.0;
+      s.vz = Math.sin(theta) * Math.sin(phi) * speed;
+
+      s.size = SPARK_SIZE * (0.5 + Math.random() * 1.5);
+      s.life = SPARK_LIFETIME * (0.5 + Math.random() * 0.5);
+      s.active = true;
+      s.settled = false;
+    }
+  }
 
   return {
     spawnTreadDust,
+    spawnExhaustSmoke,
+    spawnMuzzleFX,
+    spawnShellCasing,
+    spawnImpactSparks,
+
+
     update(dt: number, camera: THREE.Camera, tanks: Map<string, TankMesh>): void {
       const camPos = camera.position;
 
@@ -244,14 +550,176 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       if (treadActive || true) {
         treadMesh.instanceMatrix.needsUpdate = true;
       }
+
+      // 3. Update Exhaust Smoke
+      let exhaustActive = false;
+      for (let i = 0; i < MAX_EXHAUST_SMOKE; i++) {
+        const s = exhaustStates[i];
+        if (!s.active) continue;
+        exhaustActive = true;
+
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          exhaustMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+
+        s.px += s.vx * dt;
+        s.py += s.vy * dt;
+        s.pz += s.vz * dt;
+        s.vy += dt * 0.4; // slight rise
+
+        const scale = s.life / EXHAUST_LIFETIME;
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.rotation.set(s.rx, s.ry, s.rz);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3));
+        dummy.updateMatrix();
+        exhaustMesh.setMatrixAt(i, dummy.matrix);
+      }
+      if (exhaustActive || true) {
+        exhaustMesh.instanceMatrix.needsUpdate = true;
+      }
+
+      // 4. Update Muzzle Smoke
+      let msmokeActive = false;
+      for (let i = 0; i < MAX_MUZZLE_SMOKE; i++) {
+        const s = msmokeStates[i];
+        if (!s.active) continue;
+        msmokeActive = true;
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          msmokeMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+        s.px += s.vx * dt; s.py += s.vy * dt; s.pz += s.vz * dt;
+        s.vx *= Math.pow(0.5, dt); s.vy *= Math.pow(0.5, dt); s.vz *= Math.pow(0.5, dt);
+        s.vy += dt * 0.3; // drift up
+
+        const scale = s.life / MUZZLE_SMOKE_LIFETIME;
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.rotation.set(s.rx, s.ry, 0);
+        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4));
+        dummy.updateMatrix();
+        msmokeMesh.setMatrixAt(i, dummy.matrix);
+      }
+      if (msmokeActive || true) msmokeMesh.instanceMatrix.needsUpdate = true;
+
+      // 5. Update Muzzle Flash
+      let flashActive = false;
+      for (let i = 0; i < MAX_FLASH; i++) {
+        const s = flashStates[i];
+        if (!s.active) continue;
+        flashActive = true;
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          flashMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.scale.setScalar(s.size * (1 + (1 - s.life / FLASH_LIFETIME) * 2));
+        dummy.updateMatrix();
+        flashMesh.setMatrixAt(i, dummy.matrix);
+      }
+      if (flashActive || true) flashMesh.instanceMatrix.needsUpdate = true;
+
+      // 6. Update Shell Casings
+      let shellActive = false;
+      for (let i = 0; i < MAX_SHELLS; i++) {
+        const s = shellStates[i];
+        if (!s.active) continue;
+        shellActive = true;
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          shellMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+
+        if (!s.settled) {
+          s.px += s.vx * dt;
+          s.py += s.vy * dt;
+          s.pz += s.vz * dt;
+          s.vy -= 15 * dt; // gravity
+
+          s.rx += s.wx * dt;
+          s.ry += s.wy * dt;
+          s.rz += s.wz * dt;
+
+          // Simple bounce/settle (approx. ground at y=0 or slightly above)
+          if (s.py < 0.1) {
+            s.py = 0.1;
+            s.settled = true;
+          }
+        }
+
+        const opacity = s.life < 1.0 ? s.life : 1.0;
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.rotation.set(s.rx, s.ry, s.rz);
+        dummy.scale.setScalar(1);
+        dummy.updateMatrix();
+        shellMesh.setMatrixAt(i, dummy.matrix);
+      }
+      if (shellActive || true) shellMesh.instanceMatrix.needsUpdate = true;
+
+      // 7. Update Impact Sparks
+      let sparkActive = false;
+      for (let i = 0; i < MAX_SPARKS; i++) {
+        const s = sparkStates[i];
+        if (!s.active) continue;
+        sparkActive = true;
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          sparkMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+
+        s.px += s.vx * dt;
+        s.py += s.vy * dt;
+        s.pz += s.vz * dt;
+        s.vy -= 20 * dt; // gravity
+
+        const scale = s.life / SPARK_LIFETIME;
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.scale.set(SPARK_SIZE, SPARK_SIZE, SPARK_SIZE * 3); // stretch
+        dummy.lookAt(s.px + s.vx, s.py + s.vy, s.pz + s.vz);
+        // Scaling also by life
+        dummy.scale.multiplyScalar(scale);
+
+        dummy.updateMatrix();
+        sparkMesh.setMatrixAt(i, dummy.matrix);
+      }
+      if (sparkActive || true) sparkMesh.instanceMatrix.needsUpdate = true;
     },
     dispose(): void {
       scene.remove(airDustMesh);
       scene.remove(treadMesh);
+      scene.remove(exhaustMesh);
+      scene.remove(msmokeMesh);
+      scene.remove(flashMesh);
+      scene.remove(shellMesh);
+      scene.remove(sparkMesh);
       airDustGeom.dispose();
       airDustMat.dispose();
       treadGeom.dispose();
       treadMat.dispose();
+      exhaustGeom.dispose();
+      exhaustMat.dispose();
+      msmokeGeom.dispose();
+      msmokeMat.dispose();
+      flashGeom.dispose();
+      flashMat.dispose();
+      shellGeom.dispose();
+      shellMat.dispose();
+      sparkGeom.dispose();
+      sparkMat.dispose();
     }
+
+
+
+
   };
 }
