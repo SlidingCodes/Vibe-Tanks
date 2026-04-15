@@ -318,6 +318,57 @@
       color: rgba(255,230,230,0.75); font-family: monospace; font-size: 10px;
       letter-spacing: 2px; pointer-events: none; user-select: none;
     }
+    /* Hitmarker & Hit Flash */
+    #hit-flash {
+      position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+      background: white; opacity: 0;
+    }
+
+    #hit-flash.active { animation: hit-flash-anim 0.15s ease-out; }
+    @keyframes hit-flash-anim {
+      0% { opacity: 0.8; background: rgba(255, 255, 255, 1); filter: brightness(2) contrast(1.5); }
+      100% { opacity: 0; background: transparent; }
+    }
+
+
+    #hit-marker {
+      position: fixed; top: 50%; left: 50%; width: 80px; height: 80px;
+      transform: translate(-50%, -50%) scale(0.5);
+      pointer-events: none; opacity: 0; z-index: 9999;
+    }
+
+
+    #hit-marker.active { animation: hit-marker-anim 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards; }
+    @keyframes hit-marker-anim {
+      0% { transform: translate(-50%, -50%) scale(0.4) rotate(-15deg); opacity: 1; }
+      20% { transform: translate(-50%, -50%) scale(1.5) rotate(10deg); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1.2) rotate(0deg); opacity: 0; }
+    }
+
+
+    .hit-line {
+      position: absolute; background: #fff; width: 3px; height: 18px;
+      box-shadow: 0 0 8px rgba(255,255,255,1);
+    }
+
+    .hit-line:nth-child(1) { top: 0; left: 0; transform: rotate(45deg); transform-origin: top left; }
+    .hit-line:nth-child(2) { top: 0; right: 0; transform: rotate(-45deg); transform-origin: top right; }
+    .hit-line:nth-child(3) { bottom: 0; left: 0; transform: rotate(-45deg); transform-origin: bottom left; }
+    .hit-line:nth-child(4) { bottom: 0; right: 0; transform: rotate(45deg); transform-origin: bottom right; }
+    #hit-marker.kill .hit-line { background: #ff3333; box-shadow: 0 0 6px rgba(255,51,51,0.9); }
+    .hit-particle {
+      position: absolute; width: 6px; height: 6px; border-radius: 50%;
+      background: #fff; pointer-events: none; opacity: 0; z-index: 999;
+      box-shadow: 0 0 6px #fff;
+    }
+    .hit-particle.active { animation: hit-particle-anim 0.5s cubic-bezier(0.165, 0.84, 0.44, 1) forwards; }
+    @keyframes hit-particle-anim {
+      0% { transform: translate(0, 0) scale(1.5); opacity: 1; }
+      100% { transform: translate(var(--tx), var(--ty)) scale(0); opacity: 0; }
+    }
+
+
+
   </style>
 </head>
 <body>
@@ -333,8 +384,16 @@
       <button id="login-submit">Join battle</button>
     </div>
   </div>
+  <div id="hit-flash"></div>
+  <div id="hit-marker">
+    <div class="hit-line"></div>
+    <div class="hit-line"></div>
+    <div class="hit-line"></div>
+    <div class="hit-line"></div>
+  </div>
   <div id="hud">
     <div id="cooldown-ring"></div>
+
     <div id="health-bar"><div id="health-fill"></div><div id="health-label"></div></div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
