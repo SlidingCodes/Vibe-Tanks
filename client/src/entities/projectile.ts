@@ -4,7 +4,6 @@ import {
   HazardState,
   ShotResult,
   ShotStep,
-  TerrainPatch,
   Vec3,
 } from '@shared/types/index';
 
@@ -23,8 +22,6 @@ interface ActiveShotStep {
   eventType: ShotStep['eventType'];
   blastRadius: number;
   visualStyle: ShotStep['visualStyle'];
-  terrainPatch: TerrainPatch | null;
-  onComplete: (patch: TerrainPatch | null) => void;
   started: boolean;
 }
 
@@ -309,7 +306,6 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
 export function playShotAnimation(
   result: ShotResult,
   scene: THREE.Scene,
-  callback: (patch: TerrainPatch | null) => void,
 ): void {
   for (const step of result.steps) {
     shots.push({
@@ -325,8 +321,6 @@ export function playShotAnimation(
       eventType: step.eventType,
       blastRadius: step.blastRadius,
       visualStyle: step.visualStyle,
-      terrainPatch: step.terrainPatch,
-      onComplete: callback,
       started: false,
     });
   }
@@ -644,7 +638,6 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
       } else {
         showExplosion(step, scene);
       }
-      step.onComplete(step.terrainPatch);
       shots.splice(i, 1);
       continue;
     }

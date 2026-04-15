@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh, setTerrainHeightSampler } from './scene/terrain';
+import { getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
@@ -31,7 +31,7 @@ import { setupSettingsMenu } from './ui/settings';
 import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
-import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
+import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
@@ -124,19 +124,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
 
-  if (!scene.getObjectByName('__terrain_built')) {
-    const t = createTerrain(snap.terrain, scene);
-    t.name = '__terrain_built';
-    initMinimap(snap.terrain);
-  } else {
-    rebuildTerrain(snap.terrain);
-    initMinimap(snap.terrain);
-  }
-
-  const terrainWidth = snap.terrain.gridWidth * snap.terrain.cellSize;
-  const terrainHeight = snap.terrain.gridHeight * snap.terrain.cellSize;
-  updateSceneScale(terrainWidth, terrainHeight);
-
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
 
@@ -163,7 +150,12 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
-    overviewCamera(terrainWidth, terrainHeight);
+    // Overview camera on the current map bounds. Uses voxelGrid if we've
+    // already received the terrain snapshot, otherwise a sensible default.
+    const b = voxelGrid
+      ? { w: voxelGrid.sizeX * voxelGrid.cellSize, h: voxelGrid.sizeZ * voxelGrid.cellSize }
+      : { w: 64, h: 64 };
+    overviewCamera(b.w, b.h);
   } else {
     hud.showWaiting(false);
   }
@@ -175,19 +167,11 @@ let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let cuberilleVisible = false;
-// Surface nets is the visible default — tanks ride on the SN-derived TriMesh,
-// shell trajectories sample the same surface, so the player should see what
-// physics is actually using. Press B to toggle it off and reveal the legacy
-// heightmap mesh underneath.
 let surfaceNetsVisible = true;
-
-function syncHeightmapVisibility(): void {
-  const hmMesh = getTerrainMesh();
-  if (hmMesh) hmMesh.visible = !(cuberilleVisible || surfaceNetsVisible);
-}
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
+  setTerrainSource(voxelGrid);
   if (!voxelTerrain) {
     voxelTerrain = createVoxelTerrain(voxelGrid, scene);
     voxelTerrain.setVisible(cuberilleVisible);
@@ -210,13 +194,10 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   } else {
     voxelDebris.clear();
   }
-  // V3d: voxels become the authoritative ground sampler on the client too.
-  const g = voxelGrid;
-  setTerrainHeightSampler((x, z) => g.getHeightInterpolated(x, z));
-  // The heightmap mesh defaults to visible after createTerrain; once a voxel
-  // view exists we have to sync its visibility (otherwise SN renders on top
-  // of an unhidden heightmap and the player sees both meshes mixed).
-  syncHeightmapVisibility();
+  initMinimap(voxelGrid);
+  const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
+  const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
+  updateSceneScale(worldW, worldH);
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
@@ -226,23 +207,15 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
   if (k === 'v' && !ev.repeat) {
+    // Toggles the debug cuberille renderer. Mutually exclusive with surface
+    // nets to avoid overlapping meshes.
     cuberilleVisible = !cuberilleVisible;
-    // Mutually exclusive with surface nets: avoid overlapping meshes that
-    // read as "small cubes poking through big cubes".
     if (cuberilleVisible) surfaceNetsVisible = false;
+    else surfaceNetsVisible = true;
     voxelTerrain?.setVisible(cuberilleVisible);
     surfaceNets?.setVisible(surfaceNetsVisible);
-    syncHeightmapVisibility();
     // eslint-disable-next-line no-console
     console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
-  } else if (k === 'b' && !ev.repeat) {
-    surfaceNetsVisible = !surfaceNetsVisible;
-    if (surfaceNetsVisible) cuberilleVisible = false;
-    voxelTerrain?.setVisible(cuberilleVisible);
-    surfaceNets?.setVisible(surfaceNetsVisible);
-    syncHeightmapVisibility();
-    // eslint-disable-next-line no-console
-    console.log(`[voxel] surface nets ${surfaceNetsVisible ? 'shown' : 'hidden'}`);
   }
 });
 
@@ -331,17 +304,12 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 });
 
 socket.on('shot_resolved', (result) => {
-  playShotAnimation(result, scene, (patch) => {
-    if (patch) {
-      applyTerrainPatch(patch);
-      onMinimapPatch(patch);
-    }
-  });
+  playShotAnimation(result, scene);
 
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
   for (const step of result.steps) {
-    if (step.terrainPatch && voxelGrid) {
+    if (step.carveTerrain && voxelGrid) {
       const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
       const grid = voxelGrid;
       const cuberille = voxelTerrain;
@@ -359,6 +327,7 @@ socket.on('shot_resolved', (result) => {
         scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
         cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
         sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
+        onMinimapCarve(grid, step.endPoint, step.blastRadius);
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
@@ -425,10 +394,10 @@ const clock = new THREE.Clock();
 let prevInput = { forward: false, backward: false, left: false, right: false };
 
 function getMapBounds(): { w: number; h: number } {
-  if (!snapshot) return { w: 64, h: 64 };
+  if (!voxelGrid) return { w: 64, h: 64 };
   return {
-    w: snapshot.terrain.gridWidth * snapshot.terrain.cellSize,
-    h: snapshot.terrain.gridHeight * snapshot.terrain.cellSize,
+    w: voxelGrid.sizeX * voxelGrid.cellSize,
+    h: voxelGrid.sizeZ * voxelGrid.cellSize,
   };
 }
 
@@ -462,7 +431,7 @@ function animate(): void {
     }
 
     const { w: mapW, h: mapH } = getMapBounds();
-    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, snapshot?.terrain.cellSize ?? 1);
+    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, voxelGrid?.cellSize ?? 1);
 
     updateLocalTankMesh(predictedState);
 
@@ -502,7 +471,7 @@ function animate(): void {
         selectedWeapon,
       );
     } else {
-      const aimTarget = getAimTarget(camera, getTerrainMesh(), predictedState.position.y);
+      const aimTarget = getAimTarget(camera, surfaceNets?.group ?? null, predictedState.position.y);
       if (aimTarget) {
         aimPointForFire = aimTarget;
         const dx = aimTarget.x - predictedState.position.x;

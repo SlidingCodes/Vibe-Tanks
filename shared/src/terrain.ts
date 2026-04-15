@@ -5,6 +5,157 @@ import type {
   TerrainSettings,
 } from './types/index';
 
+const UINT32_MAX = 0xffffffff;
+
+export function createRandomTerrainSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function smoothStep01(t: number): number {
+  const clamped = clamp(t, 0, 1);
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function smoothThreshold(value: number, threshold: number, softness: number): number {
+  const soft = Math.max(softness, 0.0001);
+  return smoothStep01((value - (threshold - soft)) / (soft * 2));
+}
+
+export interface TerrainHeightSampler {
+  readonly settings: TerrainSettings;
+  readonly seed: number;
+  sample(worldX: number, worldZ: number): number;
+}
+
+/**
+ * Pure noise sampler: given world (x,z), returns the terrain height. No grid
+ * allocation, no mutation — used by VoxelGrid.seedFromNoise to fill densities
+ * directly from 3D space without an intermediate 2D heightmap.
+ */
+export function createTerrainHeightSampler(
+  settings: TerrainSettings,
+  seed: number,
+): TerrainHeightSampler {
+  const p = settings.params;
+  const detailOctaves = Math.max(1, p.detailOctaves ?? 2);
+  const detailPersistence = p.detailPersistence ?? 0.55;
+  const detailLacunarity = p.detailLacunarity ?? 2.3;
+  const ridgeOctaves = Math.max(1, p.ridgeOctaves ?? Math.max(2, p.macroOctaves - 1));
+  const peakWeight = Math.max(0, p.peakWeight ?? 0);
+  const mountainMaskScale = Math.max(0.0001, p.mountainMaskScale ?? Math.max(0.0001, p.macroScale * 0.55));
+  const mountainMaskThreshold = p.mountainMaskThreshold ?? 0.7;
+  const mountainMaskSoftness = p.mountainMaskSoftness ?? 0.1;
+  const peakScale = Math.max(0.0001, p.peakScale ?? Math.max(0.0001, p.ridgeScale * 1.15));
+  const peakOctaves = Math.max(1, p.peakOctaves ?? Math.max(2, ridgeOctaves + 1));
+  const peakSharpness = Math.max(1, p.peakSharpness ?? 2.4);
+  const peakPersistence = Math.min(0.9, Math.max(0.2, detailPersistence + 0.08));
+  const maxX = Math.max(0, (settings.gridWidth - 1) * settings.cellSize);
+  const maxZ = Math.max(0, (settings.gridHeight - 1) * settings.cellSize);
+
+  function hash(ix: number, iz: number, salt: number): number {
+    let h = Math.imul(ix ^ (seed + salt), 0x45d9f3b);
+    h ^= Math.imul(iz ^ (seed * 97 + salt * 17), 0x119de1f3);
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x45d9f3b);
+    h ^= h >>> 16;
+    return h >>> 0;
+  }
+
+  function randomUnit(ix: number, iz: number, salt: number): number {
+    return hash(ix, iz, salt) / UINT32_MAX;
+  }
+
+  function valueNoise(x: number, z: number, salt: number): number {
+    const x0 = Math.floor(x);
+    const z0 = Math.floor(z);
+    const x1 = x0 + 1;
+    const z1 = z0 + 1;
+    const tx = smoothStep01(x - x0);
+    const tz = smoothStep01(z - z0);
+    const h00 = randomUnit(x0, z0, salt);
+    const h10 = randomUnit(x1, z0, salt);
+    const h01 = randomUnit(x0, z1, salt);
+    const h11 = randomUnit(x1, z1, salt);
+    const hx0 = lerp(h00, h10, tx);
+    const hx1 = lerp(h01, h11, tx);
+    return lerp(hx0, hx1, tz);
+  }
+
+  function signedNoise(x: number, z: number, salt: number): number {
+    return valueNoise(x, z, salt) * 2 - 1;
+  }
+
+  function fbm(x: number, z: number, octaves: number, persistence: number, lacunarity: number, salt: number): number {
+    let frequency = 1;
+    let amplitude = 1;
+    let total = 0;
+    let amplitudeSum = 0;
+    for (let octave = 0; octave < octaves; octave++) {
+      total += signedNoise(x * frequency, z * frequency, salt + octave * 101) * amplitude;
+      amplitudeSum += amplitude;
+      frequency *= lacunarity;
+      amplitude *= persistence;
+    }
+    return amplitudeSum > 0 ? total / amplitudeSum : 0;
+  }
+
+  function ridgedFbm(x: number, z: number, octaves: number, persistence: number, lacunarity: number, salt: number): number {
+    let frequency = 1;
+    let amplitude = 1;
+    let total = 0;
+    let amplitudeSum = 0;
+    for (let octave = 0; octave < octaves; octave++) {
+      const n = signedNoise(x * frequency, z * frequency, salt + octave * 131);
+      const ridge = 1 - Math.abs(n);
+      total += (ridge * ridge * 2 - 1) * amplitude;
+      amplitudeSum += amplitude;
+      frequency *= lacunarity;
+      amplitude *= persistence;
+    }
+    return amplitudeSum > 0 ? total / amplitudeSum : 0;
+  }
+
+  function edgeFlattenFactor(worldX: number, worldZ: number): number {
+    const margin = Math.max(p.edgeFlatMargin, 0.001);
+    const distToEdge = Math.min(worldX, worldZ, maxX - worldX, maxZ - worldZ);
+    const edgeT = smoothStep01(distToEdge / margin);
+    return 1 - p.edgeFlatStrength * (1 - edgeT);
+  }
+
+  function sample(worldX: number, worldZ: number): number {
+    const warpX = signedNoise(worldX * p.warpScale, worldZ * p.warpScale, 701) * p.warpStrength;
+    const warpZ = signedNoise(worldX * p.warpScale, worldZ * p.warpScale, 911) * p.warpStrength;
+    const sampleX = worldX + warpX;
+    const sampleZ = worldZ + warpZ;
+    const macro = fbm(sampleX * p.macroScale, sampleZ * p.macroScale, p.macroOctaves, p.persistence, p.lacunarity, 211);
+    const ridge = ridgedFbm(sampleX * p.ridgeScale, sampleZ * p.ridgeScale, ridgeOctaves, p.persistence, p.lacunarity, 431);
+    const detail = fbm(sampleX * p.detailScale, sampleZ * p.detailScale, detailOctaves, detailPersistence, detailLacunarity, 617);
+    const edgeFactor = edgeFlattenFactor(worldX, worldZ);
+    let shape = macro + ridge * p.ridgeWeight + detail * p.detailWeight;
+    if (peakWeight > 0) {
+      const mountainMaskNoise = valueNoise(sampleX * mountainMaskScale, sampleZ * mountainMaskScale, 977);
+      const mountainMask = smoothThreshold(mountainMaskNoise, mountainMaskThreshold, mountainMaskSoftness);
+      if (mountainMask > 0) {
+        const peakNoise = ridgedFbm(sampleX * peakScale, sampleZ * peakScale, peakOctaves, peakPersistence, p.lacunarity, 1237);
+        const peakBase = clamp((peakNoise + 1) * 0.5, 0, 1);
+        const peakShape = Math.pow(peakBase, peakSharpness);
+        shape += mountainMask * peakShape * peakWeight;
+      }
+    }
+    return p.baseHeight + p.heightScale * shape * edgeFactor;
+  }
+
+  return { settings, seed, sample };
+}
+
 export const BASE_TERRAIN_SETTINGS = {
   gridWidth: 200,
   gridHeight: 200,

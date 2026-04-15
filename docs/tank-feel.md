@@ -24,8 +24,11 @@ La finite-difference puntuale vede slope ≥ 1:1 → scatta
 trazione, free-fall). Succede per 1-2 frame mentre il carro attraversa il
 confine → jitter laterale + stop inatteso.
 
-L'effetto era già presente su heightmap ma molto più lieve, perché lì la
-superficie era continua: il gradient non aveva discontinuità.
+L'effetto era già presente nella vecchia implementazione heightmap (ora
+rimossa) ma molto più lieve, perché lì la superficie era continua: il
+gradient non aveva discontinuità. Oggi tutto il terreno è voxel
+(`VoxelGrid` seedato da `createTerrainHeightSampler`) — l'heightmap non
+esiste più come codice.
 
 ## Opzioni se V4 non basta
 

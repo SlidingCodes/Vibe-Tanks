@@ -3,20 +3,18 @@ import {
   ShotStep,
   ShotVisualStyle,
   TankState,
-  TerrainPatch,
   Vec3,
   WeaponDefinition,
 } from '../../../shared/src/types/index';
 import { GRAVITY } from '../../../shared/src/constants';
 import { computeMuzzle } from '../../../shared/src/muzzle';
 import { resolveRailEndpoint } from '../../../shared/src/rail';
-import { Heightmap } from '../terrain/Heightmap';
 
 /**
- * Heightmap-shaped surface that Simulation queries for shell collisions.
- * Concrete impls: the raw Heightmap (legacy) or TerrainSampler (voxel-backed,
- * V3d). All Simulation entry points accept this so callers can choose which
- * surface drives the trajectory math without touching the inner integrator.
+ * Terrain surface Simulation queries for shell collisions. Satisfied directly
+ * by VoxelGrid via its width/height aliases and the shared noise-seeded
+ * surface. Shell trajectories sample the same isosurface tanks ride on and
+ * carves mutate, so impact prediction and actual impact match exactly.
  */
 export interface SimulationTerrain {
   readonly width: number;
@@ -24,7 +22,6 @@ export interface SimulationTerrain {
   readonly cellSize: number;
   getHeight(x: number, z: number): number;
   getSurfaceNormal(x: number, z: number): Vec3;
-  computeCraterPatch(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch;
 }
 
 export const SIM_DT = 1 / 60;
@@ -115,7 +112,7 @@ export function makeStep(
   trajectory: Vec3[],
   endPoint: Vec3,
   eventType: ShotStep['eventType'],
-  terrainPatch: ShotStep['terrainPatch'],
+  carveTerrain: boolean,
   blastRadius: number,
   visualStyle: ShotVisualStyle,
 ): ShotStep {
@@ -124,7 +121,7 @@ export function makeStep(
     trajectory,
     endPoint,
     eventType,
-    terrainPatch,
+    carveTerrain,
     blastRadius,
     visualStyle,
   };
@@ -274,20 +271,16 @@ export function simulateSegment(
 }
 
 /**
- * Compute the impact outcome without mutating world state. The patch and
- * damage contributions are returned via `damageTotals` and the returned
- * patch so the caller can commit them at the right visual moment.
+ * Accumulate tank damage contributions for an impact. Returns true when the
+ * impact should carve terrain (i.e. terrainDamage > 0) so the caller can
+ * forward that flag on the ShotStep. The caller still commits the voxel
+ * carve itself against the authoritative grid at the visual moment.
  */
 export function applyImpact(
   impact: ImpactSpec,
-  heightmap: SimulationTerrain,
   allTanks: TankState[],
   damageTotals: DamageTotals,
-): TerrainPatch | null {
-  const terrainPatch = impact.terrainDamage > 0
-    ? heightmap.computeCraterPatch(impact.point, impact.blastRadius, impact.terrainDamage)
-    : null;
-
+): boolean {
   if (impact.damage > 0) {
     for (const tank of allTanks) {
       if (!tank.alive) continue;
@@ -310,7 +303,7 @@ export function applyImpact(
     }
   }
 
-  return terrainPatch;
+  return impact.terrainDamage > 0;
 }
 
 function makeFragmentVelocity(baseVelocity: Vec3, yawOffset: number, speedScale: number): Vec3 {
@@ -355,17 +348,17 @@ function simulateStandardShot(
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const segment = simulateSegment(startPos, startVel, heightmap);
-  const terrainPatch = segment.reason === 'impact'
+  const carveTerrain = segment.reason === 'impact'
     ? applyImpact({
         point: segment.endPoint,
         blastRadius: weapon.blastRadius,
         damage: weapon.damage,
         terrainDamage: weapon.terrainDamage,
-      }, heightmap, allTanks, damageTotals)
-    : null;
+      }, allTanks, damageTotals)
+    : false;
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'standard'),
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'standard'),
   ], damageTotals, allTanks);
 }
 
@@ -382,15 +375,15 @@ function simulateAirburstShot(
     airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
   });
 
-  const terrainPatch = applyImpact({
+  const carveTerrain = applyImpact({
     point: segment.endPoint,
     blastRadius: weapon.blastRadius,
     damage: weapon.damage,
     terrainDamage: segment.reason === 'impact' ? weapon.terrainDamage : 0,
-  }, heightmap, allTanks, damageTotals);
+  }, allTanks, damageTotals);
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'big_blast'),
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'big_blast'),
   ], damageTotals, allTanks);
 }
 
@@ -407,22 +400,22 @@ function simulateSplitShot(
   const segment = simulateSegment(startPos, startVel, heightmap, { splitTime });
 
   if (segment.reason !== 'split') {
-    const terrainPatch = segment.reason === 'impact'
+    const carveTerrain = segment.reason === 'impact'
       ? applyImpact({
           point: segment.endPoint,
           blastRadius: weapon.blastRadius,
           damage: weapon.damage,
           terrainDamage: weapon.terrainDamage,
-        }, heightmap, allTanks, damageTotals)
-      : null;
+        }, allTanks, damageTotals)
+      : false;
 
     return createPredictedShotResult(shooter.playerId, weapon.id, [
-      makeStep(0, segment.trajectory, segment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'splitter_parent'),
+      makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'splitter_parent'),
     ], damageTotals, allTanks);
   }
 
   const steps: ShotStep[] = [
-    makeStep(0, segment.trajectory, segment.endPoint, 'split', null, 0, 'splitter_parent'),
+    makeStep(0, segment.trajectory, segment.endPoint, 'split', false, 0, 'splitter_parent'),
   ];
 
   const fragmentCount = weapon.behaviorConfig?.fragmentCount ?? 3;
@@ -437,21 +430,21 @@ function simulateSplitShot(
     const yawOffset = (i - half) * fragmentSpread;
     const fragmentVelocity = makeFragmentVelocity(segment.endVelocity, yawOffset, fragmentSpeedScale);
     const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, heightmap);
-    const terrainPatch = fragmentSegment.reason === 'impact'
+    const carveTerrain = fragmentSegment.reason === 'impact'
       ? applyImpact({
           point: fragmentSegment.endPoint,
           blastRadius: fragmentBlastRadius,
           damage: fragmentDamage,
           terrainDamage: fragmentTerrainDamage,
-        }, heightmap, allTanks, damageTotals)
-      : null;
+        }, allTanks, damageTotals)
+      : false;
 
     steps.push(makeStep(
       segment.elapsed,
       fragmentSegment.trajectory,
       fragmentSegment.endPoint,
       'impact',
-      terrainPatch,
+      carveTerrain,
       fragmentBlastRadius,
       'splitter_fragment',
     ));
@@ -472,17 +465,17 @@ function simulateBounceShot(
   const firstSegment = simulateSegment(startPos, startVel, heightmap);
 
   if (firstSegment.reason !== 'impact' || (weapon.behaviorConfig?.bounceCount ?? 1) <= 0) {
-    const terrainPatch = firstSegment.reason === 'impact'
+    const carveTerrain = firstSegment.reason === 'impact'
       ? applyImpact({
           point: firstSegment.endPoint,
           blastRadius: weapon.blastRadius,
           damage: weapon.damage,
           terrainDamage: weapon.terrainDamage,
-        }, heightmap, allTanks, damageTotals)
-      : null;
+        }, allTanks, damageTotals)
+      : false;
 
     return createPredictedShotResult(shooter.playerId, weapon.id, [
-      makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'bouncer_parent'),
+      makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'bouncer_parent'),
     ], damageTotals, allTanks);
   }
 
@@ -491,18 +484,18 @@ function simulateBounceShot(
   const bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
   const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
   const secondSegment = simulateSegment(bounceStart, bouncedVelocity, heightmap);
-  const terrainPatch = secondSegment.reason === 'impact'
+  const carveTerrain = secondSegment.reason === 'impact'
     ? applyImpact({
         point: secondSegment.endPoint,
         blastRadius: weapon.blastRadius,
         damage: weapon.damage,
         terrainDamage: weapon.terrainDamage,
-      }, heightmap, allTanks, damageTotals)
-    : null;
+      }, allTanks, damageTotals)
+    : false;
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', null, 0, 'bouncer_parent'),
-    makeStep(firstSegment.elapsed, secondSegment.trajectory, secondSegment.endPoint, 'impact', terrainPatch, weapon.blastRadius, 'bouncer_bounce'),
+    makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', false, 0, 'bouncer_parent'),
+    makeStep(firstSegment.elapsed, secondSegment.trajectory, secondSegment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'bouncer_bounce'),
   ], damageTotals, allTanks);
 }
 
@@ -527,21 +520,21 @@ function simulateRailShot(
     : null;
 
   const damageTotals: DamageTotals = new Map();
-  let terrainPatch: TerrainPatch | null = null;
+  let carveTerrain = false;
 
   if (hitTank) {
     applyDirectHit(hitTank, weapon.damage, damageTotals);
   } else if (railHit.terrainHit) {
-    terrainPatch = applyImpact({
+    carveTerrain = applyImpact({
       point: railHit.hitPoint,
       blastRadius: beamRadius,
       damage: 0,
       terrainDamage,
-    }, heightmap, allTanks, damageTotals);
+    }, allTanks, damageTotals);
   }
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, [railHit.startPos, railHit.hitPoint], railHit.hitPoint, 'beam', terrainPatch, beamRadius, 'rail'),
+    makeStep(0, [railHit.startPos, railHit.hitPoint], railHit.hitPoint, 'beam', carveTerrain, beamRadius, 'rail'),
   ], damageTotals, allTanks);
 }
 
@@ -554,7 +547,7 @@ export function planDrillShot(
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const segment = simulateSegment(startPos, startVel, heightmap);
   const entryResult = createShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', null, 0, 'drill_entry'),
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', false, 0, 'drill_entry'),
   ]);
 
   const didImpact = segment.reason === 'impact';
@@ -594,11 +587,11 @@ export function buildImpactResult(
   point: Vec3,
   blastRadius: number,
   visualStyle: ShotVisualStyle,
-  terrainPatch: TerrainPatch | null,
+  carveTerrain: boolean,
   damageTotals: DamageTotals = new Map(),
 ): ShotResult {
   return createShotResult(shooterId, weaponId, [
-    makeStep(0, [cloneVec3(point)], cloneVec3(point), 'impact', terrainPatch, blastRadius, visualStyle),
+    makeStep(0, [cloneVec3(point)], cloneVec3(point), 'impact', carveTerrain, blastRadius, visualStyle),
   ], damageTotals);
 }
 

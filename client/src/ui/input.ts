@@ -176,7 +176,8 @@ export function getAimTarget(camera: THREE.Camera, terrain: THREE.Object3D | nul
   raycaster.setFromCamera(ndc, camera);
 
   if (terrain) {
-    const hits = raycaster.intersectObject(terrain, false);
+    // recurse=true so a Group of per-chunk meshes (Surface Nets) is picked.
+    const hits = raycaster.intersectObject(terrain, true);
     if (hits.length > 0) {
       return hits[0].point.clone();
     }
