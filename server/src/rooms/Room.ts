@@ -30,8 +30,10 @@ import {
   getTerrainSettingsForPreset,
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
-import { stepTankPhysics } from '../../../shared/src/physics';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
+import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
+import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
+import { TerrainSampler } from '../terrain/TerrainSampler';
 import {
   DamageTotals,
   applyImpact,
@@ -55,8 +57,6 @@ interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
-  velX: number;
-  velZ: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -103,6 +103,18 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
+  /** Voxel shadow. Seeded from the heightmap, carved alongside every patch;
+   *  now authoritative for tank ground Y. */
+  voxels: VoxelGrid;
+  /** Rapier world: per-chunk TriMesh terrain colliders + a kinematic-position
+   *  ball body per tank driven by Rapier's KinematicCharacterController.
+   *  Authoritative for tank movement and shot/terrain collisions. */
+  physics: RapierVoxelWorld;
+  /** Heightmap-shaped facade fed to Simulation. Routes height/normal samples
+   *  through the voxel grid so shell trajectories match what the tank rides
+   *  on (and what the client previews). Crater patches still go through the
+   *  heightmap so the legacy mesh keeps updating. */
+  private terrainSampler: TerrainSampler;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -127,7 +139,42 @@ export class Room {
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
+    this.voxels = new VoxelGrid({
+      sizeX: this.heightmap.width,
+      sizeY: 48,
+      sizeZ: this.heightmap.height,
+      cellSize: this.heightmap.cellSize,
+      minYCells: -16,
+    });
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('initial seed');
+    this.physics = new RapierVoxelWorld(this.voxels);
+    this.terrainSampler = new TerrainSampler(this.heightmap, this.voxels);
     this.scheduleReset();
+  }
+
+  private logVoxelSanityCheck(label: string): void {
+    // Sample at grid-aligned positions to isolate vertical quantization error
+    // from horizontal sampling asymmetry. Expected dev ≤ 0.5 * cellSize.
+    const cs = this.heightmap.cellSize;
+    const samples = 64;
+    let maxDev = 0;
+    let sumDev = 0;
+    for (let i = 0; i < samples; i++) {
+      const ix = Math.floor(Math.random() * this.heightmap.width);
+      const iz = Math.floor(Math.random() * this.heightmap.height);
+      const wx = ix * cs;
+      const wz = iz * cs;
+      const hHeight = this.heightmap.getHeight(wx, wz);
+      const vHeight = this.voxels.getHeight(wx, wz);
+      const dev = Math.abs(hHeight - vHeight);
+      if (dev > maxDev) maxDev = dev;
+      sumDev += dev;
+    }
+    // eslint-disable-next-line no-console
+    console.log(
+      `[voxel V1] ${label} (${this.terrainPresetId}): maxDev=${maxDev.toFixed(3)} avgDev=${(sumDev / samples).toFixed(3)} (cellSize=${cs})`,
+    );
   }
 
   private scheduleReset(): void {
@@ -146,6 +193,9 @@ export class Room {
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('match reset');
+    this.physics.setGrid(this.voxels);
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
       tank.position = pos;
@@ -159,15 +209,15 @@ export class Room {
       tank.barrelPitch = 0.2;
       const player = this.players.get(pid);
       if (player) {
-        player.velX = 0;
-        player.velZ = 0;
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
       }
+      this.physics.resetTank(pid, tank.position, 0);
     }
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -179,8 +229,6 @@ export class Room {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
       lastFireTime: 0,
-      velX: 0,
-      velZ: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
     });
@@ -189,6 +237,7 @@ export class Room {
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
+    socket.emit('voxel_snapshot', this.voxels.toSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -203,6 +252,7 @@ export class Room {
 
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
+    this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
 
@@ -259,6 +309,7 @@ export class Room {
       color: safeColor,
     };
     this.tanks.set(playerId, tank);
+    this.physics.addTank(tank);
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -273,7 +324,10 @@ export class Room {
     for (let attempt = 0; attempt < 96; attempt++) {
       const x = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, w - edgePadding * 2);
       const z = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, h - edgePadding * 2);
-      const y = this.heightmap.getHeight(x, z);
+      // Sample voxel surface — that's where the tank will actually rest.
+      // Slope/relief stay on heightmap because voxel doesn't expose them and
+      // they're only used as a coarse spawn-quality heuristic.
+      const y = this.voxels.getHeightInterpolated(x, z);
 
       let tooClose = false;
       let nearestTankDistance = Number.POSITIVE_INFINITY;
@@ -312,7 +366,7 @@ export class Room {
 
     const x = centerX;
     const z = centerZ;
-    return { x, y: this.heightmap.getHeight(x, z), z };
+    return { x, y: this.voxels.getHeightInterpolated(x, z), z };
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -362,7 +416,7 @@ export class Room {
           const result = simulateShot(
             tank,
             weapon,
-            this.heightmap,
+            this.terrainSampler,
             Array.from(this.tanks.values()),
           );
           this.scheduleShotResult(result, tank.playerId, weapon.id);
@@ -402,6 +456,8 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
+        this.voxels.carveSphere(step.endPoint, step.blastRadius);
+        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -423,6 +479,8 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
+      this.voxels.carveSphere(step.endPoint, step.blastRadius);
+      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
@@ -477,7 +535,7 @@ export class Room {
   }
 
   private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const plan = planDrillShot(tank, weapon, this.heightmap);
+    const plan = planDrillShot(tank, weapon, this.terrainSampler);
     this.io.to(this.id).emit('shot_resolved', plan.entryResult);
 
     if (!plan.didImpact) return;
@@ -498,9 +556,9 @@ export class Room {
   }
 
   private fireNapalm(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
+    const segment = simulateSegment(startPos, startVel, this.terrainSampler);
     const damageTotals: DamageTotals = new Map();
     const terrainPatch = segment.reason === 'impact'
       ? applyImpact({
@@ -508,7 +566,7 @@ export class Room {
           blastRadius: weapon.blastRadius,
           damage: weapon.damage,
           terrainDamage: weapon.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals)
+        }, this.terrainSampler, this.getTankList(), damageTotals)
       : null;
 
     const result = createShotResult(tank.playerId, weapon.id, [
@@ -547,7 +605,7 @@ export class Room {
 
   private fireSeeker(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const projectileId = `proj_${this.nextProjectileId++}`;
-    const position = createMuzzlePosition(tank, this.heightmap);
+    const position = createMuzzlePosition(tank, this.terrainSampler);
     const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
     const projectile: ActiveProjectileRuntime = {
       projectileId,
@@ -569,11 +627,11 @@ export class Room {
   }
 
   private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const fallback = simulateSegment(startPos, startVel, this.heightmap).endPoint;
+    const fallback = simulateSegment(startPos, startVel, this.terrainSampler).endPoint;
     const center = aimPoint
-      ? { x: aimPoint.x, y: this.heightmap.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      ? { x: aimPoint.x, y: this.voxels.getHeightInterpolated(aimPoint.x, aimPoint.z), z: aimPoint.z }
       : fallback;
 
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
@@ -607,7 +665,7 @@ export class Room {
       const radius = Math.random() * spread;
       const x = center.x + Math.cos(angle) * radius;
       const z = center.z + Math.sin(angle) * radius;
-      const position = { x, y: this.heightmap.getHeight(x, z), z };
+      const position = { x, y: this.voxels.getHeightInterpolated(x, z), z };
 
       this.scheduledStrikes.push({
         strikeId: `strike_${this.nextStrikeId++}`,
@@ -626,9 +684,9 @@ export class Room {
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
+    const segment = simulateSegment(startPos, startVel, this.terrainSampler);
 
     const result = createShotResult(tank.playerId, weapon.id, [
       makeStep(0, segment.trajectory, segment.endPoint, 'impact', null, 0, 'mine_deploy'),
@@ -673,14 +731,14 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
-    player.velX = 0;
-    player.velZ = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    this.physics.resetTank(playerId, tank.position, 0);
   }
 
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
     this.startLoop();
   }
 
@@ -708,18 +766,31 @@ export class Room {
   }
 
   private tickMovement(dt: number): void {
+    // V4b: tanks are Rapier dynamic bodies. Push input → Rapier, step the
+    // world once, then copy the body state back onto TankState.
     const mapW = this.heightmap.width * this.heightmap.cellSize;
     const mapH = this.heightmap.height * this.heightmap.cellSize;
-    const sample = (x: number, z: number) => this.heightmap.getHeight(x, z);
+    const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false };
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
-      if (!tank || !tank.alive) continue;
+      if (!tank) continue;
+      this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
+    }
 
-      const vel = { x: player.velX, z: player.velZ };
-      stepTankPhysics(tank, player.input, vel, dt, sample, mapW, mapH, this.heightmap.cellSize);
-      player.velX = vel.x;
-      player.velZ = vel.z;
+    this.physics.applyTankInputs(dt);
+    this.physics.step(dt);
+
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      this.physics.readbackTank(pid, tank);
+      // Cheap border clamp — Rapier has no world edge walls yet, so keep
+      // tanks inside the playable square.
+      const border = Math.max(1, this.heightmap.cellSize);
+      if (tank.position.x < border) tank.position.x = border;
+      else if (tank.position.x > mapW - border) tank.position.x = mapW - border;
+      if (tank.position.z < border) tank.position.z = border;
+      else if (tank.position.z > mapH - border) tank.position.z = mapH - border;
     }
   }
 
@@ -789,7 +860,10 @@ export class Room {
       };
 
       let impactPoint: Vec3 | null = null;
-      const terrainY = this.heightmap.getHeight(projectile.position.x, projectile.position.z);
+      // Voxel surface is the authoritative collision target — same surface
+      // the trajectory preview reads, so the seeker impacts where it visually
+      // appears to.
+      const terrainY = this.voxels.getHeightInterpolated(projectile.position.x, projectile.position.z);
       if (projectile.position.y <= terrainY) {
         impactPoint = { x: projectile.position.x, y: terrainY, z: projectile.position.z };
       }
@@ -825,7 +899,7 @@ export class Room {
           blastRadius: projectile.blastRadius,
           damage: projectile.damage,
           terrainDamage: projectile.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals);
+        }, this.terrainSampler, this.getTankList(), damageTotals);
 
         const result = createShotResult(projectile.ownerId, projectile.weaponId, [
           makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', terrainPatch, projectile.blastRadius, 'seeker'),
@@ -863,7 +937,7 @@ export class Room {
               blastRadius: hazard.blastRadius,
               damage: hazard.damage,
               terrainDamage: hazard.terrainDamage,
-            }, this.heightmap, this.getTankList(), damageTotals);
+            }, this.terrainSampler, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', terrainPatch, damageTotals);
             this.activeHazards.delete(hazardId);
             this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
@@ -889,7 +963,7 @@ export class Room {
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
-      }, this.heightmap, this.getTankList(), damageTotals);
+      }, this.terrainSampler, this.getTankList(), damageTotals);
 
       if (strike.kind === 'mortar') {
         const start = {
@@ -913,7 +987,7 @@ export class Room {
   private regroundAliveTanks(): void {
     for (const tank of this.tanks.values()) {
       if (tank.alive) {
-        tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
+        tank.position.y = this.voxels.getHeightInterpolated(tank.position.x, tank.position.z);
       }
     }
   }
