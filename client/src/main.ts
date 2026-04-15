@@ -615,7 +615,7 @@ function animate(): void {
   if (hmMesh && hmMesh.visible) occlusionObjects.push(hmMesh);
 
   const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
-  updateTankNameLabels(camera, localPos, occlusionObjects);
+  updateTankNameLabels(camera, localPos, occlusionObjects, myId);
 
   voxelDebris?.update(dt, voxelGrid);
 

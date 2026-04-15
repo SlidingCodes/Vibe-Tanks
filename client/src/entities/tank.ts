@@ -28,6 +28,8 @@ export interface TankMesh {
   interpDuration: number;
   /** Seconds remaining on the respawn fade-in; 0 means no animation active. */
   respawnAnim: number;
+  /** Seconds remaining to show the skull emoji after death. */
+  deathTimer: number;
 }
 
 const RESPAWN_ANIM_DURATION = 0.6; // seconds to fade the tank back in
@@ -99,16 +101,14 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 
   // Name label above the tank (only for other players — our own name would
   // just block our view).
-  let nameLabel: CSS2DObject | null = null;
-  if (tank.playerId !== localPlayerId) {
-    const div = document.createElement('div');
-    div.className = 'tank-name-label';
-    div.textContent = tank.playerName;
-    div.style.color = tank.color;
-    nameLabel = new CSS2DObject(div);
-    nameLabel.position.set(0, 2.0, 0);
-    group.add(nameLabel);
-  }
+  // Name label above the tank
+  const div = document.createElement('div');
+  div.className = 'tank-name-label';
+  div.textContent = tank.playerName;
+  div.style.color = tank.color;
+  const nameLabel = new CSS2DObject(div);
+  nameLabel.position.set(0, 2.0, 0);
+  group.add(nameLabel);
 
   const tm: TankMesh = {
     group, body, turretGroup, turret, barrel,
@@ -122,6 +122,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     interpTime: 0,
     interpDuration: SERVER_BROADCAST_INTERVAL,
     respawnAnim: 0,
+    deathTimer: 0,
   };
   tankMeshes.set(tank.playerId, tm);
   return tm;
@@ -143,7 +144,12 @@ export function onServerStateReceived(tank: TankState): void {
     tm.targetBodyRotation = tank.bodyRotation;
     tm.group.rotation.y = tank.bodyRotation;
     tm.respawnAnim = RESPAWN_ANIM_DURATION;
+    tm.deathTimer = 0; // stop showing skull if respawned
   } else {
+    // Detect death (alive → dead)
+    if (tm.state.alive && !tank.alive) {
+      tm.deathTimer = 10.0;
+    }
     tm.prevPosition.copy(tm.group.position);
     tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
     tm.prevBodyRotation = tm.group.rotation.y;
@@ -172,6 +178,10 @@ export function tickTankEffects(dt: number): void {
       tm.group.scale.setScalar(s);
     } else if (tm.group.scale.x !== 1) {
       tm.group.scale.setScalar(1);
+    }
+    
+    if (tm.deathTimer > 0) {
+      tm.deathTimer = Math.max(0, tm.deathTimer - dt);
     }
   }
 }
@@ -219,6 +229,17 @@ export function updateTankMesh(tank: TankState): void {
   const tm = tankMeshes.get(tank.playerId);
   if (!tm) return;
 
+  tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
+  tm.barrel.rotation.x = -tank.barrelPitch;
+  
+  // Detect death for skull timer
+  if (tm.state.alive && !tank.alive) {
+    tm.deathTimer = 10.0;
+  }
+  if (!tm.state.alive && tank.alive) {
+    tm.deathTimer = 0;
+  }
+
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
@@ -260,16 +281,30 @@ export function updateTankNameLabels(
   camera: THREE.Camera,
   localPos: THREE.Vector3,
   occlussionObjects: THREE.Object3D[],
+  localPlayerId: string,
 ): void {
   const camPos = camera.position;
 
   for (const tm of tankMeshes.values()) {
     if (!tm.nameLabel) continue;
 
-    // Reset visibility if the tank is dead
+    // Logic for name vs skull
     if (!tm.state.alive) {
-      tm.nameLabel.element.style.visibility = 'hidden';
-      continue;
+      if (tm.deathTimer > 0) {
+        tm.nameLabel.element.textContent = '💀';
+        tm.nameLabel.element.style.color = '#fff';
+      } else {
+        tm.nameLabel.element.style.visibility = 'hidden';
+        continue;
+      }
+    } else {
+      // Local player name is hidden to not block view
+      if (tm.state.playerId === localPlayerId) {
+        tm.nameLabel.element.style.visibility = 'hidden';
+        continue;
+      }
+      tm.nameLabel.element.textContent = tm.state.playerName;
+      tm.nameLabel.element.style.color = tm.state.color;
     }
 
     // Force update parent group matrix so children world positions are correct
