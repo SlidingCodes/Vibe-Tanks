@@ -154,11 +154,19 @@ const aimNDC = new THREE.Vector2();
 
 /** In FPV the camera looks almost horizontal, so the raycast hits the ground
  *  very far away — even a tiny NDC deviation sweeps the aim point across a
- *  huge arc. Dampen the center with a cubic so only the outer rim of the
- *  screen reaches full turret rotation; edges still map 1:1 so you keep the
- *  full range of motion. */
+ *  huge arc. Hard dead zone around the center kills the twitch entirely,
+ *  then a cubic ramp so only the outer quarter of the screen drives real
+ *  turret rotation; the edges still map 1:1 to keep the full range. */
+const FPV_DEAD_ZONE = 0.22;
+const FPV_SHAPE_EXP = 3;
+
 function shapedNDC(raw: THREE.Vector2): THREE.Vector2 {
-  const shape = (n: number) => 0.2 * n + 0.8 * n * n * n;
+  const shape = (n: number) => {
+    const a = Math.abs(n);
+    if (a <= FPV_DEAD_ZONE) return 0;
+    const t = (a - FPV_DEAD_ZONE) / (1 - FPV_DEAD_ZONE);
+    return Math.sign(n) * Math.pow(t, FPV_SHAPE_EXP);
+  };
   aimNDC.set(shape(raw.x), shape(raw.y));
   return aimNDC;
 }
