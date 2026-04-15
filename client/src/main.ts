@@ -213,6 +213,10 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   // V3d: voxels become the authoritative ground sampler on the client too.
   const g = voxelGrid;
   setTerrainHeightSampler((x, z) => g.getHeightInterpolated(x, z));
+  // The heightmap mesh defaults to visible after createTerrain; once a voxel
+  // view exists we have to sync its visibility (otherwise SN renders on top
+  // of an unhidden heightmap and the player sees both meshes mixed).
+  syncHeightmapVisibility();
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
