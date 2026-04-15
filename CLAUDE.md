@@ -95,7 +95,7 @@ shared/src/
                              noise-based (x,z)->y sampler that seeds the voxel grid
   terrain/VoxelGrid.ts       Dense 3D uint8 density grid (authoritative terrain):
                              seedFromNoise, carveSphere/carveCone, bilinear
-                             getHeightInterpolated, slope/relief helpers
+                             getHeight, slope/relief helpers
   terrain/surfaceNetsMesher.ts  Per-chunk Surface Nets isosurface extraction;
                                 shared by the client renderer and the Rapier
                                 collider generator so visuals and physics match
@@ -115,7 +115,7 @@ scripts/
 - **Audio**: procedural sounds + music via Web Audio API (no external files). Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. SFX: shoot, explosion (scaled by blast radius), tank death boom, Dark Souls-style death (descending wah + choir chord + "YOU DIED" voice), respawn jingle, weapon-switch click, hit-marker ting. Background music: 3 procedural chiptune tracks — Heroic March (D minor 128 BPM), Relentless Assault (A minor 140 BPM), Iron Waltz (F minor 116 BPM) — random start, rotated on each match reset.
 - **Third-person camera**: smoothed lerp follow behind the player's tank, offset rotates with tank body rotation.
 - **Shared tank physics** (client-side prediction only): `shared/src/physics.ts` exports `stepTankPhysics` used by the client to predict local-tank motion between server broadcasts. The server is authoritative via Rapier — see below. Model:
-  - Kinematic in XZ, y from `voxels.getHeightInterpolated`, pitch/roll from voxel surface gradient.
+  - Kinematic in XZ, y from `voxels.getHeight` (bilinear), pitch/roll from voxel surface gradient.
   - Semi-implicit "target-velocity" integration: tracks pull velocity toward target (driving speed × traction, or 0 when braking) at rate `ENGINE_GRIP` / `BRAKE_GRIP`. Stable at any dt.
   - Slope slide is `g·sin(θ)` along the downhill horizontal direction; zero below `SLIDE_GRADE_THRESHOLD`, ramps in, and above `CLIFF_GRADE` tracks lose grip entirely so the tank free-falls.
   - Uphill traction decreases with slope (`UPHILL_TRACTION_K`), so steep climbs crawl but craters remain escapable.

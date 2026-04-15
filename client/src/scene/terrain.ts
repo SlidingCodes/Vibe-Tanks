@@ -12,7 +12,7 @@ export function setTerrainSource(grid: VoxelGrid | null): void {
 }
 
 export function getTerrainHeight(x: number, z: number): number {
-  return activeGrid ? activeGrid.getHeightInterpolated(x, z) : 0;
+  return activeGrid ? activeGrid.getHeight(x, z) : 0;
 }
 
 export function getTerrainCellSize(): number {

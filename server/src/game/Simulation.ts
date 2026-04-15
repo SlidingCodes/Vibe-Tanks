@@ -172,12 +172,12 @@ export function createInitialVelocity(tank: TankState, speed: number): Vec3 {
   };
 }
 
-export function createMuzzlePosition(tank: TankState, heightmap?: SimulationTerrain): Vec3 {
+export function createMuzzlePosition(tank: TankState, terrain?: SimulationTerrain): Vec3 {
   const muzzle = computeMuzzle(tank);
-  if (!heightmap) return cloneVec3(muzzle.origin);
+  if (!terrain) return cloneVec3(muzzle.origin);
   // If terrain pokes above the muzzle (shooting out of a crater, tilted body),
   // lift the spawn just above ground so the shell doesn't explode on frame 1.
-  const ground = heightmap.getHeight(muzzle.origin.x, muzzle.origin.z);
+  const ground = terrain.getHeight(muzzle.origin.x, muzzle.origin.z);
   const y = Math.max(muzzle.origin.y, ground + 0.2);
   return { x: muzzle.origin.x, y, z: muzzle.origin.z };
 }
@@ -201,7 +201,7 @@ export function createLinearTrajectory(start: Vec3, end: Vec3, duration: number)
 export function simulateSegment(
   startPos: Vec3,
   startVel: Vec3,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   options: SegmentOptions = {},
 ): SegmentResult {
   const pos = cloneVec3(startPos);
@@ -218,7 +218,7 @@ export function simulateSegment(
     pos.z += vel.z * SIM_DT;
     elapsed += SIM_DT;
 
-    const terrainH = heightmap.getHeight(pos.x, pos.z);
+    const terrainH = terrain.getHeight(pos.x, pos.z);
 
     if (tick % SAMPLE_EVERY_TICKS === 0) {
       trajectory.push(cloneVec3(pos));
@@ -233,8 +233,8 @@ export function simulateSegment(
 
     if (
       pos.y < -10 ||
-      pos.x < -20 || pos.x > heightmap.width * heightmap.cellSize + 20 ||
-      pos.z < -20 || pos.z > heightmap.height * heightmap.cellSize + 20
+      pos.x < -20 || pos.x > terrain.width * terrain.cellSize + 20 ||
+      pos.z < -20 || pos.z > terrain.height * terrain.cellSize + 20
     ) {
       endPoint = cloneVec3(pos);
       reason = 'bounds';
@@ -341,13 +341,13 @@ function applyDirectHit(tank: TankState, damage: number, damageTotals: DamageTot
 function simulateStandardShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, heightmap);
+  const startPos = createMuzzlePosition(shooter, terrain);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, heightmap);
+  const segment = simulateSegment(startPos, startVel, terrain);
   const carveTerrain = segment.reason === 'impact'
     ? applyImpact({
         point: segment.endPoint,
@@ -365,13 +365,13 @@ function simulateStandardShot(
 function simulateAirburstShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, heightmap);
+  const startPos = createMuzzlePosition(shooter, terrain);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, heightmap, {
+  const segment = simulateSegment(startPos, startVel, terrain, {
     airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
   });
 
@@ -390,14 +390,14 @@ function simulateAirburstShot(
 function simulateSplitShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, heightmap);
+  const startPos = createMuzzlePosition(shooter, terrain);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const splitTime = weapon.behaviorConfig?.splitTime ?? 0.7;
-  const segment = simulateSegment(startPos, startVel, heightmap, { splitTime });
+  const segment = simulateSegment(startPos, startVel, terrain, { splitTime });
 
   if (segment.reason !== 'split') {
     const carveTerrain = segment.reason === 'impact'
@@ -429,7 +429,7 @@ function simulateSplitShot(
   for (let i = 0; i < fragmentCount; i++) {
     const yawOffset = (i - half) * fragmentSpread;
     const fragmentVelocity = makeFragmentVelocity(segment.endVelocity, yawOffset, fragmentSpeedScale);
-    const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, heightmap);
+    const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, terrain);
     const carveTerrain = fragmentSegment.reason === 'impact'
       ? applyImpact({
           point: fragmentSegment.endPoint,
@@ -456,13 +456,13 @@ function simulateSplitShot(
 function simulateBounceShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, heightmap);
+  const startPos = createMuzzlePosition(shooter, terrain);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
-  const firstSegment = simulateSegment(startPos, startVel, heightmap);
+  const firstSegment = simulateSegment(startPos, startVel, terrain);
 
   if (firstSegment.reason !== 'impact' || (weapon.behaviorConfig?.bounceCount ?? 1) <= 0) {
     const carveTerrain = firstSegment.reason === 'impact'
@@ -479,11 +479,11 @@ function simulateBounceShot(
     ], damageTotals, allTanks);
   }
 
-  const impactNormal = heightmap.getSurfaceNormal(firstSegment.endPoint.x, firstSegment.endPoint.z);
+  const impactNormal = terrain.getSurfaceNormal(firstSegment.endPoint.x, firstSegment.endPoint.z);
   const damping = weapon.behaviorConfig?.bounceDamping ?? 0.72;
   const bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
   const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
-  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, heightmap);
+  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain);
   const carveTerrain = secondSegment.reason === 'impact'
     ? applyImpact({
         point: secondSegment.endPoint,
@@ -502,7 +502,7 @@ function simulateBounceShot(
 function simulateRailShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const maxRange = weapon.behaviorConfig?.railRange ?? 50;
@@ -512,7 +512,7 @@ function simulateRailShot(
     shooter,
     maxRange,
     beamRadius,
-    (x, z) => heightmap.getHeight(x, z),
+    (x, z) => terrain.getHeight(x, z),
     allTanks,
   );
   const hitTank = railHit.hitTankId
@@ -541,11 +541,11 @@ function simulateRailShot(
 export function planDrillShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
 ): DrillPlan {
-  const startPos = createMuzzlePosition(shooter, heightmap);
+  const startPos = createMuzzlePosition(shooter, terrain);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const segment = simulateSegment(startPos, startVel, heightmap);
+  const segment = simulateSegment(startPos, startVel, terrain);
   const entryResult = createShotResult(shooter.playerId, weapon.id, [
     makeStep(0, segment.trajectory, segment.endPoint, 'impact', false, 0, 'drill_entry'),
   ]);
@@ -565,7 +565,7 @@ export function planDrillShot(
   };
   const eruptionPoint = {
     x: eruptionXZ.x,
-    y: heightmap.getHeight(eruptionXZ.x, eruptionXZ.z),
+    y: terrain.getHeight(eruptionXZ.x, eruptionXZ.z),
     z: eruptionXZ.z,
   };
 
@@ -599,20 +599,20 @@ export function buildImpactResult(
 export function simulateShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: SimulationTerrain,
+  terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   switch (weapon.behavior) {
     case 'airburst':
-      return simulateAirburstShot(shooter, weapon, heightmap, allTanks);
+      return simulateAirburstShot(shooter, weapon, terrain, allTanks);
     case 'split':
-      return simulateSplitShot(shooter, weapon, heightmap, allTanks);
+      return simulateSplitShot(shooter, weapon, terrain, allTanks);
     case 'bounce':
-      return simulateBounceShot(shooter, weapon, heightmap, allTanks);
+      return simulateBounceShot(shooter, weapon, terrain, allTanks);
     case 'rail':
-      return simulateRailShot(shooter, weapon, heightmap, allTanks);
+      return simulateRailShot(shooter, weapon, terrain, allTanks);
     case 'standard':
     default:
-      return simulateStandardShot(shooter, weapon, heightmap, allTanks);
+      return simulateStandardShot(shooter, weapon, terrain, allTanks);
   }
 }

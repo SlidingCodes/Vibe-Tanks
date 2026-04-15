@@ -23,7 +23,7 @@ let cellSize = 1;
 let heights: number[] = [];
 
 function sampleGridHeight(grid: VoxelGrid, ix: number, iz: number): number {
-  return grid.getHeightInterpolated((ix + 0.5) * grid.cellSize, (iz + 0.5) * grid.cellSize);
+  return grid.getHeight((ix + 0.5) * grid.cellSize, (iz + 0.5) * grid.cellSize);
 }
 
 function rebuildHeightsFromGrid(grid: VoxelGrid): void {

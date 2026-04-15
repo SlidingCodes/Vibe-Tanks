@@ -295,7 +295,7 @@ export class Room {
     for (let attempt = 0; attempt < 96; attempt++) {
       const x = edgePadding + Math.random() * Math.max(cellSize, w - edgePadding * 2);
       const z = edgePadding + Math.random() * Math.max(cellSize, h - edgePadding * 2);
-      const y = this.voxels.getHeightInterpolated(x, z);
+      const y = this.voxels.getHeight(x, z);
 
       let tooClose = false;
       let nearestTankDistance = Number.POSITIVE_INFINITY;
@@ -334,7 +334,7 @@ export class Room {
 
     const x = centerX;
     const z = centerZ;
-    return { x, y: this.voxels.getHeightInterpolated(x, z), z };
+    return { x, y: this.voxels.getHeight(x, z), z };
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -596,7 +596,7 @@ export class Room {
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const fallback = simulateSegment(startPos, startVel, this.voxels).endPoint;
     const center = aimPoint
-      ? { x: aimPoint.x, y: this.voxels.getHeightInterpolated(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      ? { x: aimPoint.x, y: this.voxels.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
       : fallback;
 
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
@@ -630,7 +630,7 @@ export class Room {
       const radius = Math.random() * spread;
       const x = center.x + Math.cos(angle) * radius;
       const z = center.z + Math.sin(angle) * radius;
-      const position = { x, y: this.voxels.getHeightInterpolated(x, z), z };
+      const position = { x, y: this.voxels.getHeight(x, z), z };
 
       this.scheduledStrikes.push({
         strikeId: `strike_${this.nextStrikeId++}`,
@@ -829,7 +829,7 @@ export class Room {
       // Voxel surface is the authoritative collision target — same surface
       // the trajectory preview reads, so the seeker impacts where it visually
       // appears to.
-      const terrainY = this.voxels.getHeightInterpolated(projectile.position.x, projectile.position.z);
+      const terrainY = this.voxels.getHeight(projectile.position.x, projectile.position.z);
       if (projectile.position.y <= terrainY) {
         impactPoint = { x: projectile.position.x, y: terrainY, z: projectile.position.z };
       }
@@ -953,7 +953,7 @@ export class Room {
   private regroundAliveTanks(): void {
     for (const tank of this.tanks.values()) {
       if (tank.alive) {
-        tank.position.y = this.voxels.getHeightInterpolated(tank.position.x, tank.position.z);
+        tank.position.y = this.voxels.getHeight(tank.position.x, tank.position.z);
       }
     }
   }

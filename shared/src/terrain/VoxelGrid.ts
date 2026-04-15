@@ -129,13 +129,14 @@ export class VoxelGrid {
   get height(): number { return this.sizeZ; }
 
   /** Finite-difference surface normal of the voxel-carved terrain, sampled
-   *  via getHeightInterpolated so it matches what shells actually collide with. */
+   *  via the same bilinear getHeight so it matches what shells actually
+   *  collide with. */
   getSurfaceNormal(wx: number, wz: number): Vec3 {
     const step = this.cellSize;
-    const hx0 = this.getHeightInterpolated(wx - step, wz);
-    const hx1 = this.getHeightInterpolated(wx + step, wz);
-    const hz0 = this.getHeightInterpolated(wx, wz - step);
-    const hz1 = this.getHeightInterpolated(wx, wz + step);
+    const hx0 = this.getHeight(wx - step, wz);
+    const hx1 = this.getHeight(wx + step, wz);
+    const hz0 = this.getHeight(wx, wz - step);
+    const hz1 = this.getHeight(wx, wz + step);
     const nx = hx0 - hx1;
     const ny = 2 * step;
     const nz = hz0 - hz1;
@@ -146,10 +147,10 @@ export class VoxelGrid {
   /** |∇h| — central differences in world units. Used as a spawn heuristic. */
   getSlopeMagnitude(wx: number, wz: number): number {
     const step = this.cellSize;
-    const hE = this.getHeightInterpolated(wx + step, wz);
-    const hW = this.getHeightInterpolated(wx - step, wz);
-    const hN = this.getHeightInterpolated(wx, wz + step);
-    const hS = this.getHeightInterpolated(wx, wz - step);
+    const hE = this.getHeight(wx + step, wz);
+    const hW = this.getHeight(wx - step, wz);
+    const hN = this.getHeight(wx, wz + step);
+    const hS = this.getHeight(wx, wz - step);
     const dhx = (hE - hW) / (2 * step);
     const dhz = (hN - hS) / (2 * step);
     return Math.sqrt(dhx * dhx + dhz * dhz);
@@ -165,7 +166,7 @@ export class VoxelGrid {
     let minH = Infinity;
     let maxH = -Infinity;
     for (const [dx, dz] of offsets) {
-      const h = this.getHeightInterpolated(wx + dx, wz + dz);
+      const h = this.getHeight(wx + dx, wz + dz);
       if (h < minH) minH = h;
       if (h > maxH) maxH = h;
     }
@@ -341,15 +342,9 @@ export class VoxelGrid {
   /** World-space surface height at (wx, wz). Bilinear-interpolated across
    *  the 4 neighbouring columns so shell trajectories, tank physics and the
    *  trajectory preview all sample the same smooth surface the Surface Nets
-   *  mesh renders. The nearest-column crossing is an implementation detail
-   *  (`columnTopHeight`, private). */
+   *  mesh renders. The per-column crossing is an implementation detail kept
+   *  private (`columnTopHeight`). */
   getHeight(wx: number, wz: number): number {
-    return this.getHeightInterpolated(wx, wz);
-  }
-
-  /** Bilinear-interpolated surface height for smooth tank physics. Kept as
-   *  a named export so existing callers continue to work. */
-  getHeightInterpolated(wx: number, wz: number): number {
     const fx = wx / this.cellSize;
     const fz = wz / this.cellSize;
     const x0 = Math.floor(fx);

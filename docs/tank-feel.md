@@ -15,7 +15,7 @@ osservazioni potrebbero essere già risolte dal passaggio a collider 3D reali.
 ## Diagnosi
 
 `stepTankPhysics` (shared/src/physics.ts) campiona `sample(x, z)` =
-`voxels.getHeightInterpolated(x, z)` e ricava lo slope per finite-difference
+`voxels.getHeight(x, z)` (bilineare) e ricava lo slope per finite-difference
 su piccoli passi (`BASE_GRAD_EPS`, `BASE_TILT_SAMPLE`). Il voxel grid è
 intrinsecamente discreto: due colonne adiacenti possono differire di 1+
 unit quando ci sono crateri, e la bilineare produce una rampa su 1 cella.
