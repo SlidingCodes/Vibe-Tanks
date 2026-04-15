@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
-import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '@shared/terrain/surfaceNetsMesher';
+import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE, SurfaceNetsOptions } from '@shared/terrain/surfaceNetsMesher';
 import { Vec3 } from '@shared/types/index';
+import { VoxelScorch } from './voxelScorch';
 
 const CHUNK_SIZE = SURFACE_NETS_CHUNK_SIZE;
 const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
@@ -11,6 +12,9 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
+  if (data.colors) {
+    geom.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+  }
   geom.setIndex(new THREE.BufferAttribute(data.indices, 1));
   return geom;
 }
@@ -18,16 +22,21 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
 export interface SurfaceNetsHandle {
   group: THREE.Group;
   dispose(): void;
-  rebuild(grid: VoxelGrid): void;
+  rebuild(grid: VoxelGrid, scorch?: VoxelScorch): void;
   invalidateSphere(center: Vec3, radius: number): void;
   setVisible(v: boolean): void;
 }
 
-export function createSurfaceNetsTerrain(grid: VoxelGrid, scene: THREE.Scene): SurfaceNetsHandle {
+export function createSurfaceNetsTerrain(
+  grid: VoxelGrid,
+  scene: THREE.Scene,
+  scorch?: VoxelScorch,
+): SurfaceNetsHandle {
   const material = new THREE.MeshStandardMaterial({
-    color: 0x9c6a38,
+    color: scorch ? 0xffffff : 0x9c6a38,
     roughness: 0.85,
     metalness: 0,
+    vertexColors: scorch !== undefined,
   });
 
   const group = new THREE.Group();
@@ -36,11 +45,15 @@ export function createSurfaceNetsTerrain(grid: VoxelGrid, scene: THREE.Scene): S
 
   const chunks = new Map<string, THREE.Mesh>();
   let activeGrid = grid;
+  let activeScorch = scorch;
+  const meshOptions = (): SurfaceNetsOptions => activeScorch
+    ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) }
+    : {};
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
     const key = chunkKey(cx, cy, cz);
     const prev = chunks.get(key);
-    const mesh = buildSurfaceNetsChunk(activeGrid, cx, cy, cz);
+    const mesh = buildSurfaceNetsChunk(activeGrid, cx, cy, cz, meshOptions());
     const geom = toGeometry(mesh);
     if (prev) {
       prev.geometry.dispose();
@@ -68,8 +81,9 @@ export function createSurfaceNetsTerrain(grid: VoxelGrid, scene: THREE.Scene): S
     chunks.clear();
   }
 
-  function rebuildAll(g: VoxelGrid): void {
+  function rebuildAll(g: VoxelGrid, s?: VoxelScorch): void {
     activeGrid = g;
+    if (s !== undefined) activeScorch = s;
     wipeChunks();
     const nx = Math.ceil(g.sizeX / CHUNK_SIZE);
     const ny = Math.ceil(g.sizeY / CHUNK_SIZE);
@@ -128,8 +142,8 @@ export function createSurfaceNetsTerrain(grid: VoxelGrid, scene: THREE.Scene): S
       material.dispose();
       scene.remove(group);
     },
-    rebuild(g: VoxelGrid): void {
-      rebuildAll(g);
+    rebuild(g: VoxelGrid, s?: VoxelScorch): void {
+      rebuildAll(g, s);
     },
     invalidateSphere,
     setVisible(v: boolean): void {

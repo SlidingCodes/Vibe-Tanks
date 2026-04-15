@@ -6,6 +6,7 @@ import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, get
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
+import { VoxelScorch } from './scene/voxelScorch';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
@@ -172,6 +173,7 @@ let voxelGrid: VoxelGrid | null = null;
 let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
+let voxelScorch: VoxelScorch | null = null;
 let cuberilleVisible = false;
 let surfaceNetsVisible = false;
 
@@ -189,11 +191,14 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
     voxelTerrain.rebuild(voxelGrid);
     voxelTerrain.setVisible(cuberilleVisible);
   }
+  // Scorch lives alongside the voxel grid, client-only. Reset on every
+  // snapshot so reconnects/match-resets don't inherit stale burn marks.
+  voxelScorch = new VoxelScorch(voxelGrid);
   if (!surfaceNets) {
-    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene);
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch);
     surfaceNets.setVisible(surfaceNetsVisible);
   } else {
-    surfaceNets.rebuild(voxelGrid);
+    surfaceNets.rebuild(voxelGrid, voxelScorch);
     surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
@@ -334,12 +339,16 @@ socket.on('shot_resolved', (result) => {
       const cuberille = voxelTerrain;
       const sn = surfaceNets;
       const debris = voxelDebris;
+      const scorch = voxelScorch;
       setTimeout(() => {
         // Sample debris origins BEFORE carving (they must still be solid).
         debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
         grid.carveSphere(step.endPoint, step.blastRadius);
+        // Scorch extends a bit past the blast radius so the burn ring is
+        // visible on the untouched terrain just outside the crater.
+        scorch?.addSphere(step.endPoint, step.blastRadius * 1.4, 0.75);
         cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
-        sn?.invalidateSphere(step.endPoint, step.blastRadius);
+        sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.4);
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;

@@ -135,20 +135,29 @@ export class VoxelGrid {
 
   /**
    * Smooth sphere carve: voxels well inside the sphere are set to 0; the
-   * outer 15 % forms a smoothstep blend back to the existing density. That
-   * keeps carves crisp inside but gives the surface-nets crossings a soft
-   * rim, avoiding stair-stepping on the crater lip.
+   * outer 15 % forms a smoothstep blend back to the existing density.
+   *
+   * Rim irregularity: the effective u-value for each voxel is perturbed
+   * by a 4-lobe angular noise (around the crater's vertical axis) with a
+   * small polar lobe on top, seeded deterministically from the impact
+   * position so server and client carves produce identical geometry.
+   * Keeps craters looking organic rather than mathematical spheres.
    */
   carveSphere(center: Vec3, radius: number): void {
     if (radius <= 0) return;
     const cs = this.cellSize;
-    const ixMin = Math.max(0, Math.floor((center.x - radius) / cs));
-    const ixMax = Math.min(this.sizeX - 1, Math.ceil((center.x + radius) / cs));
-    const izMin = Math.max(0, Math.floor((center.z - radius) / cs));
-    const izMax = Math.min(this.sizeZ - 1, Math.ceil((center.z + radius) / cs));
-    const iyMin = Math.max(0, Math.floor((center.y - radius) / cs) - this.minYCells);
-    const iyMax = Math.min(this.sizeY - 1, Math.ceil((center.y + radius) / cs) - this.minYCells);
+    const RIM_AMP = 0.07;
+    const effRadius = radius * (1 + RIM_AMP);
+    const ixMin = Math.max(0, Math.floor((center.x - effRadius) / cs));
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil((center.x + effRadius) / cs));
+    const izMin = Math.max(0, Math.floor((center.z - effRadius) / cs));
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil((center.z + effRadius) / cs));
+    const iyMin = Math.max(0, Math.floor((center.y - effRadius) / cs) - this.minYCells);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil((center.y + effRadius) / cs) - this.minYCells);
     const invR = 1 / radius;
+    // Per-impact phase — a cheap hash of the center position so repeated
+    // impacts don't align their lobes. Radian units.
+    const rimPhase = (center.x * 12.9898 + center.z * 78.233 + center.y * 37.719) % (2 * Math.PI);
 
     for (let iy = iyMin; iy <= iyMax; iy++) {
       const wy = (this.minYCells + iy + 0.5) * cs;
@@ -159,14 +168,28 @@ export class VoxelGrid {
         for (let ix = ixMin; ix <= ixMax; ix++) {
           const wx = (ix + 0.5) * cs;
           const dx = wx - center.x;
-          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (d >= radius) continue;
-          const idx = this.index(ix, iy, iz);
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 <= 1e-6) {
+            // Exact center — treat as fully carved.
+            this.data[this.index(ix, iy, iz)] = 0;
+            continue;
+          }
+          const d = Math.sqrt(d2);
           const u = d * invR;
+          // Angular rim perturbation: 4 lobes around the vertical axis
+          // plus a small bias along the axis. All under RIM_AMP total.
+          const horizDist = Math.sqrt(dx * dx + dz * dz) || 1;
+          const theta = Math.atan2(dz, dx);
+          const rimOffset =
+            Math.cos(theta * 4 + rimPhase) * (RIM_AMP * 0.7) +
+            (dy / horizDist) * (RIM_AMP * 0.3);
+          const uEff = u + rimOffset;
+          if (uEff >= 1) continue;
+          const idx = this.index(ix, iy, iz);
           let keep: number;
-          if (u < 0.85) keep = 0;
+          if (uEff < 0.85) keep = 0;
           else {
-            const t = (u - 0.85) / 0.15;
+            const t = (uEff - 0.85) / 0.15;
             keep = t * t * (3 - 2 * t);
           }
           const existing = this.data[idx];

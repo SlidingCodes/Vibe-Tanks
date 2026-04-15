@@ -30,7 +30,26 @@ export interface SurfaceNetsChunkMesh {
   indices: Uint32Array;
   /** Per-vertex gradient-derived outward normals. length = 3 * vertexCount. */
   normals: Float32Array;
+  /** Optional per-vertex RGB colors in [0,1]. Only emitted when options.scorchAt
+   *  is provided to buildSurfaceNetsChunk. length = 3 * vertexCount. */
+  colors?: Float32Array;
 }
+
+export interface SurfaceNetsOptions {
+  /** Optional scorch sampler (voxel index → 0..255). When provided, the mesher
+   *  emits per-vertex colors blending a base dirt tone with a dark burnt tint
+   *  proportional to the interpolated scorch around each dual cube. */
+  scorchAt?: (ix: number, iy: number, iz: number) => number;
+}
+
+// Base material tone (matches voxelSurfaceNets material color 0x9c6a38) and
+// the dark burnt color to lerp toward at full scorch.
+const BASE_R = 0x9c / 255;
+const BASE_G = 0x6a / 255;
+const BASE_B = 0x38 / 255;
+const BURNT_R = 0x1a / 255;
+const BURNT_G = 0x0e / 255;
+const BURNT_B = 0x08 / 255;
 
 /**
  * Shared surface-nets mesher. Produces a per-chunk mesh from the voxel grid:
@@ -47,6 +66,7 @@ export function buildSurfaceNetsChunk(
   cx: number,
   cy: number,
   cz: number,
+  options: SurfaceNetsOptions = {},
 ): SurfaceNetsChunkMesh | null {
   const CS = SURFACE_NETS_CHUNK_SIZE;
   const cs = grid.cellSize;
@@ -61,6 +81,8 @@ export function buildSurfaceNetsChunk(
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
+  const colors: number[] = [];
+  const scorchAt = options.scorchAt;
 
   const dualKey = (i: number, j: number, k: number): number =>
     (j - baseIy + 1) * DUAL_STRIDE_YZ + (k - baseIz + 1) * DUAL_W + (i - baseIx + 1);
@@ -129,6 +151,25 @@ export function buildSurfaceNetsChunk(
         const idx = positions.length / 3;
         positions.push(wx, wy, wz);
         normals.push(-gx * invMag, -gy * invMag, -gz * invMag);
+        if (scorchAt) {
+          // Average scorch across the 8 dual-cube corners. [0, 1].
+          const avg = (
+            scorchAt(ci,     cj,     ck    ) +
+            scorchAt(ci + 1, cj,     ck    ) +
+            scorchAt(ci,     cj + 1, ck    ) +
+            scorchAt(ci + 1, cj + 1, ck    ) +
+            scorchAt(ci,     cj,     ck + 1) +
+            scorchAt(ci + 1, cj,     ck + 1) +
+            scorchAt(ci,     cj + 1, ck + 1) +
+            scorchAt(ci + 1, cj + 1, ck + 1)
+          ) / (8 * 255);
+          const t = avg > 1 ? 1 : avg;
+          colors.push(
+            BASE_R + (BURNT_R - BASE_R) * t,
+            BASE_G + (BURNT_G - BASE_G) * t,
+            BASE_B + (BURNT_B - BASE_B) * t,
+          );
+        }
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
     }
@@ -177,9 +218,13 @@ export function buildSurfaceNetsChunk(
   }
 
   if (indices.length === 0) return null;
-  return {
+  const result: SurfaceNetsChunkMesh = {
     positions: new Float32Array(positions),
     indices: new Uint32Array(indices),
     normals: new Float32Array(normals),
   };
+  if (scorchAt && colors.length > 0) {
+    result.colors = new Float32Array(colors);
+  }
+  return result;
 }
