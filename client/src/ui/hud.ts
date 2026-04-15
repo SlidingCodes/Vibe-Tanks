@@ -14,11 +14,23 @@ const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonEl
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
 let deathCountdownInterval: ReturnType<typeof setInterval> | null = null;
+let activeRespawnCallback: (() => void) | null = null;
 
 export interface DeathScreenOptions {
   killerName?: string | null;
   killerColor?: string | null;
 }
+
+// Global spacebar handler — triggers the respawn button when the death
+// overlay is up and the cooldown is complete. Installed once.
+window.addEventListener('keydown', (ev) => {
+  if (ev.code !== 'Space' && ev.key !== ' ') return;
+  if (deathOverlay.style.display !== 'block') return;
+  if (deathRespawnBtn.disabled) return;
+  if (!activeRespawnCallback) return;
+  ev.preventDefault();
+  activeRespawnCallback();
+});
 
 /** Show the Dark-Souls-style death screen as a letterbox overlay so the
  *  killcam (rendered underneath in 3D) is visible through the middle. The
@@ -54,6 +66,7 @@ export function showDeathScreen(onRespawn: () => void, options: DeathScreenOptio
     if (deathRespawnBtn.disabled) return;
     onRespawn();
   };
+  activeRespawnCallback = onRespawn;
 }
 
 export function hideDeathScreen(): void {
@@ -61,6 +74,7 @@ export function hideDeathScreen(): void {
   deathKiller.textContent = '';
   if (deathCountdownInterval) { clearInterval(deathCountdownInterval); deathCountdownInterval = null; }
   deathRespawnBtn.onclick = null;
+  activeRespawnCallback = null;
 }
 
 export function setHealth(tank: TankState | undefined): void {

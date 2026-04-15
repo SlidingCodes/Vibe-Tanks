@@ -202,7 +202,7 @@
       background: linear-gradient(to bottom, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
     }
     #death-bottom {
-      bottom: 0; padding: 72px 16px 28px;
+      bottom: 0; padding: 72px 16px 72px;
       background: linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
     }
     #death-title {
@@ -225,7 +225,11 @@
       letter-spacing: 6px; font-style: italic; background: transparent;
       color: #9a1313; border: 1px solid rgba(154,19,19,0.6); cursor: pointer;
       text-shadow: 0 0 6px rgba(154,19,19,0.6); transition: all 0.15s;
-      pointer-events: auto;
+      pointer-events: auto; display: flex; flex-direction: column; align-items: center;
+    }
+    #death-respawn .death-respawn-hint {
+      font-size: 11px; letter-spacing: 4px; font-style: normal;
+      opacity: 0.55; margin-top: 4px;
     }
     #death-respawn:disabled { opacity: 0.25; cursor: default; }
     #death-respawn:not(:disabled):hover {
@@ -344,7 +348,10 @@
     </div>
     <div id="death-bottom">
       <div id="death-timer"></div>
-      <button id="death-respawn" disabled>SPAWN AGAIN</button>
+      <button id="death-respawn" disabled>
+        <span>SPAWN AGAIN</span>
+        <span class="death-respawn-hint">PRESS SPACE</span>
+      </button>
     </div>
   </div>
   <div id="mobile-controls">
