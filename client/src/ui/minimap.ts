@@ -1,9 +1,11 @@
-import { TerrainConfig, TerrainPatch, TankState, PlayerId } from '@shared/types/index';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { PlayerId, TankState, Vec3 } from '@shared/types/index';
 
 // Minimap with topographic contour lines. The full map is rasterised once
-// (and re-rasterised on terrain patches) into an offscreen canvas; each
-// frame we blit a circular region centred on the player into the visible
-// minimap canvas so the world appears to scroll beneath a fixed crosshair.
+// from the voxel grid's per-column surface heights, and then partially
+// refreshed around each carve. Per frame we blit a circular region centred
+// on the player into the visible minimap canvas so the world appears to
+// scroll beneath a fixed crosshair.
 
 const PX_PER_UNIT = 8;               // offscreen canvas scale
 const VIEW_RADIUS_UNITS = 24;        // world-space radius shown in the minimap
@@ -20,11 +22,24 @@ let gridH = 0;
 let cellSize = 1;
 let heights: number[] = [];
 
-export function initMinimap(config: TerrainConfig): void {
-  gridW = config.gridWidth;
-  gridH = config.gridHeight;
-  cellSize = config.cellSize;
-  heights = config.heights.slice();
+function sampleGridHeight(grid: VoxelGrid, ix: number, iz: number): number {
+  return grid.getHeight((ix + 0.5) * grid.cellSize, (iz + 0.5) * grid.cellSize);
+}
+
+function rebuildHeightsFromGrid(grid: VoxelGrid): void {
+  gridW = grid.sizeX;
+  gridH = grid.sizeZ;
+  cellSize = grid.cellSize;
+  heights = new Array(gridW * gridH);
+  for (let z = 0; z < gridH; z++) {
+    for (let x = 0; x < gridW; x++) {
+      heights[z * gridW + x] = sampleGridHeight(grid, x, z);
+    }
+  }
+}
+
+export function initMinimap(grid: VoxelGrid): void {
+  rebuildHeightsFromGrid(grid);
 
   if (!canvas) {
     canvas = document.createElement('canvas');
@@ -45,24 +60,26 @@ export function initMinimap(config: TerrainConfig): void {
   redrawFullMap();
 }
 
-export function onMinimapPatch(patch: TerrainPatch): void {
+/** Refresh the height cache for the columns touched by a carveSphere and
+ *  redraw the minimap. The carve is already committed on the grid. */
+export function onMinimapCarve(grid: VoxelGrid, center: Vec3, radius: number): void {
   if (!heights.length) return;
-  for (let pz = 0; pz < patch.height; pz++) {
-    for (let px = 0; px < patch.width; px++) {
-      const gx = patch.startX + px;
-      const gz = patch.startZ + pz;
-      if (gx < 0 || gx >= gridW || gz < 0 || gz >= gridH) continue;
-      heights[gz * gridW + gx] += (patch.heightDeltas[pz * patch.width + px] ?? 0);
+  const ixMin = Math.max(0, Math.floor((center.x - radius) / cellSize));
+  const ixMax = Math.min(gridW - 1, Math.ceil((center.x + radius) / cellSize));
+  const izMin = Math.max(0, Math.floor((center.z - radius) / cellSize));
+  const izMax = Math.min(gridH - 1, Math.ceil((center.z + radius) / cellSize));
+  for (let iz = izMin; iz <= izMax; iz++) {
+    for (let ix = ixMin; ix <= ixMax; ix++) {
+      heights[iz * gridW + ix] = sampleGridHeight(grid, ix, iz);
     }
   }
-
-  // Localise redraw to the modified patch area (plus margin for contours sampling neighbors).
+  // Localise the redraw to the carved region (+ margin for contours that
+  // sample neighbouring cells). Full-map redraw was O(map²); this is O(carve²).
   const margin = 2;
-  const x0 = Math.max(0, patch.startX - margin);
-  const x1 = Math.min(gridW - 1, patch.startX + patch.width + margin);
-  const z0 = Math.max(0, patch.startZ - margin);
-  const z1 = Math.min(gridH - 1, patch.startZ + patch.height + margin);
-
+  const x0 = Math.max(0, ixMin - margin);
+  const x1 = Math.min(gridW - 1, ixMax + margin);
+  const z0 = Math.max(0, izMin - margin);
+  const z1 = Math.min(gridH - 1, izMax + margin);
   redrawPartialMap(x0, z0, x1, z1);
 }
 

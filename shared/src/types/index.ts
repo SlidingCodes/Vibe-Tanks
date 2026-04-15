@@ -168,24 +168,11 @@ export interface TerrainSettings {
   params: TerrainGenerationParams;
 }
 
-export interface TerrainPatch {
-  startX: number;
-  startZ: number;
-  width: number;
-  height: number;
-  heightDeltas: number[];
-}
-
 export interface TerrainPresetDefinition {
   id: TerrainPresetId;
   label: string;
   description: string;
   settings: TerrainSettings;
-}
-
-export interface TerrainConfig extends TerrainSettings {
-  seed: number;
-  heights: number[];
 }
 
 // ── Active combat state ──
@@ -231,7 +218,6 @@ export interface MatchSnapshot {
   roomId: RoomId;
   phase: MatchPhase;
   tanks: TankState[];
-  terrain: TerrainConfig;
   terrainPresetId: TerrainPresetId;
   terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
@@ -246,7 +232,10 @@ export interface ShotStep {
   trajectory: Vec3[];
   endPoint: Vec3;
   eventType: ShotEventType;
-  terrainPatch: TerrainPatch | null;
+  /** True when the step's impact carves the voxel terrain. Server emits,
+   *  server + client act on it. False for non-impact events (split/bounce)
+   *  and for beams that hit a tank instead of terrain. */
+  carveTerrain: boolean;
   blastRadius: number;
   visualStyle: ShotVisualStyle;
 }

@@ -15,7 +15,7 @@ osservazioni potrebbero essere già risolte dal passaggio a collider 3D reali.
 ## Diagnosi
 
 `stepTankPhysics` (shared/src/physics.ts) campiona `sample(x, z)` =
-`voxels.getHeightInterpolated(x, z)` e ricava lo slope per finite-difference
+`voxels.getHeight(x, z)` (bilineare) e ricava lo slope per finite-difference
 su piccoli passi (`BASE_GRAD_EPS`, `BASE_TILT_SAMPLE`). Il voxel grid è
 intrinsecamente discreto: due colonne adiacenti possono differire di 1+
 unit quando ci sono crateri, e la bilineare produce una rampa su 1 cella.
@@ -24,8 +24,11 @@ La finite-difference puntuale vede slope ≥ 1:1 → scatta
 trazione, free-fall). Succede per 1-2 frame mentre il carro attraversa il
 confine → jitter laterale + stop inatteso.
 
-L'effetto era già presente su heightmap ma molto più lieve, perché lì la
-superficie era continua: il gradient non aveva discontinuità.
+L'effetto era già presente nella vecchia implementazione heightmap (ora
+rimossa) ma molto più lieve, perché lì la superficie era continua: il
+gradient non aveva discontinuità. Oggi tutto il terreno è voxel
+(`VoxelGrid` seedato da `createTerrainHeightSampler`) — l'heightmap non
+esiste più come codice.
 
 ## Opzioni se V4 non basta
 

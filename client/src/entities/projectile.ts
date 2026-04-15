@@ -5,7 +5,6 @@ import {
   HazardState,
   ShotResult,
   ShotStep,
-  TerrainPatch,
   Vec3,
 } from '@shared/types/index';
 
@@ -24,8 +23,6 @@ interface ActiveShotStep {
   eventType: ShotStep['eventType'];
   blastRadius: number;
   visualStyle: ShotStep['visualStyle'];
-  terrainPatch: TerrainPatch | null;
-  onComplete: (patch: TerrainPatch | null) => void;
   started: boolean;
   colorOverride: number | null;
 }
@@ -325,7 +322,6 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
 export function playShotAnimation(
   result: ShotResult,
   scene: THREE.Scene,
-  callback: (patch: TerrainPatch | null) => void,
 ): void {
   const tm = getAllTankMeshes().get(result.shooterId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
@@ -344,8 +340,6 @@ export function playShotAnimation(
       eventType: step.eventType,
       blastRadius: step.blastRadius,
       visualStyle: step.visualStyle,
-      terrainPatch: step.terrainPatch,
-      onComplete: callback,
       started: false,
       colorOverride,
     });
@@ -674,7 +668,6 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
       } else {
         showExplosion(step, scene);
       }
-      step.onComplete(step.terrainPatch);
       shots.splice(i, 1);
       continue;
     }

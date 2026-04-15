@@ -1,4 +1,5 @@
 import { Vec3, VoxelSnapshot } from '../types/index';
+import type { TerrainHeightSampler } from '../terrain';
 
 export interface VoxelGridOptions {
   sizeX: number;
@@ -7,14 +8,6 @@ export interface VoxelGridOptions {
   cellSize: number;
   /** World-Y of the grid's bottom (in cell units, can be negative). Default 0. */
   minYCells?: number;
-}
-
-/** Minimal heightmap surface sampler shape. Satisfied by the server Heightmap class. */
-export interface HeightmapSampler {
-  readonly width: number;
-  readonly height: number;
-  readonly cellSize: number;
-  getHeight(wx: number, wz: number): number;
 }
 
 /**
@@ -108,21 +101,18 @@ export class VoxelGrid {
   }
 
   /**
-   * Seed densities from a heightmap sampler. The density at voxel (ix,iy,iz)
+   * Seed densities from a 2D noise sampler. The density at voxel (ix,iy,iz)
    * represents the scalar field sampled at the CELL CENTER
    * ((ix+0.5)*cs, (iy+0.5+minY)*cs, (iz+0.5)*cs). Signed distance to the
    * surface is scaled into [0, 255] with the threshold at 128.
-   * This convention keeps cuberille looking like the old binary seed (cells
-   * with center below the surface are solid) while still letting SN read a
-   * smooth density gradient.
    */
-  seedFromHeightmap(heightmap: HeightmapSampler): void {
+  seedFromNoise(sampler: TerrainHeightSampler): void {
     const cs = this.cellSize;
     for (let iz = 0; iz < this.sizeZ; iz++) {
       const wz = (iz + 0.5) * cs;
       for (let ix = 0; ix < this.sizeX; ix++) {
         const wx = (ix + 0.5) * cs;
-        const h = heightmap.getHeight(wx, wz);
+        const h = sampler.sample(wx, wz);
         for (let iy = 0; iy < this.sizeY; iy++) {
           const worldY = (this.minYCells + iy + 0.5) * cs;
           const signed = (h - worldY) * DENSITY_SCALE + DENSITY_THRESHOLD;
@@ -131,6 +121,56 @@ export class VoxelGrid {
         }
       }
     }
+  }
+
+  /** Grid-width alias so VoxelGrid satisfies the SimulationTerrain shape. */
+  get width(): number { return this.sizeX; }
+  /** Grid-depth alias (Z). Named `height` for SimulationTerrain compatibility. */
+  get height(): number { return this.sizeZ; }
+
+  /** Finite-difference surface normal of the voxel-carved terrain, sampled
+   *  via the same bilinear getHeight so it matches what shells actually
+   *  collide with. */
+  getSurfaceNormal(wx: number, wz: number): Vec3 {
+    const step = this.cellSize;
+    const hx0 = this.getHeight(wx - step, wz);
+    const hx1 = this.getHeight(wx + step, wz);
+    const hz0 = this.getHeight(wx, wz - step);
+    const hz1 = this.getHeight(wx, wz + step);
+    const nx = hx0 - hx1;
+    const ny = 2 * step;
+    const nz = hz0 - hz1;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    return { x: nx / len, y: ny / len, z: nz / len };
+  }
+
+  /** |∇h| — central differences in world units. Used as a spawn heuristic. */
+  getSlopeMagnitude(wx: number, wz: number): number {
+    const step = this.cellSize;
+    const hE = this.getHeight(wx + step, wz);
+    const hW = this.getHeight(wx - step, wz);
+    const hN = this.getHeight(wx, wz + step);
+    const hS = this.getHeight(wx, wz - step);
+    const dhx = (hE - hW) / (2 * step);
+    const dhz = (hN - hS) / (2 * step);
+    return Math.sqrt(dhx * dhx + dhz * dhz);
+  }
+
+  /** Max-minus-min height over a 9-point rosette around (wx, wz). */
+  getLocalRelief(wx: number, wz: number, radius: number): number {
+    const r = radius;
+    const offsets: Array<[number, number]> = [
+      [0, 0], [r, 0], [-r, 0], [0, r], [0, -r],
+      [r, r], [r, -r], [-r, r], [-r, -r],
+    ];
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (const [dx, dz] of offsets) {
+      const h = this.getHeight(wx + dx, wz + dz);
+      if (h < minH) minH = h;
+      if (h > maxH) maxH = h;
+    }
+    return maxH - minH;
   }
 
   /**
@@ -299,16 +339,12 @@ export class VoxelGrid {
     return this.minYCells * this.cellSize;
   }
 
-  /** World-space surface height at (wx, wz), nearest column. */
+  /** World-space surface height at (wx, wz). Bilinear-interpolated across
+   *  the 4 neighbouring columns so shell trajectories, tank physics and the
+   *  trajectory preview all sample the same smooth surface the Surface Nets
+   *  mesh renders. The per-column crossing is an implementation detail kept
+   *  private (`columnTopHeight`). */
   getHeight(wx: number, wz: number): number {
-    return this.columnTopHeight(
-      Math.round(wx / this.cellSize),
-      Math.round(wz / this.cellSize),
-    );
-  }
-
-  /** Bilinear-interpolated surface height for smooth tank physics. */
-  getHeightInterpolated(wx: number, wz: number): number {
     const fx = wx / this.cellSize;
     const fz = wz / this.cellSize;
     const x0 = Math.floor(fx);
