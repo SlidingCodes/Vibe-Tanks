@@ -33,6 +33,7 @@ import { WEAPONS } from '../../../shared/src/weapons';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
 import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
 import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
+import { TerrainSampler } from '../terrain/TerrainSampler';
 import {
   DamageTotals,
   applyImpact,
@@ -109,6 +110,11 @@ export class Room {
    *  voxel grid. Not yet consumed by tank physics — tanks still run through
    *  stepTankPhysics kinematically. V4b will swap them onto Rapier bodies. */
   physics: RapierVoxelWorld;
+  /** Heightmap-shaped facade fed to Simulation. Routes height/normal samples
+   *  through the voxel grid so shell trajectories match what the tank rides
+   *  on (and what the client previews). Crater patches still go through the
+   *  heightmap so the legacy mesh keeps updating. */
+  private terrainSampler: TerrainSampler;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -143,6 +149,7 @@ export class Room {
     this.voxels.seedFromHeightmap(this.heightmap);
     this.logVoxelSanityCheck('initial seed');
     this.physics = new RapierVoxelWorld(this.voxels);
+    this.terrainSampler = new TerrainSampler(this.heightmap, this.voxels);
     this.scheduleReset();
   }
 
@@ -406,7 +413,7 @@ export class Room {
           const result = simulateShot(
             tank,
             weapon,
-            this.heightmap,
+            this.terrainSampler,
             Array.from(this.tanks.values()),
           );
           this.scheduleShotResult(result, tank.playerId, weapon.id);
@@ -525,7 +532,7 @@ export class Room {
   }
 
   private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const plan = planDrillShot(tank, weapon, this.heightmap);
+    const plan = planDrillShot(tank, weapon, this.terrainSampler);
     this.io.to(this.id).emit('shot_resolved', plan.entryResult);
 
     if (!plan.didImpact) return;
@@ -546,9 +553,9 @@ export class Room {
   }
 
   private fireNapalm(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
+    const segment = simulateSegment(startPos, startVel, this.terrainSampler);
     const damageTotals: DamageTotals = new Map();
     const terrainPatch = segment.reason === 'impact'
       ? applyImpact({
@@ -556,7 +563,7 @@ export class Room {
           blastRadius: weapon.blastRadius,
           damage: weapon.damage,
           terrainDamage: weapon.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals)
+        }, this.terrainSampler, this.getTankList(), damageTotals)
       : null;
 
     const result = createShotResult(tank.playerId, weapon.id, [
@@ -595,7 +602,7 @@ export class Room {
 
   private fireSeeker(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const projectileId = `proj_${this.nextProjectileId++}`;
-    const position = createMuzzlePosition(tank, this.heightmap);
+    const position = createMuzzlePosition(tank, this.terrainSampler);
     const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
     const projectile: ActiveProjectileRuntime = {
       projectileId,
@@ -617,9 +624,9 @@ export class Room {
   }
 
   private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const fallback = simulateSegment(startPos, startVel, this.heightmap).endPoint;
+    const fallback = simulateSegment(startPos, startVel, this.terrainSampler).endPoint;
     const center = aimPoint
       ? { x: aimPoint.x, y: this.heightmap.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
       : fallback;
@@ -674,9 +681,9 @@ export class Room {
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const segment = simulateSegment(startPos, startVel, this.heightmap);
+    const segment = simulateSegment(startPos, startVel, this.terrainSampler);
 
     const result = createShotResult(tank.playerId, weapon.id, [
       makeStep(0, segment.trajectory, segment.endPoint, 'impact', null, 0, 'mine_deploy'),
@@ -886,7 +893,7 @@ export class Room {
           blastRadius: projectile.blastRadius,
           damage: projectile.damage,
           terrainDamage: projectile.terrainDamage,
-        }, this.heightmap, this.getTankList(), damageTotals);
+        }, this.terrainSampler, this.getTankList(), damageTotals);
 
         const result = createShotResult(projectile.ownerId, projectile.weaponId, [
           makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', terrainPatch, projectile.blastRadius, 'seeker'),
@@ -924,7 +931,7 @@ export class Room {
               blastRadius: hazard.blastRadius,
               damage: hazard.damage,
               terrainDamage: hazard.terrainDamage,
-            }, this.heightmap, this.getTankList(), damageTotals);
+            }, this.terrainSampler, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', terrainPatch, damageTotals);
             this.activeHazards.delete(hazardId);
             this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
@@ -950,7 +957,7 @@ export class Room {
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
-      }, this.heightmap, this.getTankList(), damageTotals);
+      }, this.terrainSampler, this.getTankList(), damageTotals);
 
       if (strike.kind === 'mortar') {
         const start = {

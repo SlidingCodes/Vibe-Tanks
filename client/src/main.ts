@@ -175,7 +175,11 @@ let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let cuberilleVisible = false;
-let surfaceNetsVisible = false;
+// Surface nets is the visible default — tanks ride on the SN-derived TriMesh,
+// shell trajectories sample the same surface, so the player should see what
+// physics is actually using. Press B to toggle it off and reveal the legacy
+// heightmap mesh underneath.
+let surfaceNetsVisible = true;
 
 function syncHeightmapVisibility(): void {
   const hmMesh = getTerrainMesh();
