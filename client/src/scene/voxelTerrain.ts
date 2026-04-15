@@ -64,6 +64,7 @@ function buildChunkGeometry(
   geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geom.setIndex(indices);
+  geom.computeBoundingSphere();
   return geom;
 }
 

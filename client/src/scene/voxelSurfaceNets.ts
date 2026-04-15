@@ -16,6 +16,10 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
     geom.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
   }
   geom.setIndex(new THREE.BufferAttribute(data.indices, 1));
+  // Explicit bounding sphere so Three.js can frustum-cull this chunk when
+  // it's behind the camera. Without it, three recomputes on each pass but
+  // the tight per-chunk bound is cheaper than assuming the whole world.
+  geom.computeBoundingSphere();
   return geom;
 }
 
