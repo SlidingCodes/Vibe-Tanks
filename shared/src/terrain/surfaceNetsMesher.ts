@@ -46,14 +46,30 @@ export interface SurfaceNetsOptions {
   elevationRange?: { min: number; max: number };
 }
 
+// Three.js (color management on, default since r152) treats BufferAttribute
+// vertex colours as linear-space. The heightmap renderer on main built its
+// palette via THREE.Color(hex), which performs the sRGB→linear decode for
+// us; doing the math by hand here keeps the shared mesher THREE-free while
+// still matching the original look.
+function sRGBToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function srgbHex(hex: number): [number, number, number] {
+  return [
+    sRGBToLinear(((hex >> 16) & 0xff) / 255),
+    sRGBToLinear(((hex >> 8) & 0xff) / 255),
+    sRGBToLinear((hex & 0xff) / 255),
+  ];
+}
+
 // Heightmap-style elevation palette (matches client/scene/terrain.ts).
-const LOW_R  = 0x7b / 255, LOW_G  = 0x7b / 255, LOW_B  = 0x7b / 255; // gray
-const MID_R  = 0x7a / 255, MID_G  = 0x59 / 255, MID_B  = 0x37 / 255; // brown
-const HIGH_R = 0x5f / 255, HIGH_G = 0x9b / 255, HIGH_B = 0x45 / 255; // green
+const [LOW_R,   LOW_G,   LOW_B  ] = srgbHex(0x7b7b7b); // gray
+const [MID_R,   MID_G,   MID_B  ] = srgbHex(0x7a5937); // brown
+const [HIGH_R,  HIGH_G,  HIGH_B ] = srgbHex(0x5f9b45); // green
 // Fallback dirt tone if no elevation range is supplied.
-const BASE_R = 0x9c / 255, BASE_G = 0x6a / 255, BASE_B = 0x38 / 255;
+const [BASE_R,  BASE_G,  BASE_B ] = srgbHex(0x9c6a38);
 // Target at full scorch — near black for clean burn rings.
-const BURNT_R = 0x08 / 255, BURNT_G = 0x05 / 255, BURNT_B = 0x03 / 255;
+const [BURNT_R, BURNT_G, BURNT_B] = srgbHex(0x080503);
 
 function smoothStep01(t: number): number {
   const c = t < 0 ? 0 : t > 1 ? 1 : t;
