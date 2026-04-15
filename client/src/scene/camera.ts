@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getTerrainHeight } from './terrain';
 
 let camera: THREE.PerspectiveCamera;
 let shakeTimeRemaining = 0;
@@ -6,6 +7,12 @@ let shakeDuration = 0;
 let shakeStrength = 0;
 let followInitialized = false;
 const smoothedTankPos = new THREE.Vector3();
+let smoothedBoomDistance = 0;
+
+const COLLISION_SAMPLES = 10;
+const COLLISION_CLEARANCE = 1.2;
+const COLLISION_PULL_IN = 0.6;
+const MIN_BOOM_DISTANCE = 2.8;
 
 export type CameraPresetId = 'classic' | 'wide' | 'tactical';
 
@@ -47,6 +54,7 @@ export function createCamera(): THREE.PerspectiveCamera {
   camera.position.set(32, 30, 50);
   camera.lookAt(32, 0, 32);
   smoothedTankPos.set(32, 0, 32);
+  smoothedBoomDistance = 0;
   followInitialized = false;
 
   window.addEventListener('resize', () => {
@@ -72,6 +80,27 @@ export function updateCameraScale(terrainWidth: number, terrainHeight: number): 
   camera.updateProjectionMatrix();
 }
 
+/** Find the farthest safe boom distance along (origin → far point) that keeps
+ *  the camera above the terrain. Samples along the ray; returns a clamped
+ *  distance, never shorter than MIN_BOOM_DISTANCE. */
+function raycastBoomAgainstTerrain(
+  origin: THREE.Vector3,
+  dir: THREE.Vector3,
+  maxDist: number,
+): number {
+  for (let i = 1; i <= COLLISION_SAMPLES; i++) {
+    const t = (i / COLLISION_SAMPLES) * maxDist;
+    const px = origin.x + dir.x * t;
+    const py = origin.y + dir.y * t;
+    const pz = origin.z + dir.z * t;
+    const floor = getTerrainHeight(px, pz) + COLLISION_CLEARANCE;
+    if (py < floor) {
+      return Math.max(MIN_BOOM_DISTANCE, t - COLLISION_PULL_IN);
+    }
+  }
+  return maxDist;
+}
+
 /** Follow a tank in third-person: behind and above, looking at it */
 export function followTank(
   tankPos: THREE.Vector3,
@@ -82,6 +111,7 @@ export function followTank(
 
   if (!followInitialized) {
     smoothedTankPos.copy(tankPos);
+    smoothedBoomDistance = p.offset.length();
     followInitialized = true;
   }
 
@@ -92,8 +122,20 @@ export function followTank(
   smoothedTankPos.y += (tankPos.y - smoothedTankPos.y) * verticalBlend;
 
   const rotated = p.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
-  const desired = smoothedTankPos.clone().add(rotated);
+  const boomFullLength = rotated.length();
+  const boomDir = rotated.clone().divideScalar(boomFullLength);
   const lookTarget = smoothedTankPos.clone().add(p.lookOffset);
+
+  const safeDistance = raycastBoomAgainstTerrain(lookTarget, boomDir, boomFullLength);
+
+  // Fast push-in when terrain pinches the boom, slower ease-out when it clears
+  // — avoids clipping through walls while keeping the release smooth.
+  const boomBlend = safeDistance < smoothedBoomDistance
+    ? 1 - Math.exp(-22 * dt)
+    : 1 - Math.exp(-5 * dt);
+  smoothedBoomDistance += (safeDistance - smoothedBoomDistance) * boomBlend;
+
+  const desired = lookTarget.clone().addScaledVector(boomDir, smoothedBoomDistance);
   const shakeOffset = new THREE.Vector3();
   const lookShakeOffset = new THREE.Vector3();
 
@@ -115,6 +157,12 @@ export function followTank(
 
   camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
   camera.position.add(shakeOffset);
+
+  // Safety net: after lerp+shake, hard-clamp against terrain so we never end
+  // up inside a wall mid-transition.
+  const floor = getTerrainHeight(camera.position.x, camera.position.z) + COLLISION_CLEARANCE;
+  if (camera.position.y < floor) camera.position.y = floor;
+
   camera.lookAt(lookTarget.add(lookShakeOffset));
 }
 
@@ -136,6 +184,7 @@ export function overviewCamera(terrainWidth: number, terrainHeight: number): voi
   );
   camera.lookAt(centerX, 0, centerZ);
   smoothedTankPos.set(centerX, 0, centerZ);
+  smoothedBoomDistance = 0;
   followInitialized = false;
 }
 
