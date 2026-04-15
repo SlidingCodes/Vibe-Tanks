@@ -28,6 +28,9 @@ export interface SurfaceNetsHandle {
   dispose(): void;
   rebuild(grid: VoxelGrid, scorch?: VoxelScorch): void;
   invalidateSphere(center: Vec3, radius: number): void;
+  /** Rebuild all chunks dirtied since the last flush. Call once per frame
+   *  before renderer.render() to batch multiple same-frame invalidations. */
+  flushDirtyChunks(): void;
   setVisible(v: boolean): void;
 }
 
@@ -71,6 +74,7 @@ export function createSurfaceNetsTerrain(
   scene.add(group);
 
   const chunks = new Map<string, THREE.Mesh>();
+  const dirtyChunks = new Set<string>();
   let activeGrid = grid;
   let activeScorch = scorch;
   let activeElevation = computeElevationRange(grid);
@@ -160,13 +164,25 @@ export function createSurfaceNetsTerrain(
     const cizMin = Math.max(0, Math.floor(izMin / CHUNK_SIZE));
     const cizMax = Math.min(nz - 1, Math.floor(izMax / CHUNK_SIZE));
 
+    // Mark dirty — don't rebuild here. flushDirtyChunks() rebuilds each
+    // affected chunk exactly once per frame, even if multiple explosions hit
+    // the same chunk within the same frame.
     for (let cx = cixMin; cx <= cixMax; cx++) {
       for (let cy = ciyMin; cy <= ciyMax; cy++) {
         for (let cz = cizMin; cz <= cizMax; cz++) {
-          setChunkMesh(cx, cy, cz);
+          dirtyChunks.add(chunkKey(cx, cy, cz));
         }
       }
     }
+  }
+
+  function flushDirtyChunks(): void {
+    if (dirtyChunks.size === 0) return;
+    for (const key of dirtyChunks) {
+      const [cx, cy, cz] = key.split(',').map(Number) as [number, number, number];
+      setChunkMesh(cx, cy, cz);
+    }
+    dirtyChunks.clear();
   }
 
   return {
@@ -177,9 +193,11 @@ export function createSurfaceNetsTerrain(
       scene.remove(group);
     },
     rebuild(g: VoxelGrid, s?: VoxelScorch): void {
+      dirtyChunks.clear();
       rebuildAll(g, s);
     },
     invalidateSphere,
+    flushDirtyChunks,
     setVisible(v: boolean): void {
       group.visible = v;
     },

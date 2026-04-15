@@ -20,6 +20,7 @@ import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
+import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
@@ -325,7 +326,10 @@ socket.on('shot_resolved', (result) => {
         // single hit saturates enough voxels for the 8-corner average at
         // SN vertices to read cleanly.
         scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
-        cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        // Only invalidate cuberille chunks when that view is actually visible.
+        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        // Mark surface-nets chunks dirty — flushDirtyChunks() rebuilds them
+        // once per frame before render, even if multiple missiles land this frame.
         sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
         onMinimapCarve(grid, step.endPoint, step.blastRadius);
       }, carveDelay * 1000);
@@ -405,6 +409,7 @@ function animate(): void {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
   const now = clock.getElapsedTime();
+  tickFpsCounter(dt);
 
   const requestedWeaponSlot = consumeWeaponSlot();
   if (requestedWeaponSlot !== null) {
@@ -573,8 +578,10 @@ function animate(): void {
 
   voxelDebris?.update(dt, voxelGrid);
 
+  surfaceNets?.flushDirtyChunks();
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }
 
+initFpsCounter();
 animate();

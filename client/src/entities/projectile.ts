@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getAllTankMeshes } from './tank';
 import {
   ActiveProjectileState,
   HazardState,
@@ -23,6 +24,7 @@ interface ActiveShotStep {
   blastRadius: number;
   visualStyle: ShotStep['visualStyle'];
   started: boolean;
+  colorOverride: number | null;
 }
 
 interface VisualSpec {
@@ -46,6 +48,7 @@ interface ReplicatedProjectileVisual {
   targetPosition: THREE.Vector3;
   velocity: Vec3;
   visualStyle: ShotStep['visualStyle'];
+  colorOverride: number | null;
 }
 
 interface HazardVisual {
@@ -57,13 +60,14 @@ interface HazardVisual {
   armed: boolean;
   timeRemaining: number;
   pulse: number;
+  colorOverride: number | null;
 }
 
 const shots: ActiveShotStep[] = [];
 const replicatedProjectiles = new Map<string, ReplicatedProjectileVisual>();
 const hazardVisuals = new Map<string, HazardVisual>();
 
-function getVisualSpec(style: ShotStep['visualStyle']): VisualSpec {
+function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
   switch (style) {
     case 'big_blast':
       return {
@@ -237,6 +241,18 @@ function getVisualSpec(style: ShotStep['visualStyle']): VisualSpec {
   }
 }
 
+function getVisualSpec(style: ShotStep['visualStyle'], colorOverride: number | null = null): VisualSpec {
+  const spec = getVisualSpecBase(style);
+  if (colorOverride !== null) {
+    spec.projectileColor = colorOverride;
+    spec.emissiveColor = colorOverride;
+    spec.trailColor = colorOverride;
+    spec.pathColor = colorOverride;
+    spec.explosionColor = colorOverride;
+  }
+  return spec;
+}
+
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   if (Array.isArray(material)) {
     material.forEach((item) => item.dispose());
@@ -256,7 +272,7 @@ function disposeObject(obj: THREE.Object3D, scene: THREE.Scene): void {
 }
 
 function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void {
-  const spec = getVisualSpec(step.visualStyle);
+  const spec = getVisualSpec(step.visualStyle, step.colorOverride);
 
   if (step.visualStyle !== 'rail') {
     const geo = new THREE.SphereGeometry(spec.projectileRadius, 10, 10);
@@ -307,6 +323,9 @@ export function playShotAnimation(
   result: ShotResult,
   scene: THREE.Scene,
 ): void {
+  const tm = getAllTankMeshes().get(result.shooterId);
+  const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
+
   for (const step of result.steps) {
     shots.push({
       mesh: null,
@@ -322,6 +341,7 @@ export function playShotAnimation(
       blastRadius: step.blastRadius,
       visualStyle: step.visualStyle,
       started: false,
+      colorOverride,
     });
   }
 }
@@ -361,7 +381,7 @@ function disposeStep(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
-  const spec = getVisualSpec(step.visualStyle);
+  const spec = getVisualSpec(step.visualStyle, step.colorOverride);
   const baseRadius = Math.max(0.7, step.blastRadius * spec.explosionScale);
   const geo = new THREE.SphereGeometry(baseRadius, 16, 16);
   const mat = new THREE.MeshBasicMaterial({ color: spec.explosionColor, transparent: true, opacity: 0.88 });
@@ -386,8 +406,9 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
+  const color = step.colorOverride !== null ? step.colorOverride : 0x88ddff;
   const geo = new THREE.SphereGeometry(0.45, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x88ddff, transparent: true, opacity: 0.85 });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(step.endPoint.x, step.endPoint.y, step.endPoint.z);
   scene.add(mesh);
@@ -409,8 +430,9 @@ function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showBounceFlash(step: ActiveShotStep, scene: THREE.Scene): void {
+  const color = step.colorOverride !== null ? step.colorOverride : 0xffe178;
   const geo = new THREE.SphereGeometry(0.35, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffe178, transparent: true, opacity: 0.8 });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(step.endPoint.x, step.endPoint.y, step.endPoint.z);
   scene.add(mesh);
@@ -432,7 +454,8 @@ function showBounceFlash(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showDeployFlash(step: ActiveShotStep, scene: THREE.Scene): void {
-  const color = step.visualStyle === 'drill_entry' ? 0x6b5848 : 0xbff071;
+  const defaultColor = step.visualStyle === 'drill_entry' ? 0x6b5848 : 0xbff071;
+  const color = step.colorOverride !== null ? step.colorOverride : defaultColor;
   const geo = new THREE.RingGeometry(0.18, 0.4, 16);
   const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
@@ -457,7 +480,9 @@ function showDeployFlash(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.Scene): ReplicatedProjectileVisual {
-  const spec = getVisualSpec(state.visualStyle);
+  const tm = getAllTankMeshes().get(state.ownerId);
+  const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
+  const spec = getVisualSpec(state.visualStyle, colorOverride);
   const geo = new THREE.SphereGeometry(Math.max(0.12, spec.projectileRadius * 0.9), 10, 10);
   const mat = new THREE.MeshStandardMaterial({
     color: spec.projectileColor,
@@ -490,10 +515,14 @@ function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.S
     targetPosition: new THREE.Vector3(state.position.x, state.position.y, state.position.z),
     velocity: state.velocity,
     visualStyle: state.visualStyle,
+    colorOverride,
   };
 }
 
 function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisual {
+  const tm = getAllTankMeshes().get(hazard.ownerId);
+  const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
+
   const group = new THREE.Group();
   group.position.set(hazard.position.x, hazard.position.y + 0.05, hazard.position.z);
 
@@ -541,6 +570,7 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
     armed: hazard.armed,
     timeRemaining: hazard.timeRemaining,
     pulse: 0,
+    colorOverride,
   };
 }
 
@@ -708,12 +738,14 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         coreMat.opacity = 0.35 + Math.sin(visual.pulse * 8) * 0.1;
       }
     } else if (visual.type === 'mine') {
-      ringMat.color.setHex(visual.armed ? 0xffd84d : 0xbef26f);
+      const activeColor = visual.colorOverride !== null ? visual.colorOverride : 0xffd84d;
+      const activeCoreColor = visual.colorOverride !== null ? visual.colorOverride : 0xff8f2a;
+      ringMat.color.setHex(visual.armed ? activeColor : 0xbef26f);
       ringMat.opacity = visual.armed ? 0.78 : 0.42;
       visual.ring.rotation.z += dt * 1.8;
       if (visual.core) {
         const coreMat = visual.core.material as THREE.MeshBasicMaterial;
-        coreMat.color.setHex(visual.armed ? 0xff8f2a : 0x82b84a);
+        coreMat.color.setHex(visual.armed ? activeCoreColor : 0x82b84a);
         coreMat.opacity = visual.armed ? 0.95 : 0.75;
       }
     } else {
