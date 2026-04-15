@@ -47,8 +47,11 @@ const PRESETS: Record<CameraPresetId, CameraPreset> = {
   },
 };
 
-const FPV_EYE_HEIGHT = 1.55;
-const FPV_FORWARD_OFFSET = 0.35;
+// Commander/gunner perch: sit above and behind the turret pivot (y=0.8) so
+// the barrel is plainly visible in the lower half of the view and sweeps
+// with turret yaw — Battlefield-style.
+const FPV_EYE_HEIGHT = 1.75;
+const FPV_BACK_OFFSET = 1.15;
 
 let currentPreset: CameraPresetId = 'wide';
 
@@ -206,9 +209,9 @@ function followTankFirstPerson(
   const cp = Math.cos(barrelPitch);
   const sp = Math.sin(barrelPitch);
 
-  const eyeX = tankPos.x + sy * FPV_FORWARD_OFFSET;
+  const eyeX = tankPos.x - sy * FPV_BACK_OFFSET;
   const eyeY = tankPos.y + FPV_EYE_HEIGHT;
-  const eyeZ = tankPos.z + cy * FPV_FORWARD_OFFSET;
+  const eyeZ = tankPos.z - cy * FPV_BACK_OFFSET;
 
   const dirX = sy * cp;
   const dirY = sp;
