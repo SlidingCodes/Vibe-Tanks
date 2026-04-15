@@ -17,7 +17,7 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } f
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, createCamera, followTank, isFirstPerson, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
@@ -575,7 +575,14 @@ function animate(): void {
 
     const cooldownProgress = Math.min(1, (now - lastFireTime) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
-    followTank(myTankMesh.group.position, predictedState.bodyRotation, dt);
+    followTank(
+      myTankMesh.group.position,
+      predictedState.bodyRotation,
+      dt,
+      predictedState.turretRotation,
+      predictedState.barrelPitch,
+    );
+    if (isFirstPerson()) myTankMesh.group.visible = false;
   } else {
     hideTrajectoryPreview();
   }

@@ -14,6 +14,7 @@ const PRESETS: { id: CameraPresetId; label: string }[] = [
   { id: 'classic', label: 'Classic' },
   { id: 'wide', label: 'Wide FOV' },
   { id: 'tactical', label: 'Tactical' },
+  { id: 'first_person', label: 'First Person' },
 ];
 
 export function setupSettingsMenu(): void {

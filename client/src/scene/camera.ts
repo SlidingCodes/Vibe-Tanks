@@ -14,12 +14,13 @@ const COLLISION_CLEARANCE = 1.2;
 const COLLISION_PULL_IN = 0.6;
 const MIN_BOOM_DISTANCE = 2.8;
 
-export type CameraPresetId = 'classic' | 'wide' | 'tactical';
+export type CameraPresetId = 'classic' | 'wide' | 'tactical' | 'first_person';
 
 interface CameraPreset {
   fov: number;
   offset: THREE.Vector3;
   lookOffset: THREE.Vector3;
+  fpv?: boolean;
 }
 
 const PRESETS: Record<CameraPresetId, CameraPreset> = {
@@ -38,7 +39,16 @@ const PRESETS: Record<CameraPresetId, CameraPreset> = {
     offset: new THREE.Vector3(0, 15, -19),
     lookOffset: new THREE.Vector3(0, 1.5, 0),
   },
+  first_person: {
+    fov: 82,
+    offset: new THREE.Vector3(0, 0, 0),
+    lookOffset: new THREE.Vector3(0, 0, 0),
+    fpv: true,
+  },
 };
+
+const FPV_EYE_HEIGHT = 1.55;
+const FPV_FORWARD_OFFSET = 0.35;
 
 let currentPreset: CameraPresetId = 'wide';
 
@@ -66,8 +76,13 @@ export function createCamera(): THREE.PerspectiveCamera {
 }
 
 export function setCameraPreset(id: CameraPresetId): void {
+  if (id !== currentPreset) followInitialized = false;
   currentPreset = id;
   applyProjection();
+}
+
+export function isFirstPerson(): boolean {
+  return PRESETS[currentPreset].fpv === true;
 }
 
 export function getCameraPreset(): CameraPresetId {
@@ -101,13 +116,41 @@ function raycastBoomAgainstTerrain(
   return maxDist;
 }
 
+function computeShake(
+  dt: number,
+  shake: THREE.Vector3,
+  lookShake: THREE.Vector3,
+): void {
+  if (shakeTimeRemaining <= 0 || shakeDuration <= 0 || shakeStrength <= 0) return;
+  shakeTimeRemaining = Math.max(0, shakeTimeRemaining - dt);
+  const falloff = shakeTimeRemaining / shakeDuration;
+  const amount = shakeStrength * falloff;
+  shake.set(
+    (Math.random() * 2 - 1) * amount,
+    (Math.random() * 2 - 1) * amount * 0.55,
+    (Math.random() * 2 - 1) * amount,
+  );
+  lookShake.set(
+    (Math.random() * 2 - 1) * amount * 0.2,
+    (Math.random() * 2 - 1) * amount * 0.12,
+    (Math.random() * 2 - 1) * amount * 0.2,
+  );
+}
+
 /** Follow a tank in third-person: behind and above, looking at it */
 export function followTank(
   tankPos: THREE.Vector3,
   bodyRotation: number,
   dt: number,
+  turretRotation?: number,
+  barrelPitch?: number,
 ): void {
   const p = PRESETS[currentPreset];
+
+  if (p.fpv) {
+    followTankFirstPerson(tankPos, turretRotation ?? bodyRotation, barrelPitch ?? 0, dt);
+    return;
+  }
 
   if (!followInitialized) {
     smoothedTankPos.copy(tankPos);
@@ -138,22 +181,7 @@ export function followTank(
   const desired = lookTarget.clone().addScaledVector(boomDir, smoothedBoomDistance);
   const shakeOffset = new THREE.Vector3();
   const lookShakeOffset = new THREE.Vector3();
-
-  if (shakeTimeRemaining > 0 && shakeDuration > 0 && shakeStrength > 0) {
-    shakeTimeRemaining = Math.max(0, shakeTimeRemaining - dt);
-    const falloff = shakeTimeRemaining / shakeDuration;
-    const amount = shakeStrength * falloff;
-    shakeOffset.set(
-      (Math.random() * 2 - 1) * amount,
-      (Math.random() * 2 - 1) * amount * 0.55,
-      (Math.random() * 2 - 1) * amount,
-    );
-    lookShakeOffset.set(
-      (Math.random() * 2 - 1) * amount * 0.2,
-      (Math.random() * 2 - 1) * amount * 0.12,
-      (Math.random() * 2 - 1) * amount * 0.2,
-    );
-  }
+  computeShake(dt, shakeOffset, lookShakeOffset);
 
   camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
   camera.position.add(shakeOffset);
@@ -164,6 +192,40 @@ export function followTank(
   if (camera.position.y < floor) camera.position.y = floor;
 
   camera.lookAt(lookTarget.add(lookShakeOffset));
+}
+
+/** Gunner's-seat view: eye above the turret, looking along the barrel. */
+function followTankFirstPerson(
+  tankPos: THREE.Vector3,
+  turretRotation: number,
+  barrelPitch: number,
+  dt: number,
+): void {
+  const cy = Math.cos(turretRotation);
+  const sy = Math.sin(turretRotation);
+  const cp = Math.cos(barrelPitch);
+  const sp = Math.sin(barrelPitch);
+
+  const eyeX = tankPos.x + sy * FPV_FORWARD_OFFSET;
+  const eyeY = tankPos.y + FPV_EYE_HEIGHT;
+  const eyeZ = tankPos.z + cy * FPV_FORWARD_OFFSET;
+
+  const dirX = sy * cp;
+  const dirY = sp;
+  const dirZ = cy * cp;
+
+  const shakeOffset = new THREE.Vector3();
+  const lookShakeOffset = new THREE.Vector3();
+  computeShake(dt, shakeOffset, lookShakeOffset);
+
+  camera.position.set(eyeX + shakeOffset.x, eyeY + shakeOffset.y, eyeZ + shakeOffset.z);
+
+  const lookDist = 40;
+  camera.lookAt(
+    eyeX + dirX * lookDist + lookShakeOffset.x,
+    eyeY + dirY * lookDist + lookShakeOffset.y,
+    eyeZ + dirZ * lookDist + lookShakeOffset.z,
+  );
 }
 
 export function addImpactCameraShake(intensity: number, duration = 0.22): void {
