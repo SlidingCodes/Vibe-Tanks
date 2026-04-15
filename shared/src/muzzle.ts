@@ -53,28 +53,6 @@ export function computeMuzzle(tank: TankState): MuzzleTransform {
   };
 }
 
-/**
- * Shell spawn transform: `computeMuzzle` plus a "don't spawn the shell
- * inside the ground" clearance. If the barrel tip dips below terrain+clearance
- * (shooting out of a crater, body tilted down a slope), the origin Y is
- * lifted up to terrain+clearance while direction and XZ are preserved.
- *
- * Called from both the server shot simulation and the client trajectory
- * preview so the predicted arc starts at the exact same world position
- * the real shell does.
- */
-export function computeLiftedMuzzle(
-  tank: TankState,
-  getHeight: (x: number, z: number) => number,
-  clearance: number = 0.2,
-): MuzzleTransform {
-  const muzzle = computeMuzzle(tank);
-  const ground = getHeight(muzzle.origin.x, muzzle.origin.z);
-  const minY = ground + clearance;
-  if (muzzle.origin.y < minY) muzzle.origin.y = minY;
-  return muzzle;
-}
-
 export function solveAimAnglesForTarget(tank: TankState, target: Vec3): AimSolution {
   const localTarget = inverseRotateYXZ(
     target.x - tank.position.x,

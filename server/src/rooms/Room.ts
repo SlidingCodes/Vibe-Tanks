@@ -521,7 +521,7 @@ export class Room {
   }
 
   private fireNapalm(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.voxels);
+    const startPos = createMuzzlePosition(tank);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const segment = simulateSegment(startPos, startVel, this.voxels);
     const damageTotals: DamageTotals = new Map();
@@ -570,7 +570,7 @@ export class Room {
 
   private fireSeeker(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const projectileId = `proj_${this.nextProjectileId++}`;
-    const position = createMuzzlePosition(tank, this.voxels);
+    const position = createMuzzlePosition(tank);
     const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
     const projectile: ActiveProjectileRuntime = {
       projectileId,
@@ -592,7 +592,7 @@ export class Room {
   }
 
   private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
-    const startPos = createMuzzlePosition(tank, this.voxels);
+    const startPos = createMuzzlePosition(tank);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const fallback = simulateSegment(startPos, startVel, this.voxels).endPoint;
     const center = aimPoint
@@ -649,7 +649,7 @@ export class Room {
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const startPos = createMuzzlePosition(tank, this.voxels);
+    const startPos = createMuzzlePosition(tank);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
     const segment = simulateSegment(startPos, startVel, this.voxels);
 

@@ -7,7 +7,7 @@ import {
   WeaponDefinition,
 } from '../../../shared/src/types/index';
 import { GRAVITY } from '../../../shared/src/constants';
-import { computeLiftedMuzzle, computeMuzzle } from '../../../shared/src/muzzle';
+import { computeMuzzle } from '../../../shared/src/muzzle';
 import { resolveRailEndpoint } from '../../../shared/src/rail';
 
 /**
@@ -172,9 +172,13 @@ export function createInitialVelocity(tank: TankState, speed: number): Vec3 {
   };
 }
 
-export function createMuzzlePosition(tank: TankState, terrain?: SimulationTerrain): Vec3 {
-  if (!terrain) return cloneVec3(computeMuzzle(tank).origin);
-  return cloneVec3(computeLiftedMuzzle(tank, (x, z) => terrain.getHeight(x, z)).origin);
+/** Shell spawn position — exactly the barrel tip in world space. Honours
+ *  body yaw/pitch/roll + turret yaw + barrel pitch, so the shot always
+ *  emerges from the cannon, even when the tank is on its side. No ground
+ *  clearance: if the barrel is buried in terrain, the shell detonates on
+ *  spawn (self-damage) — that's the correct physical outcome. */
+export function createMuzzlePosition(tank: TankState): Vec3 {
+  return cloneVec3(computeMuzzle(tank).origin);
 }
 
 export function createLinearTrajectory(start: Vec3, end: Vec3, duration: number): Vec3[] {
@@ -339,7 +343,7 @@ function simulateStandardShot(
   terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, terrain);
+  const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const segment = simulateSegment(startPos, startVel, terrain);
@@ -363,7 +367,7 @@ function simulateAirburstShot(
   terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, terrain);
+  const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const segment = simulateSegment(startPos, startVel, terrain, {
@@ -388,7 +392,7 @@ function simulateSplitShot(
   terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, terrain);
+  const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const splitTime = weapon.behaviorConfig?.splitTime ?? 0.7;
@@ -454,7 +458,7 @@ function simulateBounceShot(
   terrain: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
-  const startPos = createMuzzlePosition(shooter, terrain);
+  const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const firstSegment = simulateSegment(startPos, startVel, terrain);
@@ -538,7 +542,7 @@ export function planDrillShot(
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
 ): DrillPlan {
-  const startPos = createMuzzlePosition(shooter, terrain);
+  const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const segment = simulateSegment(startPos, startVel, terrain);
   const entryResult = createShotResult(shooter.playerId, weapon.id, [
