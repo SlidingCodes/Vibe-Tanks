@@ -219,6 +219,17 @@ export interface RoomStateUpdate {
   hazards: HazardState[];
 }
 
+// ── Voxel snapshot ──
+export interface VoxelSnapshot {
+  sizeX: number;
+  sizeY: number;
+  sizeZ: number;
+  cellSize: number;
+  minYCells: number;
+  /** Raw density bytes (length = sizeX * sizeY * sizeZ). 0 = empty, >0 = solid. */
+  data: ArrayBuffer;
+}
+
 // ── Match snapshot ──
 export interface MatchSnapshot {
   roomId: RoomId;
@@ -271,6 +282,8 @@ export type MatchEvent =
 // ── Network events: server → client ──
 export interface ServerEvents {
   room_snapshot: (snapshot: MatchSnapshot) => void;
+  /** Sent alongside room_snapshot on join / match reset / match start. */
+  voxel_snapshot: (snapshot: VoxelSnapshot) => void;
   state_update: (state: RoomStateUpdate) => void;
   shot_resolved: (result: ShotResult) => void;
   player_spawned: (tank: TankState) => void;

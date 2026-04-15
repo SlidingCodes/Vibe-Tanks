@@ -12,6 +12,21 @@ import { computeMuzzle } from '../../../shared/src/muzzle';
 import { resolveRailEndpoint } from '../../../shared/src/rail';
 import { Heightmap } from '../terrain/Heightmap';
 
+/**
+ * Heightmap-shaped surface that Simulation queries for shell collisions.
+ * Concrete impls: the raw Heightmap (legacy) or TerrainSampler (voxel-backed,
+ * V3d). All Simulation entry points accept this so callers can choose which
+ * surface drives the trajectory math without touching the inner integrator.
+ */
+export interface SimulationTerrain {
+  readonly width: number;
+  readonly height: number;
+  readonly cellSize: number;
+  getHeight(x: number, z: number): number;
+  getSurfaceNormal(x: number, z: number): Vec3;
+  computeCraterPatch(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch;
+}
+
 export const SIM_DT = 1 / 60;
 export const SAMPLE_EVERY_TICKS = 4;
 export const SECONDS_PER_SAMPLE = SAMPLE_EVERY_TICKS * SIM_DT;
@@ -160,7 +175,7 @@ export function createInitialVelocity(tank: TankState, speed: number): Vec3 {
   };
 }
 
-export function createMuzzlePosition(tank: TankState, heightmap?: Heightmap): Vec3 {
+export function createMuzzlePosition(tank: TankState, heightmap?: SimulationTerrain): Vec3 {
   const muzzle = computeMuzzle(tank);
   if (!heightmap) return cloneVec3(muzzle.origin);
   // If terrain pokes above the muzzle (shooting out of a crater, tilted body),
@@ -189,7 +204,7 @@ export function createLinearTrajectory(start: Vec3, end: Vec3, duration: number)
 export function simulateSegment(
   startPos: Vec3,
   startVel: Vec3,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   options: SegmentOptions = {},
 ): SegmentResult {
   const pos = cloneVec3(startPos);
@@ -265,7 +280,7 @@ export function simulateSegment(
  */
 export function applyImpact(
   impact: ImpactSpec,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
   damageTotals: DamageTotals,
 ): TerrainPatch | null {
@@ -333,7 +348,7 @@ function applyDirectHit(tank: TankState, damage: number, damageTotals: DamageTot
 function simulateStandardShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter, heightmap);
@@ -357,7 +372,7 @@ function simulateStandardShot(
 function simulateAirburstShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter, heightmap);
@@ -382,7 +397,7 @@ function simulateAirburstShot(
 function simulateSplitShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter, heightmap);
@@ -448,7 +463,7 @@ function simulateSplitShot(
 function simulateBounceShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter, heightmap);
@@ -494,7 +509,7 @@ function simulateBounceShot(
 function simulateRailShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   const maxRange = weapon.behaviorConfig?.railRange ?? 50;
@@ -533,7 +548,7 @@ function simulateRailShot(
 export function planDrillShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
 ): DrillPlan {
   const startPos = createMuzzlePosition(shooter, heightmap);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
@@ -591,7 +606,7 @@ export function buildImpactResult(
 export function simulateShot(
   shooter: TankState,
   weapon: WeaponDefinition,
-  heightmap: Heightmap,
+  heightmap: SimulationTerrain,
   allTanks: TankState[],
 ): ShotResult {
   switch (weapon.behavior) {

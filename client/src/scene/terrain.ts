@@ -7,6 +7,13 @@ let terrainHeights: number[] = [];
 let gridWidth = 0;
 let gridHeight = 0;
 let cellSize = 1;
+/** Optional override: when set, getTerrainHeight delegates here. V3d uses it
+ *  to make the voxel grid the authoritative ground sampler. */
+let heightSamplerOverride: ((x: number, z: number) => number) | null = null;
+
+export function setTerrainHeightSampler(sampler: ((x: number, z: number) => number) | null): void {
+  heightSamplerOverride = sampler;
+}
 
 const LOW_COLOR = new THREE.Color(0x7b7b7b);
 const MID_COLOR = new THREE.Color(0x7a5937);
@@ -172,6 +179,7 @@ export function getTerrainCellSize(): number {
 
 /** Sample height from terrain data with bilinear interpolation for smooth movement */
 export function getTerrainHeight(x: number, z: number): number {
+  if (heightSamplerOverride) return heightSamplerOverride(x, z);
   if (!terrainHeights.length || gridWidth <= 0 || gridHeight <= 0) return 0;
 
   const fx = x / cellSize;

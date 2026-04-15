@@ -2,7 +2,12 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh } from './scene/terrain';
+import { createTerrain, applyTerrainPatch, rebuildTerrain, getTerrainHeight, getTerrainMesh, setTerrainHeightSampler } from './scene/terrain';
+import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
+import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
+import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
+import { VoxelScorch } from './scene/voxelScorch';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -30,7 +35,7 @@ import { initMinimap, onMinimapPatch, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState, VoxelSnapshot } from '@shared/types/index';
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
 
@@ -164,6 +169,83 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 });
 
+let voxelGrid: VoxelGrid | null = null;
+let voxelTerrain: VoxelTerrainHandle | null = null;
+let surfaceNets: SurfaceNetsHandle | null = null;
+let voxelDebris: VoxelDebrisHandle | null = null;
+let voxelScorch: VoxelScorch | null = null;
+let cuberilleVisible = false;
+// Surface nets is the visible default — tanks ride on the SN-derived TriMesh,
+// shell trajectories sample the same surface, so the player should see what
+// physics is actually using. Press B to toggle it off and reveal the legacy
+// heightmap mesh underneath.
+let surfaceNetsVisible = true;
+
+function syncHeightmapVisibility(): void {
+  const hmMesh = getTerrainMesh();
+  if (hmMesh) hmMesh.visible = !(cuberilleVisible || surfaceNetsVisible);
+}
+
+socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
+  voxelGrid = VoxelGrid.fromSnapshot(snap);
+  if (!voxelTerrain) {
+    voxelTerrain = createVoxelTerrain(voxelGrid, scene);
+    voxelTerrain.setVisible(cuberilleVisible);
+  } else {
+    voxelTerrain.rebuild(voxelGrid);
+    voxelTerrain.setVisible(cuberilleVisible);
+  }
+  // Scorch lives alongside the voxel grid, client-only. Reset on every
+  // snapshot so reconnects/match-resets don't inherit stale burn marks.
+  voxelScorch = new VoxelScorch(voxelGrid);
+  if (!surfaceNets) {
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch);
+    surfaceNets.setVisible(surfaceNetsVisible);
+  } else {
+    surfaceNets.rebuild(voxelGrid, voxelScorch);
+    surfaceNets.setVisible(surfaceNetsVisible);
+  }
+  if (!voxelDebris) {
+    voxelDebris = createVoxelDebris(scene, voxelGrid.cellSize);
+  } else {
+    voxelDebris.clear();
+  }
+  // V3d: voxels become the authoritative ground sampler on the client too.
+  const g = voxelGrid;
+  setTerrainHeightSampler((x, z) => g.getHeightInterpolated(x, z));
+  // The heightmap mesh defaults to visible after createTerrain; once a voxel
+  // view exists we have to sync its visibility (otherwise SN renders on top
+  // of an unhidden heightmap and the player sees both meshes mixed).
+  syncHeightmapVisibility();
+  // eslint-disable-next-line no-console
+  console.log(
+    `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
+  );
+});
+
+window.addEventListener('keydown', (ev) => {
+  const k = ev.key.toLowerCase();
+  if (k === 'v' && !ev.repeat) {
+    cuberilleVisible = !cuberilleVisible;
+    // Mutually exclusive with surface nets: avoid overlapping meshes that
+    // read as "small cubes poking through big cubes".
+    if (cuberilleVisible) surfaceNetsVisible = false;
+    voxelTerrain?.setVisible(cuberilleVisible);
+    surfaceNets?.setVisible(surfaceNetsVisible);
+    syncHeightmapVisibility();
+    // eslint-disable-next-line no-console
+    console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
+  } else if (k === 'b' && !ev.repeat) {
+    surfaceNetsVisible = !surfaceNetsVisible;
+    if (surfaceNetsVisible) cuberilleVisible = false;
+    voxelTerrain?.setVisible(cuberilleVisible);
+    surfaceNets?.setVisible(surfaceNetsVisible);
+    syncHeightmapVisibility();
+    // eslint-disable-next-line no-console
+    console.log(`[voxel] surface nets ${surfaceNetsVisible ? 'shown' : 'hidden'}`);
+  }
+});
+
 socket.on('state_update', (state: RoomStateUpdate) => {
   const { tanks, projectiles, hazards } = state;
   latestTanks = tanks;
@@ -243,6 +325,26 @@ socket.on('shot_resolved', (result) => {
   // Play explosion sounds at each impact, timed to match the visual animation.
   const SECS_PER_SAMPLE = 4 / 60;
   for (const step of result.steps) {
+    if (step.terrainPatch && voxelGrid) {
+      const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
+      const grid = voxelGrid;
+      const cuberille = voxelTerrain;
+      const sn = surfaceNets;
+      const debris = voxelDebris;
+      const scorch = voxelScorch;
+      setTimeout(() => {
+        // Sample debris origins BEFORE carving (they must still be solid).
+        debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
+        grid.carveSphere(step.endPoint, step.blastRadius);
+        // Scorch extends past the blast radius so the burn ring is visible
+        // well outside the crater. Strength=1 + wider radius means even a
+        // single hit saturates enough voxels for the 8-corner average at
+        // SN vertices to read cleanly.
+        scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
+        cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
+      }, carveDelay * 1000);
+    }
     if (step.eventType !== 'impact') continue;
     const delay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
     setTimeout(() => {
@@ -501,6 +603,8 @@ function animate(): void {
     }
     updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints(), meshPositions);
   }
+
+  voxelDebris?.update(dt, voxelGrid);
 
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);

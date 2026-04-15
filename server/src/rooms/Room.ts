@@ -33,7 +33,13 @@ import {
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { createRandomTerrainSeed, Heightmap } from '../terrain/Heightmap';
-import { ProjectileImpact, ProjectileSpawnConfig, RapierWorld } from '../physics/RapierWorld';
+import {
+  ProjectileImpact,
+  ProjectileSpawnConfig,
+  RapierVoxelWorld,
+} from '../physics/RapierVoxelWorld';
+import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
+import { TerrainSampler } from '../terrain/TerrainSampler';
 import {
   DamageTotals,
   applyImpact,
@@ -42,21 +48,20 @@ import {
   createMuzzlePosition,
   createShotResult,
   makeStep,
+  simulateSegment,
   simulateShot,
 } from '../game/Simulation';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
-const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
-const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+const RESPAWN_MIN_INTERVAL_SECONDS = 5;
+const MATCH_DURATION_SECONDS = 300;
 
 interface PlayerState {
   socket: Socket;
   input: MovementInput;
   lastFireTime: number;
-  /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
-  /** Epoch seconds after which a respawn_request is honoured. */
   respawnAllowedAt: number;
 }
 
@@ -120,7 +125,9 @@ export class Room {
   phase: MatchPhase = MatchPhase.WaitingForPlayers;
   tanks: Map<PlayerId, TankState> = new Map();
   heightmap: Heightmap;
-  physics: RapierWorld;
+  voxels: VoxelGrid;
+  physics: RapierVoxelWorld;
+  private terrainSampler: TerrainSampler;
   private terrainPresetId: TerrainPresetId;
   private terrainSettings: TerrainSettings;
   players: Map<PlayerId, PlayerState> = new Map();
@@ -134,9 +141,7 @@ export class Room {
   private nextHazardId = 1;
   private nextStrikeId = 1;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
-  private matchResetAt: number = 0; // epoch seconds
-  /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
-   *  so patches from the old terrain don't land on the regenerated map. */
+  private matchResetAt = 0;
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
 
   constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
@@ -145,9 +150,39 @@ export class Room {
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap = new Heightmap(this.terrainSettings, createRandomTerrainSeed());
-    this.physics = new RapierWorld(this.heightmap);
-    this.heightmap.onChange = () => this.physics.rebuildTerrain();
+    this.voxels = new VoxelGrid({
+      sizeX: this.heightmap.width,
+      sizeY: 48,
+      sizeZ: this.heightmap.height,
+      cellSize: this.heightmap.cellSize,
+      minYCells: -16,
+    });
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('initial seed');
+    this.physics = new RapierVoxelWorld(this.voxels);
+    this.terrainSampler = new TerrainSampler(this.heightmap, this.voxels);
     this.scheduleReset();
+  }
+
+  private logVoxelSanityCheck(label: string): void {
+    const cs = this.heightmap.cellSize;
+    const samples = 64;
+    let maxDev = 0;
+    let sumDev = 0;
+    for (let i = 0; i < samples; i++) {
+      const ix = Math.floor(Math.random() * this.heightmap.width);
+      const iz = Math.floor(Math.random() * this.heightmap.height);
+      const wx = ix * cs;
+      const wz = iz * cs;
+      const hHeight = this.heightmap.getHeight(wx, wz);
+      const vHeight = this.voxels.getHeight(wx, wz);
+      const dev = Math.abs(hHeight - vHeight);
+      if (dev > maxDev) maxDev = dev;
+      sumDev += dev;
+    }
+    console.log(
+      `[voxel V1] ${label} (${this.terrainPresetId}): maxDev=${maxDev.toFixed(3)} avgDev=${(sumDev / samples).toFixed(3)} (cellSize=${cs})`,
+    );
   }
 
   private scheduleReset(): void {
@@ -157,7 +192,7 @@ export class Room {
   }
 
   private resetMatch(): void {
-    for (const t of this.pendingShotTimeouts) clearTimeout(t);
+    for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
     this.pendingShotTimeouts.clear();
     this.activeProjectiles.clear();
     this.physics.clearProjectiles();
@@ -167,9 +202,12 @@ export class Room {
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.heightmap.regenerate(createRandomTerrainSeed(), this.terrainSettings);
+    this.voxels.seedFromHeightmap(this.heightmap);
+    this.logVoxelSanityCheck('match reset');
+    this.physics.setGrid(this.voxels);
+
     for (const [pid, tank] of this.tanks) {
-      const pos = this.findSpawnPosition();
-      tank.position = pos;
+      tank.position = this.findSpawnPosition();
       tank.hp = TANK_MAX_HP;
       tank.alive = true;
       tank.score = 0;
@@ -178,24 +216,24 @@ export class Room {
       tank.bodyRoll = 0;
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
-      this.physics.removeTank(tank.playerId);
-      this.physics.addTank(tank);
+      this.physics.resetTank(tank);
       const player = this.players.get(pid);
       if (player) {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
       }
     }
+
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
     if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
-
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false },
@@ -208,6 +246,7 @@ export class Room {
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
+    socket.emit('voxel_snapshot', this.voxels.toSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -222,9 +261,9 @@ export class Room {
 
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
+    this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
-    this.physics.removeTank(playerId);
 
     for (const [projectileId, projectile] of this.activeProjectiles) {
       if (projectile.ownerId === playerId) {
@@ -296,7 +335,7 @@ export class Room {
     for (let attempt = 0; attempt < 96; attempt++) {
       const x = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, w - edgePadding * 2);
       const z = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, h - edgePadding * 2);
-      const y = this.heightmap.getHeight(x, z);
+      const y = this.voxels.getHeightInterpolated(x, z);
 
       let tooClose = false;
       let nearestTankDistance = Number.POSITIVE_INFINITY;
@@ -332,10 +371,7 @@ export class Room {
     }
 
     if (bestCandidate) return bestCandidate;
-
-    const x = centerX;
-    const z = centerZ;
-    return { x, y: this.heightmap.getHeight(x, z), z };
+    return { x: centerX, y: this.voxels.getHeightInterpolated(centerX, centerZ), z: centerZ };
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -382,12 +418,7 @@ export class Room {
           this.fireMine(tank, weapon);
           break;
         case 'rail': {
-          const result = simulateShot(
-            tank,
-            weapon,
-            this.heightmap,
-            Array.from(this.tanks.values()),
-          );
+          const result = simulateShot(tank, weapon, this.terrainSampler, Array.from(this.tanks.values()));
           this.scheduleShotResult(result, tank.playerId, weapon.id);
           break;
         }
@@ -401,8 +432,8 @@ export class Room {
       const player = this.players.get(socket.id);
       const tank = this.tanks.get(socket.id);
       if (!player || !tank) return;
-      if (tank.alive) return; // already alive
-      if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
+      if (tank.alive) return;
+      if (Date.now() / 1000 < player.respawnAllowedAt) return;
       this.respawnTank(socket.id);
     });
 
@@ -428,6 +459,8 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         this.heightmap.applyPatch(patch);
+        this.voxels.carveSphere(step.endPoint, step.blastRadius);
+        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -449,6 +482,8 @@ export class Room {
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
+      this.voxels.carveSphere(step.endPoint, step.blastRadius);
+      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
       appliedPatch = true;
     }
     if (appliedPatch) this.regroundAliveTanks();
@@ -528,7 +563,7 @@ export class Room {
   }
 
   private fireSeeker(tank: TankState, weapon: WeaponDefinition): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     this.spawnProjectileRuntime(this.buildProjectileRuntime(tank, weapon, {
       position: startPos,
       visualStyle: 'seeker',
@@ -542,12 +577,12 @@ export class Room {
   }
 
   private fireMortar(tank: TankState, weapon: WeaponDefinition, aimPoint: Vec3 | null): void {
-    const startPos = createMuzzlePosition(tank, this.heightmap);
+    const startPos = createMuzzlePosition(tank, this.terrainSampler);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
-    const fallback = addVec3(startPos, scaleVec3(normalizeVec3(startVel), 18));
+    const fallback = simulateSegment(startPos, startVel, this.terrainSampler).endPoint;
     const center = aimPoint
-      ? { x: aimPoint.x, y: this.heightmap.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
-      : { x: fallback.x, y: this.heightmap.getHeight(fallback.x, fallback.z), z: fallback.z };
+      ? { x: aimPoint.x, y: this.voxels.getHeightInterpolated(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      : fallback;
 
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
     const spread = weapon.behaviorConfig?.mortarSpread ?? 5.5;
@@ -580,7 +615,7 @@ export class Room {
       const radius = Math.random() * spread;
       const x = center.x + Math.cos(angle) * radius;
       const z = center.z + Math.sin(angle) * radius;
-      const position = { x, y: this.heightmap.getHeight(x, z), z };
+      const position = { x, y: this.voxels.getHeightInterpolated(x, z), z };
 
       this.scheduledStrikes.push({
         strikeId: `strike_${this.nextStrikeId++}`,
@@ -614,7 +649,7 @@ export class Room {
     overrides: Partial<ActiveProjectileRuntime> = {},
   ): ActiveProjectileRuntime {
     const projectileId = overrides.projectileId ?? `proj_${this.nextProjectileId++}`;
-    const position = overrides.position ?? createMuzzlePosition(tank, this.heightmap);
+    const position = overrides.position ?? createMuzzlePosition(tank, this.terrainSampler);
     const velocity = overrides.velocity ?? createInitialVelocity(tank, weapon.projectileSpeed);
     const visualStyle = overrides.visualStyle ?? this.getDefaultVisualStyle(weapon);
 
@@ -699,14 +734,8 @@ export class Room {
     let normal: Vec3 = { x: 0, y: 1, z: 0 };
 
     if (impact.hitTerrain) {
-      const trace = this.heightmap.traceSegmentToTerrain(projectile.previousPosition, projectile.position, 24);
-      if (trace.hit) {
-        point = trace.point;
-        normal = trace.normal;
-      } else {
-        point.y = this.heightmap.getHeight(point.x, point.z);
-        normal = this.heightmap.getSurfaceNormal(point.x, point.z);
-      }
+      point.y = this.voxels.getHeightInterpolated(point.x, point.z);
+      normal = this.terrainSampler.getSurfaceNormal(point.x, point.z);
     } else if (impact.hitTankId) {
       const tank = this.tanks.get(impact.hitTankId);
       if (tank) {
@@ -755,7 +784,7 @@ export class Room {
       blastRadius: projectile.blastRadius,
       damage: projectile.damage,
       terrainDamage,
-    }, this.heightmap, this.getTankList(), damageTotals);
+    }, this.terrainSampler, this.getTankList(), damageTotals);
 
     this.physics.applyExplosionImpulse(
       point,
@@ -836,7 +865,7 @@ export class Room {
     const eruptionXZ = addVec3(point, scaleVec3(direction, projectile.drillDistance));
     const eruptionPoint = {
       x: eruptionXZ.x,
-      y: this.heightmap.getHeight(eruptionXZ.x, eruptionXZ.z),
+      y: this.voxels.getHeightInterpolated(eruptionXZ.x, eruptionXZ.z),
       z: eruptionXZ.z,
     };
 
@@ -861,7 +890,7 @@ export class Room {
     const duration = weapon?.behaviorConfig?.burnDuration ?? 6;
     const tickDamage = weapon?.behaviorConfig?.burnTickDamage ?? Math.max(1, Math.round(projectile.damage * 0.18));
     const tickInterval = weapon?.behaviorConfig?.burnTickInterval ?? 0.4;
-    const groundPoint = { x: point.x, y: this.heightmap.getHeight(point.x, point.z), z: point.z };
+    const groundPoint = { x: point.x, y: this.voxels.getHeightInterpolated(point.x, point.z), z: point.z };
     const hazardId = `hazard_${this.nextHazardId++}`;
 
     this.activeHazards.set(hazardId, {
@@ -884,7 +913,7 @@ export class Room {
 
   private deployMine(projectile: ActiveProjectileRuntime, point: Vec3): void {
     const weapon = this.getWeaponById(projectile.weaponId);
-    const groundPoint = { x: point.x, y: this.heightmap.getHeight(point.x, point.z), z: point.z };
+    const groundPoint = { x: point.x, y: this.voxels.getHeightInterpolated(point.x, point.z), z: point.z };
     const armTime = weapon?.behaviorConfig?.mineArmTime ?? 0.75;
     const lifetime = weapon?.behaviorConfig?.mineLifetime ?? 20;
     const triggerRadius = weapon?.behaviorConfig?.mineTriggerRadius ?? 1.5;
@@ -989,8 +1018,7 @@ export class Room {
     const tank = this.tanks.get(playerId);
     const player = this.players.get(playerId);
     if (!tank || !player) return;
-    const pos = this.findSpawnPosition();
-    tank.position = pos;
+    tank.position = this.findSpawnPosition();
     tank.hp = TANK_MAX_HP;
     tank.alive = true;
     tank.bodyRotation = 0;
@@ -998,14 +1026,14 @@ export class Room {
     tank.bodyRoll = 0;
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
-    this.physics.removeTank(tank.playerId);
-    this.physics.addTank(tank);
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    this.physics.resetTank(tank);
   }
 
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
     this.startLoop();
   }
 
@@ -1013,7 +1041,6 @@ export class Room {
     if (this.simInterval) return;
 
     const simDt = 1 / SIM_TICK_RATE;
-
     this.simInterval = setInterval(() => {
       this.simTime += simDt;
       this.tickMovement(simDt);
@@ -1032,13 +1059,13 @@ export class Room {
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
   }
 
-  private tickMovement(_dt: number): void {
+  private tickMovement(dt: number): void {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank || !tank.alive) continue;
       this.physics.applyInput(pid, player.input);
     }
-    this.physics.step();
+    this.physics.step(dt);
     for (const tank of this.tanks.values()) {
       if (tank.alive) this.physics.syncTankState(tank);
     }
@@ -1065,7 +1092,7 @@ export class Room {
 
     for (const [projectileId, projectile] of Array.from(this.activeProjectiles.entries())) {
       if (projectile.airburstHeight !== null) {
-        const terrainY = this.heightmap.getHeight(projectile.position.x, projectile.position.z);
+        const terrainY = this.terrainSampler.getHeight(projectile.position.x, projectile.position.z);
         if (projectile.velocity.y < 0 && projectile.position.y <= terrainY + projectile.airburstHeight) {
           this.detonateProjectile(projectile, { ...projectile.position }, {
             terrainDamage: 0,
@@ -1148,7 +1175,7 @@ export class Room {
               blastRadius: hazard.blastRadius,
               damage: hazard.damage,
               terrainDamage: hazard.terrainDamage,
-            }, this.heightmap, this.getTankList(), damageTotals);
+            }, this.terrainSampler, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', terrainPatch, damageTotals);
             this.physics.applyExplosionImpulse(
               hazard.position,
@@ -1213,22 +1240,28 @@ export class Room {
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
-      }, this.heightmap, this.getTankList(), damageTotals);
+      }, this.terrainSampler, this.getTankList(), damageTotals);
       this.physics.applyExplosionImpulse(
         strike.position,
         strike.blastRadius,
         Math.max(strike.damage * 18, strike.blastRadius * 120),
       );
-      const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, terrainPatch, damageTotals);
+      const result = buildImpactResult(
+        strike.ownerId,
+        strike.weaponId,
+        strike.position,
+        strike.blastRadius,
+        strike.visualStyle,
+        terrainPatch,
+        damageTotals,
+      );
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
   }
 
   private regroundAliveTanks(): void {
     for (const tank of this.tanks.values()) {
-      if (tank.alive) {
-        tank.position.y = this.heightmap.getHeight(tank.position.x, tank.position.z);
-      }
+      if (tank.alive) this.physics.syncTankState(tank);
     }
   }
 
