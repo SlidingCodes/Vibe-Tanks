@@ -13,39 +13,72 @@ export function initRapier(): Promise<void> {
 // ── Tank tuning ────────────────────────────────────────────────────
 const HULL_HALF = { x: 0.85, y: 0.35, z: 1.0 };
 const HULL_MASS = 900;
-const WHEEL_RADIUS = 0.38;
-const SUSPENSION_REST = 0.24;
-const SUSPENSION_STIFF = 125;
-const SUSPENSION_DAMPING_COMPRESSION = 5.2;
-const SUSPENSION_DAMPING_RELAX = 4.6;
-const MAX_SUSPENSION_TRAVEL = 0.05;
-const MAX_SUSPENSION_FORCE = HULL_MASS * 60;
-const FRICTION_SLIP = 6.6;
-const WHEEL_SIDE_FRICTION = 0.42;
-const BALLAST_MASS = HULL_MASS * 1.15;
-const BALLAST_OFFSET_Y = -0.62;
+const WHEEL_RADIUS = 0.58;
+const SUSPENSION_REST = 0.28;
+const SUSPENSION_STIFF = 155;
+const SUSPENSION_DAMPING_COMPRESSION = 6.8;
+const SUSPENSION_DAMPING_RELAX = 6.1;
+const MAX_SUSPENSION_TRAVEL = 0.14;
+const MAX_SUSPENSION_FORCE = HULL_MASS * 75;
+const FRICTION_SLIP = 8.8;
+const WHEEL_SIDE_FRICTION = 0.72;
+const BALLAST_MASS = HULL_MASS * 1.45;
+const BALLAST_OFFSET_Y = -0.82;
 const EXTRA_ANGULAR_INERTIA = {
-  x: HULL_MASS * 6.5,
-  y: HULL_MASS * 0.06,
-  z: HULL_MASS * 2.8,
+  x: HULL_MASS * 12,
+  y: HULL_MASS * 0.08,
+  z: HULL_MASS * 8,
 };
 const IDLE_BRAKE_FACTOR = 0.12;
 const REVERSAL_BRAKE_FACTOR = 0.65;
 const ROOT_Y_FROM_BODY_CENTER = SUSPENSION_REST + HULL_HALF.y;
 const WHEEL_Y = 0;
-const WHEEL_OFFSETS: Array<{ x: number; y: number; z: number }> = [
-  { x: HULL_HALF.x * 1.0, y: WHEEL_Y, z: HULL_HALF.z * 0.95 },
-  { x: -HULL_HALF.x * 1.0, y: WHEEL_Y, z: HULL_HALF.z * 0.95 },
-  { x: HULL_HALF.x * 1.0, y: WHEEL_Y, z: -HULL_HALF.z * 0.95 },
-  { x: -HULL_HALF.x * 1.0, y: WHEEL_Y, z: -HULL_HALF.z * 0.95 },
+type WheelSide = 'left' | 'right';
+interface WheelSetup {
+  x: number;
+  y: number;
+  z: number;
+  side: WheelSide;
+}
+const TRACK_X = HULL_HALF.x * 1.0;
+const TRACK_FRONT_Z = HULL_HALF.z * 0.98;
+const TRACK_FRONT_MID_Z = HULL_HALF.z * 0.34;
+const TRACK_REAR_MID_Z = -HULL_HALF.z * 0.34;
+const TRACK_REAR_Z = -HULL_HALF.z * 0.98;
+const WHEEL_OFFSETS: Array<WheelSetup> = [
+  { x: TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_Z, side: 'right' },
+  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_Z, side: 'left' },
+  { x: TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_MID_Z, side: 'right' },
+  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_MID_Z, side: 'left' },
+  { x: TRACK_X, y: WHEEL_Y, z: TRACK_REAR_MID_Z, side: 'right' },
+  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_REAR_MID_Z, side: 'left' },
+  { x: TRACK_X, y: WHEEL_Y, z: TRACK_REAR_Z, side: 'right' },
+  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_REAR_Z, side: 'left' },
 ];
-const RIGHT_WHEEL_INDICES = [0, 2] as const;
-const LEFT_WHEEL_INDICES = [1, 3] as const;
-const ENGINE_FORCE = HULL_MASS * 13;
-const BRAKE_FORCE = HULL_MASS * 2.2;
-const TOP_FORWARD_SPEED = TANK_SPEED;
-const TURN_MIX_MOVING = 1.6;
-const TURN_MIX_PIVOT = 1.0;
+const RIGHT_WHEEL_INDICES = WHEEL_OFFSETS.reduce<number[]>((acc, wheel, index) => {
+  if (wheel.side === 'right') acc.push(index);
+  return acc;
+}, []);
+const LEFT_WHEEL_INDICES = WHEEL_OFFSETS.reduce<number[]>((acc, wheel, index) => {
+  if (wheel.side === 'left') acc.push(index);
+  return acc;
+}, []);
+const SUPPORT_SAMPLE_OFFSETS: Array<{ x: number; z: number }> = [
+  { x: 0, z: 0 },
+  ...WHEEL_OFFSETS.map(({ x, z }) => ({ x: x * 0.92, z: z * 0.92 })),
+];
+const ENGINE_FORCE = HULL_MASS * 24;
+const BRAKE_FORCE = HULL_MASS * 3.2;
+const LEGACY_WHEELS_PER_SIDE = 2;
+const TOP_FORWARD_SPEED = TANK_SPEED * 1.6;
+const TURN_MIX_MOVING = 2.1;
+const TURN_MIX_PIVOT = 1.3;
+const STRAIGHT_YAW_HOLD_GAIN = 2.2;
+const STRAIGHT_YAW_HOLD_MAX = 0.32;
+const CRAWL_ASSIST_MIN_CONTACTS = 4;
+const CRAWL_ASSIST_MAX_SPEED = TANK_SPEED * 0.9;
+const CRAWL_ASSIST_GAIN = 8.0;
+const CRAWL_ASSIST_MAX_BOOST = 2.4;
 
 // ── Projectile tuning / filtering ──────────────────────────────────
 const PROJECTILE_MASS = 1.0;
@@ -56,6 +89,14 @@ const TERRAIN_COLLISION_GROUPS = interactionGroups(GROUP_TERRAIN, GROUP_TANK | G
 const TANK_COLLISION_GROUPS = interactionGroups(GROUP_TANK, GROUP_TERRAIN | GROUP_PROJECTILE | GROUP_TANK);
 const PROJECTILE_COLLISION_GROUPS = interactionGroups(GROUP_PROJECTILE, GROUP_TERRAIN | GROUP_TANK);
 
+interface TankSupportState {
+  terrainContactCount: number;
+  averageNormalX: number;
+  averageNormalY: number;
+  averageNormalZ: number;
+  averageSuspensionForce: number;
+}
+
 interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
@@ -64,6 +105,8 @@ interface TankEntry {
   leftBrake: number;
   rightEngine: number;
   rightBrake: number;
+  headingHoldYaw: number | null;
+  support: TankSupportState;
 }
 
 interface ProjectileEntry {
@@ -219,7 +262,7 @@ export class RapierVoxelWorld {
     const body = this.world.createRigidBody(bodyDesc);
 
     const colliderDesc = RAPIER.ColliderDesc.cuboid(HULL_HALF.x, HULL_HALF.y, HULL_HALF.z)
-      .setTranslation(0, -0.15, 0)
+      .setTranslation(0, 0, 0)
       .setDensity(HULL_MASS / (HULL_HALF.x * HULL_HALF.y * HULL_HALF.z * 8))
       .setFriction(0.9)
       .setCollisionGroups(TANK_COLLISION_GROUPS);
@@ -231,8 +274,8 @@ export class RapierVoxelWorld {
 
     const suspensionDir = { x: 0, y: -1, z: 0 };
     const axleDir = { x: -1, y: 0, z: 0 };
-    WHEEL_OFFSETS.forEach((off, i) => {
-      vehicle.addWheel(off, suspensionDir, axleDir, SUSPENSION_REST, WHEEL_RADIUS);
+    WHEEL_OFFSETS.forEach(({ x, y, z }, i) => {
+      vehicle.addWheel({ x, y, z }, suspensionDir, axleDir, SUSPENSION_REST, WHEEL_RADIUS);
       vehicle.setWheelSuspensionStiffness(i, SUSPENSION_STIFF);
       vehicle.setWheelSuspensionCompression(i, SUSPENSION_DAMPING_COMPRESSION);
       vehicle.setWheelSuspensionRelaxation(i, SUSPENSION_DAMPING_RELAX);
@@ -251,6 +294,14 @@ export class RapierVoxelWorld {
       leftBrake: 0,
       rightEngine: 0,
       rightBrake: 0,
+      headingHoldYaw: null,
+      support: {
+        terrainContactCount: 0,
+        averageNormalX: 0,
+        averageNormalY: 1,
+        averageNormalZ: 0,
+        averageSuspensionForce: 0,
+      },
     });
   }
 
@@ -373,48 +424,94 @@ export class RapierVoxelWorld {
     const entry = this.tanks.get(playerId);
     if (!entry) return;
 
+    const bodyRotation = entry.body.rotation();
     const linvel = entry.body.linvel();
-    const fwdWorld = rotateVec({ x: 0, y: 0, z: 1 }, entry.body.rotation());
+    const fwdWorld = rotateVec({ x: 0, y: 0, z: 1 }, bodyRotation);
     const fwdSpeed = linvel.x * fwdWorld.x + linvel.z * fwdWorld.z;
+    const currentYaw = eulerYXZFromQuat(bodyRotation).y;
 
     let throttle = 0;
     if (input.forward) throttle += 1;
     if (input.backward) throttle -= 1;
 
-    let turn = 0;
-    if (input.left) turn += 1;
-    if (input.right) turn -= 1;
+    let turnInput = 0;
+    if (input.left) turnInput += 1;
+    if (input.right) turnInput -= 1;
+
+    let steeringCommand = turnInput;
+    if (turnInput === 0 && throttle !== 0) {
+      if (entry.headingHoldYaw === null) entry.headingHoldYaw = currentYaw;
+      const yawError = shortestAngleDelta(entry.headingHoldYaw, currentYaw);
+      const holdStrength = 0.35 + 0.65 * clamp(entry.support.terrainContactCount / WHEEL_OFFSETS.length, 0, 1);
+      steeringCommand += clamp(yawError * STRAIGHT_YAW_HOLD_GAIN, -STRAIGHT_YAW_HOLD_MAX, STRAIGHT_YAW_HOLD_MAX) * holdStrength;
+    } else {
+      entry.headingHoldYaw = null;
+    }
 
     const turnMix = throttle === 0 ? TURN_MIX_PIVOT : TURN_MIX_MOVING;
-    const allowCounterDrive = turn !== 0;
-    const leftCommand = clamp(throttle + turn * turnMix, -1, 1);
-    const rightCommand = clamp(throttle - turn * turnMix, -1, 1);
+    const allowCounterDrive = turnInput !== 0;
+    const leftCommand = clamp(throttle + steeringCommand * turnMix, -1, 1);
+    const rightCommand = clamp(throttle - steeringCommand * turnMix, -1, 1);
     const leftDrive = driveCommandToForces(leftCommand, fwdSpeed, allowCounterDrive);
     const rightDrive = driveCommandToForces(rightCommand, fwdSpeed, allowCounterDrive);
 
-    entry.leftEngine = leftDrive.engine;
+    let crawlAssistMultiplier = 1;
+    if (throttle > 0 && turnInput === 0 && entry.support.terrainContactCount >= CRAWL_ASSIST_MIN_CONTACTS) {
+      const uphillness = Math.max(0, -(fwdWorld.x * entry.support.averageNormalX + fwdWorld.z * entry.support.averageNormalZ));
+      const speedFactor = clamp((CRAWL_ASSIST_MAX_SPEED - Math.max(0, fwdSpeed)) / CRAWL_ASSIST_MAX_SPEED, 0, 1);
+      if (uphillness > 0.02 && speedFactor > 0) {
+        const contactFactor = clamp(entry.support.terrainContactCount / WHEEL_OFFSETS.length, 0, 1);
+        const assist = clamp(uphillness * CRAWL_ASSIST_GAIN * speedFactor * contactFactor, 0, CRAWL_ASSIST_MAX_BOOST);
+        crawlAssistMultiplier += assist;
+      }
+    }
+
+    entry.leftEngine = leftDrive.engine * crawlAssistMultiplier;
     entry.leftBrake = leftDrive.brake;
-    entry.rightEngine = rightDrive.engine;
+    entry.rightEngine = rightDrive.engine * crawlAssistMultiplier;
     entry.rightBrake = rightDrive.brake;
 
-    if (throttle !== 0 || turn !== 0) entry.body.wakeUp();
+    if (throttle !== 0 || turnInput !== 0) entry.body.wakeUp();
   }
 
   step(dt = 1 / SIM_TICK_RATE): void {
     this.world.timestep = dt;
     for (const entry of this.tanks.values()) {
+      const leftEnginePerWheel = entry.leftEngine * (LEGACY_WHEELS_PER_SIDE / LEFT_WHEEL_INDICES.length);
+      const leftBrakePerWheel = entry.leftBrake * (LEGACY_WHEELS_PER_SIDE / LEFT_WHEEL_INDICES.length);
+      const rightEnginePerWheel = entry.rightEngine * (LEGACY_WHEELS_PER_SIDE / RIGHT_WHEEL_INDICES.length);
+      const rightBrakePerWheel = entry.rightBrake * (LEGACY_WHEELS_PER_SIDE / RIGHT_WHEEL_INDICES.length);
+
       for (const wheelIndex of LEFT_WHEEL_INDICES) {
-        entry.vehicle.setWheelEngineForce(wheelIndex, entry.leftEngine);
-        entry.vehicle.setWheelBrake(wheelIndex, entry.leftBrake);
+        entry.vehicle.setWheelEngineForce(wheelIndex, leftEnginePerWheel);
+        entry.vehicle.setWheelBrake(wheelIndex, leftBrakePerWheel);
       }
       for (const wheelIndex of RIGHT_WHEEL_INDICES) {
-        entry.vehicle.setWheelEngineForce(wheelIndex, entry.rightEngine);
-        entry.vehicle.setWheelBrake(wheelIndex, entry.rightBrake);
+        entry.vehicle.setWheelEngineForce(wheelIndex, rightEnginePerWheel);
+        entry.vehicle.setWheelBrake(wheelIndex, rightBrakePerWheel);
       }
-      entry.vehicle.updateVehicle(dt);
+      entry.vehicle.updateVehicle(
+        dt,
+        RAPIER.QueryFilterFlags.ONLY_FIXED,
+        undefined,
+        (collider) => this.terrainColliderHandles.has(collider.handle),
+      );
+      this.updateSupportState(entry);
     }
     this.world.step(this.eventQueue);
     this.captureProjectileImpacts();
+  }
+
+  resettleTanksNear(center: Vec3, radius: number): void {
+    const range = radius + Math.max(HULL_HALF.x, HULL_HALF.z) * 2;
+    const rangeSq = range * range;
+    for (const entry of this.tanks.values()) {
+      const t = entry.body.translation();
+      const dx = t.x - center.x;
+      const dz = t.z - center.z;
+      if (dx * dx + dz * dz > rangeSq) continue;
+      this.resettleTank(entry);
+    }
   }
 
   syncTankState(tank: TankState): void {
@@ -429,6 +526,68 @@ export class RapierVoxelWorld {
     tank.bodyRotation = e.y;
     tank.bodyPitch = e.x;
     tank.bodyRoll = e.z;
+  }
+
+  private updateSupportState(entry: TankEntry): void {
+    let contactCount = 0;
+    let normalX = 0;
+    let normalY = 0;
+    let normalZ = 0;
+    let suspensionForce = 0;
+
+    for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
+      if (!entry.vehicle.wheelIsInContact(i)) continue;
+      const ground = entry.vehicle.wheelGroundObject(i);
+      if (!ground || !this.terrainColliderHandles.has(ground.handle)) continue;
+      const normal = entry.vehicle.wheelContactNormal(i) ?? { x: 0, y: 1, z: 0 };
+      contactCount++;
+      normalX += normal.x;
+      normalY += normal.y;
+      normalZ += normal.z;
+      suspensionForce += entry.vehicle.wheelSuspensionForce(i) ?? 0;
+    }
+
+    entry.support = {
+      terrainContactCount: contactCount,
+      averageNormalX: contactCount > 0 ? normalX / contactCount : 0,
+      averageNormalY: contactCount > 0 ? normalY / contactCount : 1,
+      averageNormalZ: contactCount > 0 ? normalZ / contactCount : 0,
+      averageSuspensionForce: contactCount > 0 ? suspensionForce / contactCount : 0,
+    };
+  }
+
+  private resettleTank(entry: TankEntry): void {
+    const t = entry.body.translation();
+    const q = entry.body.rotation();
+    const v = entry.body.linvel();
+    const yaw = eulerYXZFromQuat(q).y;
+    const supportHeight = this.sampleSupportHeight(t.x, t.z, yaw);
+    const desiredCenterY = supportHeight + ROOT_Y_FROM_BODY_CENTER;
+    const missingSupport = entry.support.terrainContactCount <= 1;
+    const embeddedLift = desiredCenterY - t.y;
+    if (embeddedLift <= 0.03 && !missingSupport) return;
+
+    const lift = clamp(Math.max(embeddedLift, 0), 0, 0.35);
+    if (lift <= 0 && !missingSupport) return;
+
+    entry.body.setTranslation({ x: t.x, y: t.y + lift, z: t.z }, true);
+    entry.body.setLinvel({ x: v.x * 0.92, y: Math.max(0, v.y), z: v.z * 0.92 }, true);
+    entry.body.wakeUp();
+    this.updateSupportState(entry);
+  }
+
+  private sampleSupportHeight(x: number, z: number, yaw: number): number {
+    let supportHeight = this.grid.getHeightInterpolated(x, z);
+    const cosYaw = Math.cos(yaw);
+    const sinYaw = Math.sin(yaw);
+
+    for (const offset of SUPPORT_SAMPLE_OFFSETS) {
+      const sampleX = x + offset.x * cosYaw - offset.z * sinYaw;
+      const sampleZ = z + offset.x * sinYaw + offset.z * cosYaw;
+      supportHeight = Math.max(supportHeight, this.grid.getHeightInterpolated(sampleX, sampleZ));
+    }
+
+    return supportHeight;
   }
 
   private captureProjectileImpacts(): void {
@@ -485,6 +644,13 @@ function driveCommandToForces(command: number, forwardSpeed: number, allowCounte
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function shortestAngleDelta(target: number, current: number): number {
+  let delta = target - current;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
 }
 
 function interactionGroups(membership: number, filter: number): number {

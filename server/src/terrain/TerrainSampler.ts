@@ -45,6 +45,41 @@ export class TerrainSampler {
     return { x: nx / len, y: ny / len, z: nz / len };
   }
 
+  getSlopeMagnitude(x: number, z: number): number {
+    const step = this.cellSize;
+    const hE = this.getHeight(x + step, z);
+    const hW = this.getHeight(x - step, z);
+    const hN = this.getHeight(x, z + step);
+    const hS = this.getHeight(x, z - step);
+    const dhx = (hE - hW) / (2 * step);
+    const dhz = (hN - hS) / (2 * step);
+    return Math.sqrt(dhx * dhx + dhz * dhz);
+  }
+
+  getLocalRelief(x: number, z: number, radius = this.cellSize * 2.5): number {
+    const offsets = [
+      [0, 0],
+      [radius, 0],
+      [-radius, 0],
+      [0, radius],
+      [0, -radius],
+      [radius, radius],
+      [radius, -radius],
+      [-radius, radius],
+      [-radius, -radius],
+    ] as const;
+
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (const [dx, dz] of offsets) {
+      const h = this.getHeight(x + dx, z + dz);
+      if (h < minH) minH = h;
+      if (h > maxH) maxH = h;
+    }
+
+    return maxH - minH;
+  }
+
   /** Crater patch is still computed/applied on the heightmap so the legacy
    *  client mesh updates. The voxel carve is triggered separately in Room. */
   computeCraterPatch(impact: Vec3, blastRadius: number, terrainDamage: number): TerrainPatch {

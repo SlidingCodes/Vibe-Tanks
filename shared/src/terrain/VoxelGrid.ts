@@ -299,18 +299,19 @@ export class VoxelGrid {
     return this.minYCells * this.cellSize;
   }
 
-  /** World-space surface height at (wx, wz), nearest column. */
+  /** World-space surface height at (wx, wz), nearest column center. */
   getHeight(wx: number, wz: number): number {
     return this.columnTopHeight(
-      Math.round(wx / this.cellSize),
-      Math.round(wz / this.cellSize),
+      Math.round(wx / this.cellSize - 0.5),
+      Math.round(wz / this.cellSize - 0.5),
     );
   }
 
-  /** Bilinear-interpolated surface height for smooth tank physics. */
+  /** Bilinear-interpolated surface height using the same cell-center lattice
+   *  used by seedFromHeightmap and the surface-nets mesh. */
   getHeightInterpolated(wx: number, wz: number): number {
-    const fx = wx / this.cellSize;
-    const fz = wz / this.cellSize;
+    const fx = wx / this.cellSize - 0.5;
+    const fz = wz / this.cellSize - 0.5;
     const x0 = Math.floor(fx);
     const z0 = Math.floor(fz);
     const tx = fx - x0;

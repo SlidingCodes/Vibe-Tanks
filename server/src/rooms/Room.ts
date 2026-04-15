@@ -335,7 +335,7 @@ export class Room {
     for (let attempt = 0; attempt < 96; attempt++) {
       const x = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, w - edgePadding * 2);
       const z = edgePadding + Math.random() * Math.max(this.heightmap.cellSize, h - edgePadding * 2);
-      const y = this.voxels.getHeightInterpolated(x, z);
+      const y = this.terrainSampler.getHeight(x, z);
 
       let tooClose = false;
       let nearestTankDistance = Number.POSITIVE_INFINITY;
@@ -351,8 +351,8 @@ export class Room {
       }
       if (tooClose) continue;
 
-      const slope = this.heightmap.getSlopeMagnitude(x, z);
-      const relief = this.heightmap.getLocalRelief(x, z, this.heightmap.cellSize * 2.5);
+      const slope = this.terrainSampler.getSlopeMagnitude(x, z);
+      const relief = this.terrainSampler.getLocalRelief(x, z, this.heightmap.cellSize * 2.5);
       const centerBias = Math.hypot(x - centerX, z - centerZ) / Math.max(1, Math.hypot(centerX, centerZ));
       const spacingPenalty = nearestTankDistance === Number.POSITIVE_INFINITY
         ? 0
@@ -371,7 +371,7 @@ export class Room {
     }
 
     if (bestCandidate) return bestCandidate;
-    return { x: centerX, y: this.voxels.getHeightInterpolated(centerX, centerZ), z: centerZ };
+    return { x: centerX, y: this.terrainSampler.getHeight(centerX, centerZ), z: centerZ };
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -461,7 +461,7 @@ export class Room {
         this.heightmap.applyPatch(patch);
         this.voxels.carveSphere(step.endPoint, step.blastRadius);
         this.physics.invalidateSphere(step.endPoint, step.blastRadius);
-        this.regroundAliveTanks();
+        this.regroundAliveTanks(step.endPoint, step.blastRadius);
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
     }
@@ -478,15 +478,13 @@ export class Room {
   private emitShotResultNow(result: ShotResult, ownerId: PlayerId, weaponId: string): void {
     this.io.to(this.id).emit('shot_resolved', result);
 
-    let appliedPatch = false;
     for (const step of result.steps) {
       if (!step.terrainPatch) continue;
       this.heightmap.applyPatch(step.terrainPatch);
       this.voxels.carveSphere(step.endPoint, step.blastRadius);
       this.physics.invalidateSphere(step.endPoint, step.blastRadius);
-      appliedPatch = true;
+      this.regroundAliveTanks(step.endPoint, step.blastRadius);
     }
-    if (appliedPatch) this.regroundAliveTanks();
 
     this.applyResolvedDamage(ownerId, weaponId, result.damageDealt);
   }
@@ -1259,7 +1257,8 @@ export class Room {
     }
   }
 
-  private regroundAliveTanks(): void {
+  private regroundAliveTanks(center?: Vec3, radius = this.heightmap.cellSize * 2.5): void {
+    if (center) this.physics.resettleTanksNear(center, radius);
     for (const tank of this.tanks.values()) {
       if (tank.alive) this.physics.syncTankState(tank);
     }
