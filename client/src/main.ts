@@ -21,6 +21,8 @@ import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateC
 
 import { createLights } from './scene/lights';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
+import { triggerRecoil } from './entities/tank';
+
 
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
@@ -316,8 +318,10 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 });
 
 socket.on('shot_resolved', (result: ShotResult) => {
+  triggerRecoil(result.shooterId);
   if (atmosphere) {
     playShotAnimation(result, scene, atmosphere);
+
   } else {
     playShotAnimation(result, scene);
   }
