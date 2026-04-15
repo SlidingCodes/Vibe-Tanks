@@ -235,32 +235,17 @@ export class RapierVoxelWorld {
         moveZ = -fwdZ * BACKWARD_SPEED * dt;
       }
 
-      // Raycast-based grounded check, strict: only real TriMesh within
-      // 10 cm of the sphere bottom counts as grounded. KCC.computedGrounded()
-      // reports true on any rim-edge grazing contact, which kept verticalVel
-      // pinned at 0 and prevented falls.
-      // Rays must START above the mesh surface and cast downward — TriMesh
-      // is an open surface, not a solid volume, so "inside terrain" isn't
-      // a thing; we cast from body center and exclude the tank's own
-      // collider so the ball doesn't self-hit.
+      // Always integrate gravity. The "am I grounded?" check happens AFTER
+      // KCC computes movement: if our requested downward gravity got
+      // clamped (or projected upward by a slope tangent), the floor is
+      // there and we can reset accumulated fall velocity.
+      //
+      // Why not raycast straight down from sphere center: on a steep slope
+      // the contact point is offset toward the uphill side, so a vertical
+      // ray from center misses the slope below — the tank thinks it's
+      // airborne, accumulates gravity, and slides back down hills it
+      // should have climbed.
       const pos = body.translation();
-      const downRay = new RAPIER.Ray(
-        { x: pos.x, y: pos.y, z: pos.z },
-        { x: 0, y: -1, z: 0 },
-      );
-      const hit = this.world.castRay(
-        downRay,
-        HULL_RADIUS + 0.1,
-        true,
-        undefined,
-        undefined,
-        entry.collider,
-      );
-      const grounded = hit !== null;
-
-      if (grounded) entry.verticalVel = 0;
-      // Always integrate gravity — if we're over a pit, verticalVel builds
-      // up each tick and KCC below lets the tank drop.
       entry.verticalVel += GRAVITY * dt;
       const moveY = entry.verticalVel * dt;
 
@@ -272,6 +257,11 @@ export class RapierVoxelWorld {
         z: pos.z + corrected.z,
       });
       body.setNextKinematicRotation(quatFromYaw(entry.yaw));
+
+      // Gravity was clamped by terrain → grounded → stop accumulating.
+      if (moveY < 0 && corrected.y > moveY + 1e-4) {
+        entry.verticalVel = 0;
+      }
     }
   }
 
