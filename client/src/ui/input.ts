@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MovementInput } from '@shared/types/index';
+import { isFirstPerson } from '../scene/camera';
 
 const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
@@ -149,9 +150,22 @@ export function requestPointerLock(): void {
 
 const raycaster = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const aimNDC = new THREE.Vector2();
+
+/** In FPV the camera looks almost horizontal, so the raycast hits the ground
+ *  very far away — even a tiny NDC deviation sweeps the aim point across a
+ *  huge arc. Dampen the center with a cubic so only the outer rim of the
+ *  screen reaches full turret rotation; edges still map 1:1 so you keep the
+ *  full range of motion. */
+function shapedNDC(raw: THREE.Vector2): THREE.Vector2 {
+  const shape = (n: number) => 0.2 * n + 0.8 * n * n * n;
+  aimNDC.set(shape(raw.x), shape(raw.y));
+  return aimNDC;
+}
 
 export function getAimTarget(camera: THREE.Camera, terrain: THREE.Object3D | null, tankY: number): THREE.Vector3 | null {
-  raycaster.setFromCamera(mouse, camera);
+  const ndc = isFirstPerson() ? shapedNDC(mouse) : mouse;
+  raycaster.setFromCamera(ndc, camera);
 
   if (terrain) {
     const hits = raycaster.intersectObject(terrain, false);
