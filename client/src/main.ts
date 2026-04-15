@@ -11,7 +11,7 @@ import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
-  tickTankEffects, triggerRespawnAnim,
+  tickTankEffects, triggerRespawnAnim, updateTankNameLabels,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
@@ -606,6 +606,16 @@ function animate(): void {
     }
     updateMinimap(myPos, myRot, tanksForMap, myId, getTrajectoryXZPoints(), meshPositions);
   }
+
+  // Update name labels visibility (occlusion and distance)
+  const occlusionObjects: THREE.Object3D[] = [];
+  if (surfaceNetsVisible && surfaceNets) occlusionObjects.push(surfaceNets.group);
+  if (cuberilleVisible && voxelTerrain) occlusionObjects.push(voxelTerrain.group);
+  const hmMesh = getTerrainMesh();
+  if (hmMesh && hmMesh.visible) occlusionObjects.push(hmMesh);
+
+  const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
+  updateTankNameLabels(camera, localPos, occlusionObjects);
 
   voxelDebris?.update(dt, voxelGrid);
 

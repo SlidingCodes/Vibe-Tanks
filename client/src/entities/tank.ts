@@ -38,6 +38,12 @@ const tankMeshes: Map<string, TankMesh> = new Map();
 const SERVER_BROADCAST_INTERVAL = 1 / 20;
 
 const TREAD_HALF_WIDTH = 0.7; // distance from tank center to each tread
+const MAX_NAME_LABEL_DISTANCE = 60; // distance at which name labels are hidden
+
+const raycaster = new THREE.Raycaster();
+const _vec3_1 = new THREE.Vector3();
+const _vec3_2 = new THREE.Vector3();
+const _vec3_3 = new THREE.Vector3();
 
 export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerId?: string): TankMesh {
   const group = new THREE.Group();
@@ -244,6 +250,92 @@ export function removeTankMesh(playerId: string, scene: THREE.Scene): void {
 
 export function getAllTankMeshes(): Map<string, TankMesh> {
   return tankMeshes;
+}
+
+/**
+ * Updates the visibility of name labels based on distance and occlusion.
+ * Should be called once per frame.
+ */
+export function updateTankNameLabels(
+  camera: THREE.Camera,
+  localPos: THREE.Vector3,
+  occlussionObjects: THREE.Object3D[],
+): void {
+  const camPos = camera.position;
+
+  for (const tm of tankMeshes.values()) {
+    if (!tm.nameLabel) continue;
+
+    // Reset visibility if the tank is dead
+    if (!tm.state.alive) {
+      tm.nameLabel.element.style.visibility = 'hidden';
+      continue;
+    }
+
+    // Force update parent group matrix so children world positions are correct
+    tm.group.updateMatrixWorld(true);
+    
+    // Check two points: the label and the tank body center
+    const labelPos = _vec3_1;
+    tm.nameLabel.getWorldPosition(labelPos);
+    
+    // 1. Distance check
+    const distToPlayer = localPos.distanceTo(tm.group.position);
+    if (distToPlayer > MAX_NAME_LABEL_DISTANCE) {
+      tm.nameLabel.element.style.visibility = 'hidden';
+      continue;
+    }
+
+    // 2. Occlusion check
+    // Raycast from camera to the label position
+    const distToLabel = camPos.distanceTo(labelPos);
+    const direction = _vec3_2.subVectors(labelPos, camPos).normalize();
+    
+    raycaster.set(camPos, direction);
+    raycaster.far = distToLabel;
+
+    const intersects = raycaster.intersectObjects(occlussionObjects, true);
+
+    let labelOccluded = false;
+    for (const hit of intersects) {
+      if (hit.distance < distToLabel - 1.0) {
+        labelOccluded = true;
+        break;
+      }
+    }
+
+    // If the label is hidden behind something, we're done.
+    // If it's NOT hidden, let's also check if the tank body itself is hidden.
+    // Sometimes the label "pokes" over a hill while the tank is hidden.
+    if (labelOccluded) {
+      tm.nameLabel.element.style.visibility = 'hidden';
+    } else {
+      // Check tank body too
+      const bodyPos = _vec3_3.copy(tm.group.position).add({ x: 0, y: 0.4, z: 0 } as any);
+      const distToBody = camPos.distanceTo(bodyPos);
+      const dirToBody = _vec3_1.subVectors(bodyPos, camPos).normalize();
+      
+      raycaster.set(camPos, dirToBody);
+      raycaster.far = distToBody;
+      
+      const bodyIntersects = raycaster.intersectObjects(occlussionObjects, true);
+      let bodyOccluded = false;
+      for (const hit of bodyIntersects) {
+        if (hit.distance < distToBody - 1.0) {
+          bodyOccluded = true;
+          break;
+        }
+      }
+
+      // We hide the name if either is occluded, or maybe only if BOTH are?
+      // "Behind a mountain" usually means both are hidden.
+      // Let's hide if BOTH are occluded to be safe, or just label.
+      // Usually, if the label is occluded, the tank is definitely occluded.
+      // If the tank is occluded but label is not, it means the name is "floating"
+      // over the mountain. We should probably hide it too.
+      tm.nameLabel.element.style.visibility = bodyOccluded ? 'hidden' : 'visible';
+    }
+  }
 }
 
 
