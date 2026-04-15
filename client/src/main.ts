@@ -20,6 +20,7 @@ import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
+import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
@@ -436,6 +437,7 @@ function animate(): void {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
   const now = clock.getElapsedTime();
+  tickFpsCounter(dt);
 
   const requestedWeaponSlot = consumeWeaponSlot();
   if (requestedWeaponSlot !== null) {
@@ -608,4 +610,5 @@ function animate(): void {
   labelRenderer.render(scene, camera);
 }
 
+initFpsCounter();
 animate();
