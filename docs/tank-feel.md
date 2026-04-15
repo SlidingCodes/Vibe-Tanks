@@ -68,3 +68,32 @@ inerzia realistica del tank.
 Nessuna azione finché V4c non è stabile. A quel punto valutare se il
 Rapier-vehicle risolve da solo o se serve virare su una delle quattro
 opzioni sopra.
+
+## Stato alla chiusura di V4b (da riprendere)
+
+Il tank è ora un body kinematic-position-based con sfera r=0.80, guidato da
+Rapier `KinematicCharacterController`:
+- Slope climb limit 89° (il rim dei crateri è ~79° e con 45° era trattato
+  come muro, bloccando l'ingresso).
+- Grounded check via raycast dal centro del body verso il basso per
+  `HULL_RADIUS + 10cm`, escludendo il collider del tank.
+- Nessun autostep, nessun snap-to-ground: tank cade liberamente sopra ai
+  crateri.
+- Gravità manuale integrata per frame, azzerata solo quando il raycast
+  conferma terreno sotto.
+
+**Bug irrisolto**: il tank non riesce comunque a entrare nei crateri
+profondi. Si ferma al rim o ci scivola sopra. Il raycast e lo slope limit
+sono stati sistemati nei commit 0d06837 / f9d854a ma visivamente non basta.
+Da investigare:
+- Forse KCC applica ancora una "penalty" sulle superfici steep che non è
+  lo slope climb limit.
+- Forse il TriMesh alla zona del rim ha triangoli con normali sbagliate
+  dalla nostra shared/surfaceNetsMesher — da verificare con un wireframe
+  del collider.
+- Forse serve abbandonare KCC e fare contatto+gravità manuali con
+  raycasting multi-punto sotto la footprint del tank.
+
+Per ora il tank gira sul terreno aperto correttamente. Tunnel orizzontali
+e crateri profondi sono **rimandati**; V5 procede con scorch / polish /
+perf e ci torniamo dopo.
