@@ -17,7 +17,8 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } f
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, spectateTank, updateCameraScale } from './scene/camera';
+import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import * as hud from './ui/hud';
 import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
@@ -76,6 +77,28 @@ let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+// ── Killcam ─────────────────────────────────────────────────────────
+// When I die to another player, the camera spectates the killer for
+// KILLCAM_DURATION seconds with a through-walls outline; only after that
+// does the "YOU DIED" overlay appear.
+const KILLCAM_DURATION = 2.5;
+// How long after a kill event we still consider it the cause of a
+// subsequent alive→dead state_update. Generous because kill and the
+// state broadcast can arrive a frame or two apart.
+const KILL_EVENT_VALIDITY = 3;
+let lastKillEvent: { killerId: PlayerId; victimId: PlayerId; timeSec: number } | null = null;
+let killcamKillerId: PlayerId | null = null;
+let killcamEndTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function endKillcam(): void {
+  killcamKillerId = null;
+  clearHighlight();
+  if (killcamEndTimeout) {
+    clearTimeout(killcamEndTimeout);
+    killcamEndTimeout = null;
+  }
+}
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
@@ -287,16 +310,38 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   if (myTank) {
     if (!myTank.alive && !wasDead) {
       playDeath();
-      // Let the explosion play before the overlay takes over the screen.
-      setTimeout(() => {
-        if (wasDead) {
-          hud.showDeathScreen(() => {
-            socket.emit('respawn_request');
-          });
-        }
-      }, 900);
+      const nowSec = Date.now() / 1000;
+      const recentKill = lastKillEvent && nowSec - lastKillEvent.timeSec < KILL_EVENT_VALIDITY
+        ? lastKillEvent
+        : null;
+      const killerMesh = recentKill ? getAllTankMeshes().get(recentKill.killerId) : null;
+      if (recentKill && killerMesh) {
+        // Battlefield-style killcam: spectate the killer with the through-
+        // walls outline before handing over to the death overlay.
+        killcamKillerId = recentKill.killerId;
+        beginSpectate();
+        highlightTank(killerMesh);
+        killcamEndTimeout = setTimeout(() => {
+          killcamEndTimeout = null;
+          endKillcam();
+          if (wasDead) {
+            hud.showDeathScreen(() => socket.emit('respawn_request'));
+          }
+        }, KILLCAM_DURATION * 1000);
+      } else {
+        // Suicide / killer disconnected / stale kill: fall back to the
+        // short explosion pause before the overlay.
+        setTimeout(() => {
+          if (wasDead) {
+            hud.showDeathScreen(() => {
+              socket.emit('respawn_request');
+            });
+          }
+        }, 900);
+      }
       wasDead = true;
     } else if (myTank.alive && wasDead) {
+      endKillcam();
       hud.hideDeathScreen();
       playRespawn();
       wasDead = false;
@@ -388,6 +433,13 @@ socket.on('player_left', ({ playerId }) => {
 socket.on('match_event', (ev) => {
   pushFeedEvent(ev);
   if (ev.kind === 'reset') nextTrack();
+  if (ev.kind === 'kill' && ev.victimId === myId && ev.killerId !== myId) {
+    lastKillEvent = {
+      killerId: ev.killerId,
+      victimId: ev.victimId,
+      timeSec: Date.now() / 1000,
+    };
+  }
 });
 
 socket.on('game_over', ({ winnerId }) => {
@@ -558,6 +610,17 @@ function animate(): void {
     );
   } else {
     hideTrajectoryPreview();
+    if (killcamKillerId) {
+      const killerMesh = getAllTankMeshes().get(killcamKillerId);
+      if (killerMesh) {
+        spectateTank(killerMesh.group.position, killerMesh.state.bodyRotation, dt);
+        ensureHighlightVisible();
+      } else {
+        // Killer left mid-killcam — bail out and show the overlay now.
+        endKillcam();
+        if (wasDead) hud.showDeathScreen(() => socket.emit('respawn_request'));
+      }
+    }
   }
 
   interpolateRemoteTanks(dt, myId);

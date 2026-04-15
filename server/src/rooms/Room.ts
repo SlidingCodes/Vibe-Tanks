@@ -474,6 +474,7 @@ export class Room {
           if (dmg.playerId === ownerId) {
             this.io.to(this.id).emit('match_event', {
               kind: 'suicide',
+              victimId: victim.playerId,
               name: victim.playerName,
               color: victim.color,
               weaponId,
@@ -481,6 +482,8 @@ export class Room {
           } else {
             this.io.to(this.id).emit('match_event', {
               kind: 'kill',
+              killerId: owner.playerId,
+              victimId: victim.playerId,
               killerName: owner.playerName,
               killerColor: owner.color,
               victimName: victim.playerName,

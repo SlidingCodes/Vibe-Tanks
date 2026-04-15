@@ -260,8 +260,8 @@ export interface ClientEvents {
 export type MatchEvent =
   | { kind: 'join'; name: string; color: string }
   | { kind: 'leave'; name: string; color: string }
-  | { kind: 'kill'; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
-  | { kind: 'suicide'; name: string; color: string; weaponId: string }
+  | { kind: 'kill'; killerId: PlayerId; victimId: PlayerId; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
+  | { kind: 'suicide'; victimId: PlayerId; name: string; color: string; weaponId: string }
   | { kind: 'reset' };
 
 // ── Network events: server → client ──

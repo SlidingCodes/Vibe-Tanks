@@ -227,6 +227,57 @@ function followTankFirstPerson(
   );
 }
 
+// Cinematic spectator: slightly higher and further back than the normal
+// follow, always third-person even when the user's preset is FPV. Used for
+// the killcam to show the killer's tank clearly.
+const SPECTATE_OFFSET = new THREE.Vector3(0, 5.5, -10);
+const SPECTATE_LOOK_OFFSET = new THREE.Vector3(0, 1.2, 0);
+let spectateInitialized = false;
+const spectateSmoothedPos = new THREE.Vector3();
+let spectateSmoothedBoom = 0;
+
+/** Reset the spectate smoothing state so the next spectateTank() call snaps
+ *  to the target without interpolating from the previous camera pose. */
+export function beginSpectate(): void {
+  spectateInitialized = false;
+}
+
+/** Third-person cinematic follow on another tank (killcam). Independent
+ *  smoothing state from followTank so entering/leaving spectate mode
+ *  doesn't jerk the normal follow camera. */
+export function spectateTank(tankPos: THREE.Vector3, bodyRotation: number, dt: number): void {
+  if (!spectateInitialized) {
+    spectateSmoothedPos.copy(tankPos);
+    spectateSmoothedBoom = SPECTATE_OFFSET.length();
+    spectateInitialized = true;
+  }
+
+  const horizontalBlend = 1 - Math.exp(-10 * dt);
+  const verticalBlend = 1 - Math.exp(-4 * dt);
+  spectateSmoothedPos.x += (tankPos.x - spectateSmoothedPos.x) * horizontalBlend;
+  spectateSmoothedPos.z += (tankPos.z - spectateSmoothedPos.z) * horizontalBlend;
+  spectateSmoothedPos.y += (tankPos.y - spectateSmoothedPos.y) * verticalBlend;
+
+  const rotated = SPECTATE_OFFSET.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
+  const boomFullLength = rotated.length();
+  const boomDir = rotated.clone().divideScalar(boomFullLength);
+  const lookTarget = spectateSmoothedPos.clone().add(SPECTATE_LOOK_OFFSET);
+
+  const safeDistance = raycastBoomAgainstTerrain(lookTarget, boomDir, boomFullLength);
+  const boomBlend = safeDistance < spectateSmoothedBoom
+    ? 1 - Math.exp(-22 * dt)
+    : 1 - Math.exp(-5 * dt);
+  spectateSmoothedBoom += (safeDistance - spectateSmoothedBoom) * boomBlend;
+
+  const desired = lookTarget.clone().addScaledVector(boomDir, spectateSmoothedBoom);
+  camera.position.lerp(desired, 1 - Math.exp(-6 * dt));
+
+  const floor = getTerrainHeight(camera.position.x, camera.position.z) + COLLISION_CLEARANCE;
+  if (camera.position.y < floor) camera.position.y = floor;
+
+  camera.lookAt(lookTarget);
+}
+
 export function addImpactCameraShake(intensity: number, duration = 0.22): void {
   if (intensity <= 0) return;
   shakeStrength = Math.max(shakeStrength, intensity);
