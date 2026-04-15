@@ -580,9 +580,6 @@ function animate(): void {
   const occlusionObjects: THREE.Object3D[] = [];
   if (surfaceNetsVisible && surfaceNets) occlusionObjects.push(surfaceNets.group);
   if (cuberilleVisible && voxelTerrain) occlusionObjects.push(voxelTerrain.group);
-  const hmMesh = getTerrainMesh();
-  if (hmMesh && hmMesh.visible) occlusionObjects.push(hmMesh);
-
   const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
   updateTankNameLabels(camera, localPos, occlusionObjects, myId);
 
