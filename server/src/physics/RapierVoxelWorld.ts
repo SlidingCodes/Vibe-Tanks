@@ -269,20 +269,17 @@ export class RapierVoxelWorld {
     }
   }
 
-  /** Copy the Rapier body state back onto the TankState. */
+  /** Copy Rapier position + yaw back onto the TankState. The Y and tilt are
+   *  intentionally NOT set here — Room re-derives them from the voxel surface
+   *  so the authoritative tank transform uses the exact same ground reference
+   *  as the client mesh (which samples voxel.getHeight for its Y). */
   readbackTank(id: PlayerId, tank: TankState): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
     const pos = entry.body.translation();
     tank.position.x = pos.x;
-    // "position.y" represents the hull bottom — matches the old convention
-    // where stepTankPhysics set tank.y to the ground surface, so the client
-    // mesh stays visually coherent.
-    tank.position.y = pos.y - BODY_Y_OFFSET;
     tank.position.z = pos.z;
     tank.bodyRotation = entry.yaw;
-    tank.bodyPitch = 0;
-    tank.bodyRoll = 0;
   }
 
   dispose(): void {

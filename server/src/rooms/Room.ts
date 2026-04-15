@@ -757,7 +757,33 @@ export class Room {
       else if (tank.position.x > mapW - border) tank.position.x = mapW - border;
       if (tank.position.z < border) tank.position.z = border;
       else if (tank.position.z > mapH - border) tank.position.z = mapH - border;
+      // Align the authoritative tank transform to the voxel surface: Y from
+      // getHeight, pitch/roll from the same finite-difference gradient the
+      // client uses in stepTankPhysics. Without this, Rapier readback
+      // (ball center - HULL_RADIUS, pitch/roll = 0) disagrees with the
+      // client's voxel-driven mesh — on slopes the muzzle Y computed on
+      // the server drifts above the barrel rendered on the client.
+      this.alignTankToVoxelSurface(tank, cellSize);
     }
+  }
+
+  /** Snap Y/pitch/roll to the voxel surface so the server-computed muzzle
+   *  position matches the client's voxel-driven mesh on sloped ground. */
+  private alignTankToVoxelSurface(tank: TankState, cellSize: number): void {
+    const x = tank.position.x;
+    const z = tank.position.z;
+    tank.position.y = this.voxels.getHeight(x, z);
+    const d = 1.5 * cellSize;
+    const fwdX = Math.sin(tank.bodyRotation);
+    const fwdZ = Math.cos(tank.bodyRotation);
+    const rgtX = Math.cos(tank.bodyRotation);
+    const rgtZ = -Math.sin(tank.bodyRotation);
+    const hF = this.voxels.getHeight(x + fwdX * d, z + fwdZ * d);
+    const hB = this.voxels.getHeight(x - fwdX * d, z - fwdZ * d);
+    const hR = this.voxels.getHeight(x + rgtX * d, z + rgtZ * d);
+    const hL = this.voxels.getHeight(x - rgtX * d, z - rgtZ * d);
+    tank.bodyPitch = Math.atan2(hB - hF, 2 * d);
+    tank.bodyRoll = Math.atan2(hR - hL, 2 * d);
   }
 
   private tickProjectiles(dt: number): void {
@@ -951,10 +977,9 @@ export class Room {
   }
 
   private regroundAliveTanks(): void {
+    const cellSize = this.voxels.cellSize;
     for (const tank of this.tanks.values()) {
-      if (tank.alive) {
-        tank.position.y = this.voxels.getHeight(tank.position.x, tank.position.z);
-      }
+      if (tank.alive) this.alignTankToVoxelSurface(tank, cellSize);
     }
   }
 
