@@ -20,6 +20,8 @@ import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 
 import { createLights } from './scene/lights';
+import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
+
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
@@ -172,6 +174,8 @@ let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
+let atmosphere: AtmosphereHandle | null = null;
+
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
@@ -202,11 +206,15 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
   const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
   updateSceneScale(worldW, worldH);
+  if (!atmosphere) {
+    atmosphere = createAtmosphere(scene);
+  }
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
   );
 });
+
 
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
@@ -592,7 +600,27 @@ function animate(): void {
   const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
   updateTankNameLabels(camera, localPos, occlusionObjects, myId);
 
+  if (atmosphere) {
+    atmosphere.update(dt, camera, getAllTankMeshes());
+    for (const [pid, tm] of getAllTankMeshes()) {
+      if (!tm.state.alive) continue;
+      // Estimate speed from velocity or prev state
+      let speed = 0;
+      if (pid === myId) {
+        speed = Math.sqrt(predictedVel.x * predictedVel.x + predictedVel.z * predictedVel.z);
+      } else {
+        // Calculate real speed based on interpolation targets
+        speed = tm.prevPosition.distanceTo(tm.targetPosition) / 0.05; // 0.05 is the 20Hz interval
+      }
+      if (speed > 0.5 && tm.state.alive) {
+        atmosphere.spawnTreadDust(tm.group.position, tm.group.rotation.y, speed);
+      }
+
+    }
+  }
+
   voxelDebris?.update(dt, voxelGrid);
+
 
   surfaceNets?.flushDirtyChunks();
   renderer.render(scene, camera);
