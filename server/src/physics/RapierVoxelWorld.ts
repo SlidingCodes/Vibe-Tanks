@@ -219,18 +219,22 @@ export class RapierVoxelWorld {
       const body = entry.body;
 
       // Yaw: rotate by a fixed angular speed while left/right is held.
-      // Sign matches shared/physics (left increases yaw, right decreases).
-      const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
+      // When reversing, flip the steering sign so left/right control the
+      // direction the back of the tank swings — matches the arcade feel of
+      // the original shared stepTankPhysics (turnScale = moveDir < 0 ? -1 : 1).
+      const moveDir = (input.forward ? 1 : 0) - (input.backward ? 1 : 0);
+      const turnScale = moveDir < 0 ? -1 : 1;
+      const turn = ((input.left ? 1 : 0) - (input.right ? 1 : 0)) * turnScale;
       entry.yaw += turn * TURN_ANGVEL * dt;
 
       const fwdX = Math.sin(entry.yaw);
       const fwdZ = Math.cos(entry.yaw);
 
       let moveX = 0, moveZ = 0;
-      if (input.forward) {
+      if (moveDir > 0) {
         moveX = fwdX * FORWARD_SPEED * dt;
         moveZ = fwdZ * FORWARD_SPEED * dt;
-      } else if (input.backward) {
+      } else if (moveDir < 0) {
         moveX = -fwdX * BACKWARD_SPEED * dt;
         moveZ = -fwdZ * BACKWARD_SPEED * dt;
       }
