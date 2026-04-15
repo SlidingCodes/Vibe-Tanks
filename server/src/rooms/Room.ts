@@ -106,9 +106,9 @@ export class Room {
   /** Voxel shadow. Seeded from the heightmap, carved alongside every patch;
    *  now authoritative for tank ground Y. */
   voxels: VoxelGrid;
-  /** V4a: Rapier world with per-chunk TriMesh colliders generated from the
-   *  voxel grid. Not yet consumed by tank physics — tanks still run through
-   *  stepTankPhysics kinematically. V4b will swap them onto Rapier bodies. */
+  /** Rapier world: per-chunk TriMesh terrain colliders + a kinematic-position
+   *  ball body per tank driven by Rapier's KinematicCharacterController.
+   *  Authoritative for tank movement and shot/terrain collisions. */
   physics: RapierVoxelWorld;
   /** Heightmap-shaped facade fed to Simulation. Routes height/normal samples
    *  through the voxel grid so shell trajectories match what the tank rides
