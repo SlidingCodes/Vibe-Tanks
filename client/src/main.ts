@@ -37,7 +37,7 @@ import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, pl
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, TankState, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
+import { computeLiftedMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -463,7 +463,7 @@ function animate(): void {
       predictedState.turretRotation = aimDirect.yaw;
       predictedState.barrelPitch = aimDirect.pitch;
       updateLocalTankMesh(predictedState);
-      const muzzle = computeMuzzle(predictedState);
+      const muzzle = computeLiftedMuzzle(predictedState, getTerrainHeight);
       updateTrajectoryPreview(
         scene,
         muzzle.origin.x, muzzle.origin.y, muzzle.origin.z,
@@ -515,7 +515,7 @@ function animate(): void {
           railEndPoint = railTrace.hitPoint;
         }
 
-        const muzzle = computeMuzzle(predictedState);
+        const muzzle = computeLiftedMuzzle(predictedState, getTerrainHeight);
         const previewStart = railStartPoint ?? muzzle.origin;
         updateTrajectoryPreview(
           scene,

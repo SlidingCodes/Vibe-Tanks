@@ -7,7 +7,7 @@ import {
   WeaponDefinition,
 } from '../../../shared/src/types/index';
 import { GRAVITY } from '../../../shared/src/constants';
-import { computeMuzzle } from '../../../shared/src/muzzle';
+import { computeLiftedMuzzle, computeMuzzle } from '../../../shared/src/muzzle';
 import { resolveRailEndpoint } from '../../../shared/src/rail';
 
 /**
@@ -173,13 +173,8 @@ export function createInitialVelocity(tank: TankState, speed: number): Vec3 {
 }
 
 export function createMuzzlePosition(tank: TankState, terrain?: SimulationTerrain): Vec3 {
-  const muzzle = computeMuzzle(tank);
-  if (!terrain) return cloneVec3(muzzle.origin);
-  // If terrain pokes above the muzzle (shooting out of a crater, tilted body),
-  // lift the spawn just above ground so the shell doesn't explode on frame 1.
-  const ground = terrain.getHeight(muzzle.origin.x, muzzle.origin.z);
-  const y = Math.max(muzzle.origin.y, ground + 0.2);
-  return { x: muzzle.origin.x, y, z: muzzle.origin.z };
+  if (!terrain) return cloneVec3(computeMuzzle(tank).origin);
+  return cloneVec3(computeLiftedMuzzle(tank, (x, z) => terrain.getHeight(x, z)).origin);
 }
 
 export function createLinearTrajectory(start: Vec3, end: Vec3, duration: number): Vec3[] {
