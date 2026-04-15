@@ -344,11 +344,13 @@ socket.on('shot_resolved', (result) => {
         // Sample debris origins BEFORE carving (they must still be solid).
         debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
         grid.carveSphere(step.endPoint, step.blastRadius);
-        // Scorch extends a bit past the blast radius so the burn ring is
-        // visible on the untouched terrain just outside the crater.
-        scorch?.addSphere(step.endPoint, step.blastRadius * 1.4, 0.75);
+        // Scorch extends past the blast radius so the burn ring is visible
+        // well outside the crater. Strength=1 + wider radius means even a
+        // single hit saturates enough voxels for the 8-corner average at
+        // SN vertices to read cleanly.
+        scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
         cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
-        sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.4);
+        sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;

@@ -43,13 +43,14 @@ export interface SurfaceNetsOptions {
 }
 
 // Base material tone (matches voxelSurfaceNets material color 0x9c6a38) and
-// the dark burnt color to lerp toward at full scorch.
+// the target color at full scorch. Nearly black so the burn ring reads
+// cleanly against the brown terrain.
 const BASE_R = 0x9c / 255;
 const BASE_G = 0x6a / 255;
 const BASE_B = 0x38 / 255;
-const BURNT_R = 0x1a / 255;
-const BURNT_G = 0x0e / 255;
-const BURNT_B = 0x08 / 255;
+const BURNT_R = 0x08 / 255;
+const BURNT_G = 0x05 / 255;
+const BURNT_B = 0x03 / 255;
 
 /**
  * Shared surface-nets mesher. Produces a per-chunk mesh from the voxel grid:

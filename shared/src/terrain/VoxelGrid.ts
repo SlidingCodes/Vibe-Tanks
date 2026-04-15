@@ -146,7 +146,9 @@ export class VoxelGrid {
   carveSphere(center: Vec3, radius: number): void {
     if (radius <= 0) return;
     const cs = this.cellSize;
-    const RIM_AMP = 0.07;
+    // Kept modest: higher values create local slope spikes in the smoothstep
+    // zone that the KCC reads as > 89° walls → tank can't climb out.
+    const RIM_AMP = 0.035;
     const effRadius = radius * (1 + RIM_AMP);
     const ixMin = Math.max(0, Math.floor((center.x - effRadius) / cs));
     const ixMax = Math.min(this.sizeX - 1, Math.ceil((center.x + effRadius) / cs));
