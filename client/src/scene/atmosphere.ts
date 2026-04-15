@@ -3,7 +3,11 @@ import { TankMesh } from './entities/tank';
 
 const MAX_AIR_DUST = 1000;
 const AIR_DUST_RANGE = 40; // Particles within this range of the camera
-const AIR_DUST_SIZE = 0.08;
+const AIR_DUST_SIZE_W = 0.04;
+const AIR_DUST_SIZE_H = 0.04;
+const AIR_DUST_SIZE_L = 0.15;
+const AIR_DUST_COLOR = 0xd2b48c; // Tan/Dusty color
+
 const REPULSION_RADIUS = 3.5;
 const REPULSION_STRENGTH = 12.0;
 
@@ -31,26 +35,30 @@ export interface AtmosphereHandle {
 
 export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   // ── Air Dust (Persistent motes) ──
-  const airDustGeom = new THREE.SphereGeometry(AIR_DUST_SIZE, 4, 4);
+  const airDustGeom = new THREE.BoxGeometry(AIR_DUST_SIZE_W, AIR_DUST_SIZE_H, AIR_DUST_SIZE_L);
   const airDustMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
+    color: AIR_DUST_COLOR,
     transparent: true,
-    opacity: 0.3,
+    opacity: 0.15,
   });
+
   const airDustMesh = new THREE.InstancedMesh(airDustGeom, airDustMat, MAX_AIR_DUST);
   airDustMesh.frustumCulled = false;
   scene.add(airDustMesh);
 
   const airStates: ParticleState[] = Array.from({ length: MAX_AIR_DUST }, () => ({
     px: (Math.random() - 0.5) * AIR_DUST_RANGE * 2,
-    py: Math.random() * 20,
+    py: Math.random() * 15, // Initial spawn lower
     pz: (Math.random() - 0.5) * AIR_DUST_RANGE * 2,
     vx: (Math.random() - 0.5) * 0.5,
     vy: (Math.random() - 0.5) * 0.2,
     vz: (Math.random() - 0.5) * 0.5,
+    size: 1.0,
+    rx: Math.random() * Math.PI, ry: Math.random() * Math.PI, rz: Math.random() * Math.PI,
     life: 1,
     active: true,
   }));
+
 
   // ── Tread Dust (Spawned trail) ──
   const treadGeom = new THREE.BoxGeometry(1, 1, 1);
@@ -77,7 +85,9 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
 
   let treadSpawnCursor = 0;
+  let windTime = 0;
   const dummy = new THREE.Object3D();
+
   const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 
   // Init tread instances as hidden
@@ -140,13 +150,20 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         const halfRange = AIR_DUST_RANGE;
         if (dx > halfRange) s.px -= halfRange * 2;
         if (dx < -halfRange) s.px += halfRange * 2;
-        if (dy > 20) s.py -= 20;
-        if (dy < -5) s.py += 20;
+        
+        // Wrap Y lower to be in reach of tanks (centered around camera but shifted down)
+        const yOffset = -12; 
+        const yRange = 20;
+        if (s.py < camPos.y + yOffset) s.py += yRange;
+        if (s.py > camPos.y + yOffset + yRange) s.py -= yRange;
+
         if (dz > halfRange) s.pz -= halfRange * 2;
         if (dz < -halfRange) s.pz += halfRange * 2;
 
         // Repulsion from tanks
         for (const tm of tanks.values()) {
+          if (!tm.state.alive) continue;
+
           const tx = tm.group.position.x;
           const ty = tm.group.position.y;
           const tz = tm.group.position.z;
@@ -165,19 +182,36 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
           }
         }
 
-        // Apply velocity and drag
+        // Apply velocity, gentle wind drift, and drag
+        windTime += dt * 0.00001; // very slow global time
+        const phase = i * 0.5 + windTime;
+        const driftX = Math.sin(phase * 0.8) * 0.05;
+        const driftZ = Math.cos(phase * 0.7) * 0.05;
+        const baseWindX = 0.2; // slight constant drift
+
+        s.vx += (driftX + baseWindX) * dt;
+        s.vz += driftZ * dt;
+        s.vy += Math.sin(phase * 0.5) * 0.02 * dt;
+
         s.px += s.vx * dt;
         s.py += s.vy * dt;
         s.pz += s.vz * dt;
-        s.vx *= 0.98;
-        s.vy *= 0.98;
-        s.vz *= 0.98;
+        
+        s.vx *= Math.pow(0.95, dt);
+        s.vy *= Math.pow(0.95, dt);
+        s.vz *= Math.pow(0.95, dt);
+
+        // Slow rotation over time
+        s.rx += dt * 0.2;
+        s.ry += dt * 0.15;
 
         dummy.position.set(s.px, s.py, s.pz);
+        dummy.rotation.set(s.rx, s.ry, s.rz);
         dummy.scale.setScalar(1);
         dummy.updateMatrix();
         airDustMesh.setMatrixAt(i, dummy.matrix);
       }
+
       airDustMesh.instanceMatrix.needsUpdate = true;
 
       // 2. Update Tread Dust
