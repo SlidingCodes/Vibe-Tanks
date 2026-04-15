@@ -79,25 +79,28 @@ const predictedVel = { x: 0, z: 0 };
 let wasDead = false;
 
 // ── Killcam ─────────────────────────────────────────────────────────
-// When I die to another player, the camera spectates the killer for
-// KILLCAM_DURATION seconds with a through-walls outline; only after that
-// does the "YOU DIED" overlay appear.
-const KILLCAM_DURATION = 2.5;
+// When I die to another player, the camera spectates the killer (with a
+// through-walls outline) while the letterbox YOU DIED overlay shows the
+// respawn countdown. Killcam runs the entire time I'm dead — exits on
+// respawn or if the killer disconnects.
+//
 // How long after a kill event we still consider it the cause of a
 // subsequent alive→dead state_update. Generous because kill and the
 // state broadcast can arrive a frame or two apart.
 const KILL_EVENT_VALIDITY = 3;
-let lastKillEvent: { killerId: PlayerId; victimId: PlayerId; timeSec: number } | null = null;
+interface KillEventInfo {
+  killerId: PlayerId;
+  victimId: PlayerId;
+  killerName: string;
+  killerColor: string;
+  timeSec: number;
+}
+let lastKillEvent: KillEventInfo | null = null;
 let killcamKillerId: PlayerId | null = null;
-let killcamEndTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function endKillcam(): void {
   killcamKillerId = null;
   clearHighlight();
-  if (killcamEndTimeout) {
-    clearTimeout(killcamEndTimeout);
-    killcamEndTimeout = null;
-  }
 }
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
@@ -317,28 +320,16 @@ socket.on('state_update', (state: RoomStateUpdate) => {
       const killerMesh = recentKill ? getAllTankMeshes().get(recentKill.killerId) : null;
       if (recentKill && killerMesh) {
         // Battlefield-style killcam: spectate the killer with the through-
-        // walls outline before handing over to the death overlay.
+        // walls outline for the whole dead window. The death overlay sits
+        // on top as a letterbox so the gameplay stays visible.
         killcamKillerId = recentKill.killerId;
         beginSpectate();
         highlightTank(killerMesh);
-        killcamEndTimeout = setTimeout(() => {
-          killcamEndTimeout = null;
-          endKillcam();
-          if (wasDead) {
-            hud.showDeathScreen(() => socket.emit('respawn_request'));
-          }
-        }, KILLCAM_DURATION * 1000);
-      } else {
-        // Suicide / killer disconnected / stale kill: fall back to the
-        // short explosion pause before the overlay.
-        setTimeout(() => {
-          if (wasDead) {
-            hud.showDeathScreen(() => {
-              socket.emit('respawn_request');
-            });
-          }
-        }, 900);
       }
+      hud.showDeathScreen(
+        () => socket.emit('respawn_request'),
+        recentKill ? { killerName: recentKill.killerName, killerColor: recentKill.killerColor } : {},
+      );
       wasDead = true;
     } else if (myTank.alive && wasDead) {
       endKillcam();
@@ -437,6 +428,8 @@ socket.on('match_event', (ev) => {
     lastKillEvent = {
       killerId: ev.killerId,
       victimId: ev.victimId,
+      killerName: ev.killerName,
+      killerColor: ev.killerColor,
       timeSec: Date.now() / 1000,
     };
   }
@@ -616,9 +609,9 @@ function animate(): void {
         spectateTank(killerMesh.group.position, killerMesh.state.bodyRotation, dt);
         ensureHighlightVisible();
       } else {
-        // Killer left mid-killcam — bail out and show the overlay now.
+        // Killer left mid-killcam — stop spectating; the death overlay is
+        // already visible since it was shown when I died.
         endKillcam();
-        if (wasDead) hud.showDeathScreen(() => socket.emit('respawn_request'));
       }
     }
   }

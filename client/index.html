@@ -182,29 +182,50 @@
       padding: 2px 6px; border-radius: 3px; background: rgba(0,0,0,0.35);
       pointer-events: none; white-space: nowrap;
     }
+    /* Death overlay — letterbox layout: opaque bands top+bottom, the
+       middle of the screen stays transparent so the killcam is visible
+       through the overlay. */
     #death-overlay {
-      position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-      flex-direction: column; background: rgba(0,0,0,0.82);
-      font-family: 'Times New Roman', serif; color: #9a1313; z-index: 20;
-      text-shadow: 0 0 18px rgba(154,19,19,0.6), 0 0 4px #000;
+      position: fixed; inset: 0; display: none; z-index: 20;
+      pointer-events: none; /* only the respawn button re-enables pointer events */
       animation: death-fade 0.6s ease-out;
+      font-family: 'Times New Roman', serif; color: #9a1313;
+      text-shadow: 0 0 18px rgba(154,19,19,0.6), 0 0 4px #000;
     }
     @keyframes death-fade { from { opacity: 0; } to { opacity: 1; } }
-    #death-title {
-      font-size: 82px; letter-spacing: 14px; font-style: italic;
-      font-weight: bold; border-top: 1px solid rgba(154,19,19,0.5);
-      border-bottom: 1px solid rgba(154,19,19,0.5); padding: 20px 60px;
+    #death-top, #death-bottom {
+      position: absolute; left: 0; right: 0;
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
     }
+    #death-top {
+      top: 0; padding: 28px 16px 72px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
+    }
+    #death-bottom {
+      bottom: 0; padding: 72px 16px 28px;
+      background: linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
+    }
+    #death-title {
+      font-size: 64px; letter-spacing: 14px; font-style: italic;
+      font-weight: bold; border-top: 1px solid rgba(154,19,19,0.5);
+      border-bottom: 1px solid rgba(154,19,19,0.5); padding: 14px 48px;
+    }
+    #death-killer {
+      font-family: monospace; font-size: 16px; letter-spacing: 3px;
+      color: rgba(255,255,255,0.85); text-shadow: 0 0 4px #000; min-height: 20px;
+    }
+    #death-killer .death-killer-name { font-weight: bold; }
     #death-timer {
-      margin-top: 32px; font-family: monospace; font-size: 18px;
+      font-family: monospace; font-size: 18px;
       color: rgba(255,255,255,0.7); letter-spacing: 2px; text-shadow: 0 0 4px #000;
       min-height: 22px;
     }
     #death-respawn {
-      margin-top: 18px; padding: 14px 36px; font-family: inherit; font-size: 22px;
+      padding: 14px 36px; font-family: inherit; font-size: 22px;
       letter-spacing: 6px; font-style: italic; background: transparent;
       color: #9a1313; border: 1px solid rgba(154,19,19,0.6); cursor: pointer;
       text-shadow: 0 0 6px rgba(154,19,19,0.6); transition: all 0.15s;
+      pointer-events: auto;
     }
     #death-respawn:disabled { opacity: 0.25; cursor: default; }
     #death-respawn:not(:disabled):hover {
@@ -317,9 +338,14 @@
     <div id="waiting-overlay">Waiting for game to start...</div>
   </div>
   <div id="death-overlay">
-    <div id="death-title">YOU DIED</div>
-    <div id="death-timer"></div>
-    <button id="death-respawn" disabled>SPAWN AGAIN</button>
+    <div id="death-top">
+      <div id="death-title">YOU DIED</div>
+      <div id="death-killer"></div>
+    </div>
+    <div id="death-bottom">
+      <div id="death-timer"></div>
+      <button id="death-respawn" disabled>SPAWN AGAIN</button>
+    </div>
   </div>
   <div id="mobile-controls">
     <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>

@@ -9,15 +9,34 @@ const weaponHud = document.getElementById('weapon-hud')!;
 const waitingOverlay = document.getElementById('waiting-overlay')!;
 const deathOverlay = document.getElementById('death-overlay') as HTMLDivElement;
 const deathTimer = document.getElementById('death-timer')!;
+const deathKiller = document.getElementById('death-killer')!;
 const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonElement;
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
 let deathCountdownInterval: ReturnType<typeof setInterval> | null = null;
 
-/** Show the Dark-Souls-style death screen; enables the respawn button after the countdown. */
-export function showDeathScreen(onRespawn: () => void): void {
-  deathOverlay.style.display = 'flex';
+export interface DeathScreenOptions {
+  killerName?: string | null;
+  killerColor?: string | null;
+}
+
+/** Show the Dark-Souls-style death screen as a letterbox overlay so the
+ *  killcam (rendered underneath in 3D) is visible through the middle. The
+ *  respawn button enables after RESPAWN_COUNTDOWN_SECONDS. */
+export function showDeathScreen(onRespawn: () => void, options: DeathScreenOptions = {}): void {
+  deathOverlay.style.display = 'block';
   deathRespawnBtn.disabled = true;
+
+  if (options.killerName) {
+    const safeName = escapeHtml(options.killerName);
+    const color = options.killerColor && /^#[0-9a-f]{3,6}$/i.test(options.killerColor)
+      ? options.killerColor
+      : '#fff';
+    deathKiller.innerHTML = `KILLED BY <span class="death-killer-name" style="color:${color}">${safeName}</span>`;
+  } else {
+    deathKiller.textContent = '';
+  }
+
   let remaining = RESPAWN_COUNTDOWN_SECONDS;
   deathTimer.textContent = `Respawn available in ${remaining}…`;
   if (deathCountdownInterval) clearInterval(deathCountdownInterval);
@@ -39,6 +58,7 @@ export function showDeathScreen(onRespawn: () => void): void {
 
 export function hideDeathScreen(): void {
   deathOverlay.style.display = 'none';
+  deathKiller.textContent = '';
   if (deathCountdownInterval) { clearInterval(deathCountdownInterval); deathCountdownInterval = null; }
   deathRespawnBtn.onclick = null;
 }
