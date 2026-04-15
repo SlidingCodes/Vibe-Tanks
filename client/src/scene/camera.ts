@@ -197,25 +197,21 @@ export function followTank(
   camera.lookAt(lookTarget.add(lookShakeOffset));
 }
 
-/** Gunner's-seat view: eye above the turret, looking along the barrel. */
+/** Gunner's-seat view: eye above and behind the turret. The camera yaws
+ *  with the turret but stays level — barrel pitch is ignored so the view
+ *  keeps looking forward while the cannon lobs up for long shots. */
 function followTankFirstPerson(
   tankPos: THREE.Vector3,
   turretRotation: number,
-  barrelPitch: number,
+  _barrelPitch: number,
   dt: number,
 ): void {
   const cy = Math.cos(turretRotation);
   const sy = Math.sin(turretRotation);
-  const cp = Math.cos(barrelPitch);
-  const sp = Math.sin(barrelPitch);
 
   const eyeX = tankPos.x - sy * FPV_BACK_OFFSET;
   const eyeY = tankPos.y + FPV_EYE_HEIGHT;
   const eyeZ = tankPos.z - cy * FPV_BACK_OFFSET;
-
-  const dirX = sy * cp;
-  const dirY = sp;
-  const dirZ = cy * cp;
 
   const shakeOffset = new THREE.Vector3();
   const lookShakeOffset = new THREE.Vector3();
@@ -225,9 +221,9 @@ function followTankFirstPerson(
 
   const lookDist = 40;
   camera.lookAt(
-    eyeX + dirX * lookDist + lookShakeOffset.x,
-    eyeY + dirY * lookDist + lookShakeOffset.y,
-    eyeZ + dirZ * lookDist + lookShakeOffset.z,
+    eyeX + sy * lookDist + lookShakeOffset.x,
+    eyeY + lookShakeOffset.y,
+    eyeZ + cy * lookDist + lookShakeOffset.z,
   );
 }
 
