@@ -815,16 +815,19 @@ export class Room {
       if (tank.position.z < -borderPadding) tank.position.z = -borderPadding;
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
-      this.alignTankToVoxelSurface(tank, cellSize);
-
-      // Crater/cliff ragdoll: if the ground has opened up under the tank
-      // (or it drove off an edge), hand off to the airborne integrator
-      // with its current horizontal velocity preserved.
-      const currentTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      if (tank.position.y - currentTerrainY < -AIRBORNE_DROP_THRESHOLD) {
+      // Crater/cliff ragdoll: the previous tick's alignment left
+      // tank.position.y at the then-terrain surface; after that the ground
+      // may have been carved away or the tank may have crossed an edge.
+      // If the fresh terrain-Y is significantly below the stale tank-Y,
+      // the ground fell out from under us — flip airborne before the
+      // alignment step would snap Y back down and hide the gap.
+      const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
+      if (tank.position.y - freshTerrainY > AIRBORNE_DROP_THRESHOLD) {
         this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
         continue;
       }
+
+      this.alignTankToVoxelSurface(tank, cellSize);
 
       const player = this.players.get(pid);
       if (player) {
