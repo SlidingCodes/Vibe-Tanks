@@ -44,6 +44,12 @@ import {
 } from './targeting';
 import { appendTrackSample, buildTrackHistoryPayload } from './trackHistory';
 import {
+  AimUpdateSchema,
+  FireRequestSchema,
+  MovementInputSchema,
+  onValidated,
+} from '../validation';
+import {
   DamageTotals,
   applyImpact,
   buildImpactResult,
@@ -314,12 +320,12 @@ export class Room {
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
     socket.join(this.id);
 
-    socket.on('movement_input', (data: MovementInput) => {
+    onValidated(socket, 'movement_input', MovementInputSchema, (data) => {
       const player = this.players.get(socket.id);
       if (player) player.input = data;
     });
 
-    socket.on('aim_update', (data: { turretRotation: number; barrelPitch: number }) => {
+    onValidated(socket, 'aim_update', AimUpdateSchema, (data) => {
       const tank = this.tanks.get(socket.id);
       if (tank && tank.alive) {
         tank.turretRotation = data.turretRotation;
@@ -327,7 +333,7 @@ export class Room {
       }
     });
 
-    socket.on('fire_request', (data: { weaponId: string; aimPoint?: Vec3 | null }) => {
+    onValidated(socket, 'fire_request', FireRequestSchema, (data) => {
       if (this.phase !== MatchPhase.InProgress) return;
       const tank = this.tanks.get(socket.id);
       const player = this.players.get(socket.id);
