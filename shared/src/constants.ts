@@ -13,6 +13,10 @@ export const GRAVITY = -9.81;
 export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second
+/** Half-distance between the two tread centres — used by tank mesh layout
+ *  and tread-track painting on client + server so both sides mark the same
+ *  voxel columns. */
+export const TANK_TREAD_HALF_WIDTH = 0.7;
 export const MIN_PLAYERS_TO_START = 1;
 export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;

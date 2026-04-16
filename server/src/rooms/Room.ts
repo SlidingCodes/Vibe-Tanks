@@ -148,6 +148,10 @@ export class Room {
     this.scheduleReset();
   }
 
+  private getVoxelSnapshot() {
+    return this.voxels.toSnapshot();
+  }
+
   private scheduleReset(): void {
     if (this.resetTimeout) clearTimeout(this.resetTimeout);
     this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
@@ -188,7 +192,7 @@ export class Room {
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -208,7 +212,7 @@ export class Room {
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
-    socket.emit('voxel_snapshot', this.voxels.toSnapshot());
+    socket.emit('voxel_snapshot', this.getVoxelSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -707,7 +711,7 @@ export class Room {
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.startLoop();
   }
 

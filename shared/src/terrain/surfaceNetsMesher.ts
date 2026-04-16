@@ -221,7 +221,10 @@ export function buildSurfaceNetsChunk(
             baseG += (SAND_G - baseG) * beachT;
             baseB += (SAND_B - baseB) * beachT;
           }
-          // 2) Scorch darkens the base toward BURNT, additive across hits.
+          // 2) Scorch darkens the base toward BURNT. Tread tracks are drawn
+          //    in a separate decal texture by the client terrain shader, so
+          //    they no longer participate in per-vertex color baking.
+          let r = baseR, g = baseG, b = baseB;
           let s = 0;
           if (scorchAt) {
             const avg = (
@@ -236,9 +239,9 @@ export function buildSurfaceNetsChunk(
             ) / (8 * 255);
             s = avg > 1 ? 1 : avg;
           }
-          let r = baseR + (BURNT_R - baseR) * s;
-          let g = baseG + (BURNT_G - baseG) * s;
-          let b = baseB + (BURNT_B - baseB) * s;
+          r = r + (BURNT_R - r) * s;
+          g = g + (BURNT_G - g) * s;
+          b = b + (BURNT_B - b) * s;
           if (bedrockTopY !== undefined) {
             // Smoothly take over below bedrockTopY: 1 at the surface, 0 a
             // BEDROCK_BLEND_HEIGHT band above. Anything well below is fully grey.
