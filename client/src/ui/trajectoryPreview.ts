@@ -1,13 +1,11 @@
 import * as THREE from 'three';
-import { GRAVITY } from '@shared/constants';
+import { GRAVITY, SIM_DT, SHOT_MAX_SIM_TICKS } from '@shared/constants';
 import { Vec3, WeaponDefinition } from '@shared/types/index';
 import { getTerrainCellSize, getTerrainHeight } from '../scene/terrain';
 
 const MAX_PARENT_DOTS = 80;
 const MAX_FRAGMENT_DOTS = 90;
-const SIM_DT = 1 / 60;
 const TICKS_PER_DOT = 4;
-const MAX_TICKS = 900;
 
 interface SegmentOptions {
   splitTime?: number;
@@ -130,7 +128,7 @@ function simulateSegment(startPos: Vec3, startVel: Vec3, options: SegmentOptions
   let elapsed = 0;
   let reason: SegmentResult['reason'] = 'bounds';
 
-  for (let tick = 0; tick < MAX_TICKS; tick++) {
+  for (let tick = 0; tick < SHOT_MAX_SIM_TICKS; tick++) {
     vel.y += GRAVITY * SIM_DT;
     pos.x += vel.x * SIM_DT;
     pos.y += vel.y * SIM_DT;
