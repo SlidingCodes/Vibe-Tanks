@@ -21,10 +21,8 @@ import {
   TANK_MAX_HP,
   MIN_PLAYERS_TO_START,
   MAX_PLAYERS,
-  SPAWN_MIN_DISTANCE,
   TICK_RATE,
   SIM_TICK_RATE,
-  TANK_TREAD_HALF_WIDTH,
 } from '@shared/constants';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
@@ -38,6 +36,13 @@ import {
 import { WEAPONS } from '@shared/weapons';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
+import {
+  findNearestEnemy as findNearestEnemyFn,
+  isTargetValid as isTargetValidFn,
+  findTankInRadius as findTankInRadiusFn,
+  findSpawnPosition as findSpawnPositionFn,
+} from './targeting';
+import { appendTrackSample, buildTrackHistoryPayload } from './trackHistory';
 import {
   DamageTotals,
   applyImpact,
@@ -56,13 +61,6 @@ const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#a
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
-/** Min horizontal distance a tank must move between consecutive track samples.
- *  Slightly coarser than the client's live paint step so the history payload
- *  stays compact. Clients interpolate between samples via straight segments. */
-const TRACK_SAMPLE_STEP = 0.4;
-/** Rolling cap per tank on stored samples. ~1000 points × ~0.4 units ≈ 400
- *  units of trail, plenty for one match; older samples drop off silently. */
-const TRACK_HISTORY_MAX_POINTS = 1000;
 
 interface PlayerState {
   socket: Socket;
@@ -234,7 +232,7 @@ export class Room {
 
     socket.emit('room_snapshot', this.getSnapshot());
     socket.emit('voxel_snapshot', this.getVoxelSnapshot());
-    socket.emit('track_history', this.buildTrackHistoryPayload());
+    socket.emit('track_history', buildTrackHistoryPayload(this.trackHistory));
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -310,58 +308,7 @@ export class Room {
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
-    const cellSize = this.voxels.cellSize;
-    const w = this.voxels.sizeX * cellSize;
-    const h = this.voxels.sizeZ * cellSize;
-    const edgePadding = Math.max(6, cellSize * 6);
-    const centerX = w / 2;
-    const centerZ = h / 2;
-    let bestCandidate: { x: number; y: number; z: number } | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (let attempt = 0; attempt < 96; attempt++) {
-      const x = edgePadding + Math.random() * Math.max(cellSize, w - edgePadding * 2);
-      const z = edgePadding + Math.random() * Math.max(cellSize, h - edgePadding * 2);
-      const y = this.voxels.getHeight(x, z);
-
-      let tooClose = false;
-      let nearestTankDistance = Number.POSITIVE_INFINITY;
-      for (const tank of this.tanks.values()) {
-        const dx = tank.position.x - x;
-        const dz = tank.position.z - z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        nearestTankDistance = Math.min(nearestTankDistance, dist);
-        if (dist < SPAWN_MIN_DISTANCE) {
-          tooClose = true;
-          break;
-        }
-      }
-      if (tooClose) continue;
-
-      const slope = this.voxels.getSlopeMagnitude(x, z);
-      const relief = this.voxels.getLocalRelief(x, z, cellSize * 2.5);
-      const centerBias = Math.hypot(x - centerX, z - centerZ) / Math.max(1, Math.hypot(centerX, centerZ));
-      const spacingPenalty = nearestTankDistance === Number.POSITIVE_INFINITY
-        ? 0
-        : 1 / Math.max(nearestTankDistance, SPAWN_MIN_DISTANCE);
-      const score = slope * 2.4 + relief * 0.75 + centerBias * 0.5 + spacingPenalty;
-      const candidate = { x, y, z };
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestCandidate = candidate;
-      }
-
-      if (slope <= 0.45 && relief <= 1.8) {
-        return candidate;
-      }
-    }
-
-    if (bestCandidate) return bestCandidate;
-
-    const x = centerX;
-    const z = centerZ;
-    return { x, y: this.voxels.getHeight(x, z), z };
+    return findSpawnPositionFn(this.voxels, this.tanks.values());
   }
 
   private bindEvents(socket: Socket<ClientEvents, ServerEvents>): void {
@@ -609,7 +556,7 @@ export class Room {
       position,
       velocity,
       visualStyle: 'seeker',
-      targetId: this.findNearestEnemy(position, tank.playerId, weapon.behaviorConfig?.seekerTargetRadius ?? 24),
+      targetId: findNearestEnemyFn(position, tank.playerId, weapon.behaviorConfig?.seekerTargetRadius ?? 24, this.tanks.values()),
       age: 0,
       lifetime: weapon.behaviorConfig?.seekerLifetime ?? 5,
       turnRate: weapon.behaviorConfig?.seekerTurnRate ?? 3.5,
@@ -789,7 +736,11 @@ export class Room {
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
       this.alignTankToVoxelSurface(tank, cellSize);
-      this.sampleTrackHistory(pid, tank);
+      const player = this.players.get(pid);
+      if (player) {
+        const newSample = appendTrackSample(this.trackHistory, pid, tank, player.lastTrackSampleAt);
+        if (newSample) player.lastTrackSampleAt = newSample;
+      }
 
       // Deep water suicide: if the tank's Y (voxel surface) is significantly
       // below SEA_LEVEL, it's a kill.
@@ -814,47 +765,6 @@ export class Room {
 
   /** Append a tread-track sample for this tank if it has moved far enough
    *  since the last sample. Old samples roll off once the rolling cap is hit. */
-  private sampleTrackHistory(playerId: PlayerId, tank: TankState): void {
-    const player = this.players.get(playerId);
-    if (!player || !tank.alive) return;
-    const px = tank.position.x;
-    const pz = tank.position.z;
-    const prev = player.lastTrackSampleAt;
-    if (prev) {
-      const dx = px - prev.x;
-      const dz = pz - prev.z;
-      if (dx * dx + dz * dz < TRACK_SAMPLE_STEP * TRACK_SAMPLE_STEP) return;
-    }
-    const rightX = Math.cos(tank.bodyRotation);
-    const rightZ = -Math.sin(tank.bodyRotation);
-    const point: TrackHistoryPoint = {
-      leftX: px - TANK_TREAD_HALF_WIDTH * rightX,
-      leftZ: pz - TANK_TREAD_HALF_WIDTH * rightZ,
-      rightX: px + TANK_TREAD_HALF_WIDTH * rightX,
-      rightZ: pz + TANK_TREAD_HALF_WIDTH * rightZ,
-    };
-    let arr = this.trackHistory.get(playerId);
-    if (!arr) {
-      arr = [];
-      this.trackHistory.set(playerId, arr);
-    }
-    arr.push(point);
-    if (arr.length > TRACK_HISTORY_MAX_POINTS) arr.shift();
-    player.lastTrackSampleAt = { x: px, z: pz };
-  }
-
-  /** Build the TrackHistory payload sent to a joining client. One entry per
-   *  player that has ever laid down tracks in the current match (including
-   *  disconnected players — their trails persist until match reset). */
-  private buildTrackHistoryPayload(): TrackHistory {
-    const payload: TrackHistory = [];
-    for (const [playerId, points] of this.trackHistory) {
-      if (points.length === 0) continue;
-      payload.push({ playerId, points: points.slice() });
-    }
-    return payload;
-  }
-
   /** Snap Y/pitch/roll to the voxel surface so the server-computed muzzle
    *  position matches the client's voxel-driven mesh on sloped ground. */
   private alignTankToVoxelSurface(tank: TankState, cellSize: number): void {
@@ -878,8 +788,8 @@ export class Room {
     for (const [projectileId, projectile] of this.activeProjectiles) {
       projectile.age += dt;
 
-      if (!projectile.targetId || !this.isTargetValid(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position)) {
-        projectile.targetId = this.findNearestEnemy(projectile.position, projectile.ownerId, projectile.targetRadius);
+      if (!projectile.targetId || !isTargetValidFn(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position, this.tanks)) {
+        projectile.targetId = findNearestEnemyFn(projectile.position, projectile.ownerId, projectile.targetRadius, this.tanks.values());
       }
 
       const speed = Math.sqrt(
@@ -1009,7 +919,7 @@ export class Room {
             hazard.armed = true;
           }
         } else {
-          const triggered = this.findTankInRadius(hazard.position, hazard.triggerRadius, hazard.ownerId);
+          const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
           if (triggered) {
             const damageTotals: DamageTotals = new Map();
             const carveTerrain = applyImpact({
@@ -1085,46 +995,6 @@ export class Room {
         killed: false,
       }]);
     }
-  }
-
-  private findNearestEnemy(origin: Vec3, ownerId: PlayerId, radius: number): PlayerId | null {
-    let bestId: PlayerId | null = null;
-    let bestDist = radius;
-
-    for (const tank of this.tanks.values()) {
-      if (!tank.alive || tank.playerId === ownerId) continue;
-      const dx = tank.position.x - origin.x;
-      const dy = tank.position.y - origin.y;
-      const dz = tank.position.z - origin.z;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestId = tank.playerId;
-      }
-    }
-
-    return bestId;
-  }
-
-  private isTargetValid(targetId: PlayerId, ownerId: PlayerId, radius: number, origin: Vec3): boolean {
-    const target = this.tanks.get(targetId);
-    if (!target || !target.alive || target.playerId === ownerId) return false;
-    const dx = target.position.x - origin.x;
-    const dy = target.position.y - origin.y;
-    const dz = target.position.z - origin.z;
-    return Math.sqrt(dx * dx + dy * dy + dz * dz) <= radius;
-  }
-
-  private findTankInRadius(point: Vec3, radius: number, ignorePlayerId: PlayerId): TankState | null {
-    for (const tank of this.tanks.values()) {
-      if (!tank.alive || tank.playerId === ignorePlayerId) continue;
-      const dx = tank.position.x - point.x;
-      const dz = tank.position.z - point.z;
-      if (Math.sqrt(dx * dx + dz * dz) <= radius) {
-        return tank;
-      }
-    }
-    return null;
   }
 
   private getTankList(): TankState[] {
