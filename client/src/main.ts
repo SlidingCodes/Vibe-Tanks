@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { GRAVITY } from '@shared/constants';
+import { GRAVITY, TANK_TREAD_HALF_WIDTH } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
@@ -8,6 +8,7 @@ import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfac
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { VoxelPaint } from '@shared/terrain/VoxelPaint';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -216,9 +217,19 @@ let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
+let voxelTracks: VoxelPaint | null = null;
+/** Last XZ position at which we painted a tread-track stroke for each tank.
+ *  Drives the distance-based throttle that keeps stationary tanks from
+ *  stacking paint on one spot. Entries are cleared on voxel_snapshot (match
+ *  reset / rejoin) and when a tank goes dead → alive (new spawn point). */
+const lastTrackPosByPlayer = new Map<string, { x: number; z: number }>();
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
+
+const TRACK_PAINT_STEP = 0.4;
+const TRACK_PAINT_RADIUS = 0.55;
+const TRACK_PAINT_STRENGTH = 0.5;
 
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
@@ -234,11 +245,20 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
+  // Tread tracks are server-authoritative: the snapshot ships the paint
+  // bytes so late joiners see existing trails. Subsequent live painting
+  // happens locally each frame from broadcast tank positions (consistent
+  // with the server's own painting at the voxel resolution).
+  voxelTracks = new VoxelPaint(voxelGrid);
+  if (snap.tracks) {
+    voxelTracks.loadBytes(new Uint8Array(snap.tracks));
+  }
+  lastTrackPosByPlayer.clear();
   if (!surfaceNets) {
-    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch);
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, voxelTracks);
     surfaceNets.setVisible(surfaceNetsVisible);
   } else {
-    surfaceNets.rebuild(voxelGrid, voxelScorch);
+    surfaceNets.rebuild(voxelGrid, voxelScorch, voxelTracks);
     surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
@@ -498,6 +518,41 @@ function getMapBounds(): { w: number; h: number } {
   };
 }
 
+/** Paint tread tracks into the voxel paint buffer for every alive tank.
+ *  Runs after interpolation so every mesh's position/rotation reflects the
+ *  current render state. Mirrors the server's 60Hz paint loop — since tanks
+ *  are broadcast and interpolated consistently across clients, each client
+ *  draws the same trail locally (no per-paint network traffic; the initial
+ *  snapshot carries existing state for late joiners). */
+function paintLiveTreadTracks(): void {
+  if (!voxelTracks || !surfaceNets) return;
+  for (const [pid, tm] of getAllTankMeshes()) {
+    if (!tm.state.alive) continue;
+    const px = tm.group.position.x;
+    const pz = tm.group.position.z;
+    const prev = lastTrackPosByPlayer.get(pid);
+    if (prev) {
+      const dx = px - prev.x;
+      const dz = pz - prev.z;
+      if (dx * dx + dz * dz < TRACK_PAINT_STEP * TRACK_PAINT_STEP) continue;
+    }
+    const yaw = tm.group.rotation.y;
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+    const leftX = px - TANK_TREAD_HALF_WIDTH * rightX;
+    const leftZ = pz - TANK_TREAD_HALF_WIDTH * rightZ;
+    const rightTreadX = px + TANK_TREAD_HALF_WIDTH * rightX;
+    const rightTreadZ = pz + TANK_TREAD_HALF_WIDTH * rightZ;
+    const leftY = getTerrainHeight(leftX, leftZ);
+    const rightY = getTerrainHeight(rightTreadX, rightTreadZ);
+    voxelTracks.addSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
+    voxelTracks.addSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
+    surfaceNets.invalidateSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS);
+    surfaceNets.invalidateSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS);
+    lastTrackPosByPlayer.set(pid, { x: px, z: pz });
+  }
+}
+
 function animate(): void {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -665,6 +720,7 @@ function animate(): void {
   }
 
   interpolateRemoteTanks(dt, myId);
+  paintLiveTreadTracks();
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
   updateProjectileAnimation(scene, dt);

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE, SurfaceNetsOptions } from '@shared/terrain/surfaceNetsMesher';
+import { VoxelPaint } from '@shared/terrain/VoxelPaint';
 import { Vec3 } from '@shared/types/index';
 import { VoxelScorch } from './voxelScorch';
 
@@ -26,7 +27,7 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
 export interface SurfaceNetsHandle {
   group: THREE.Group;
   dispose(): void;
-  rebuild(grid: VoxelGrid, scorch?: VoxelScorch): void;
+  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, tracks?: VoxelPaint): void;
   invalidateSphere(center: Vec3, radius: number): void;
   /** Rebuild all chunks dirtied since the last flush. Call once per frame
    *  before renderer.render() to batch multiple same-frame invalidations. */
@@ -58,6 +59,7 @@ export function createSurfaceNetsTerrain(
   grid: VoxelGrid,
   scene: THREE.Scene,
   scorch?: VoxelScorch,
+  tracks?: VoxelPaint,
 ): SurfaceNetsHandle {
   // Always vertex-coloured: the mesher emits a heightmap-style gray/brown/
   // green palette + an optional scorch overlay. Material colour stays white
@@ -77,11 +79,13 @@ export function createSurfaceNetsTerrain(
   const dirtyChunks = new Set<string>();
   let activeGrid = grid;
   let activeScorch = scorch;
+  let activeTracks = tracks;
   let activeElevation = computeElevationRange(grid);
   const meshOptions = (): SurfaceNetsOptions => ({
     elevationRange: activeElevation,
     bedrockTopY: activeGrid.bedrockSurfaceY,
     ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
+    ...(activeTracks ? { tracksAt: (ix, iy, iz) => activeTracks!.sampleAt(ix, iy, iz) } : {}),
   });
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
@@ -115,9 +119,10 @@ export function createSurfaceNetsTerrain(
     chunks.clear();
   }
 
-  function rebuildAll(g: VoxelGrid, s?: VoxelScorch): void {
+  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: VoxelPaint): void {
     activeGrid = g;
     if (s !== undefined) activeScorch = s;
+    if (t !== undefined) activeTracks = t;
     // Snapshot terrain bounds for the elevation palette. Recomputed on each
     // full rebuild — incremental carves don't refresh it, so the palette
     // drifts very slightly as deep craters appear, but never enough to be
@@ -193,9 +198,9 @@ export function createSurfaceNetsTerrain(
       material.dispose();
       scene.remove(group);
     },
-    rebuild(g: VoxelGrid, s?: VoxelScorch): void {
+    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: VoxelPaint): void {
       dirtyChunks.clear();
-      rebuildAll(g, s);
+      rebuildAll(g, s, t);
     },
     invalidateSphere,
     flushDirtyChunks,

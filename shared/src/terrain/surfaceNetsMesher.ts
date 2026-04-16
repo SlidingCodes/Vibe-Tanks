@@ -41,6 +41,10 @@ export interface SurfaceNetsOptions {
    *  per-vertex base color is darkened toward BURNT proportional to the
    *  8-corner scorch average around each dual cube. */
   scorchAt?: (ix: number, iy: number, iz: number) => number;
+  /** Optional tank-tread track sampler (voxel index → 0..255). Tints vertices
+   *  toward a dark-earth tone at a capped strength, applied before scorch so
+   *  explosions visually win over tracks inside craters. */
+  tracksAt?: (ix: number, iy: number, iz: number) => number;
   /** Min/max terrain elevation in world units. When provided, the per-vertex
    *  base color follows a gray (low) → brown (mid) → green (high) palette
    *  matching the original heightmap renderer. */
@@ -75,6 +79,13 @@ const [HIGH_R,  HIGH_G,  HIGH_B ] = srgbHex(0x5f9b45); // green
 const [BASE_R,  BASE_G,  BASE_B ] = srgbHex(0x9c6a38);
 // Target at full scorch — near black for clean burn rings.
 const [BURNT_R, BURNT_G, BURNT_B] = srgbHex(0x080503);
+// Target for tread tracks — warm dark earth, softer than scorch so tracks
+// read as compressed dirt rather than burn marks.
+const [TRACK_R, TRACK_G, TRACK_B] = srgbHex(0x3a281a);
+/** Cap the per-vertex track mix so fully saturated paint still lets the base
+ *  palette show through. Scorch goes to full black for clean burn rings;
+ *  tracks should never look like burns. */
+const TRACK_MAX_MIX = 0.55;
 // Bedrock — neutral medium grey, distinctly stony vs the elevation palette's
 // low-tone grey. Blends in over a half-cell band beneath bedrockTopY.
 const [BED_R, BED_G, BED_B] = srgbHex(0x6a6a6a);
@@ -119,9 +130,10 @@ export function buildSurfaceNetsChunk(
   const indices: number[] = [];
   const colors: number[] = [];
   const scorchAt = options.scorchAt;
+  const tracksAt = options.tracksAt;
   const elevationRange = options.elevationRange;
   const bedrockTopY = options.bedrockTopY;
-  const emitColors = scorchAt !== undefined || elevationRange !== undefined || bedrockTopY !== undefined;
+  const emitColors = scorchAt !== undefined || tracksAt !== undefined || elevationRange !== undefined || bedrockTopY !== undefined;
   const elevMin = elevationRange ? elevationRange.min : 0;
   const elevSpan = elevationRange ? Math.max(1e-3, elevationRange.max - elevationRange.min) : 1;
 
@@ -221,7 +233,27 @@ export function buildSurfaceNetsChunk(
             baseG += (SAND_G - baseG) * beachT;
             baseB += (SAND_B - baseB) * beachT;
           }
-          // 2) Scorch darkens the base toward BURNT, additive across hits.
+          // 2) Tread tracks darken the base toward TRACK (soft cap so tracks
+          //    never look like full burn rings). Applied before scorch so
+          //    explosions inside craters still read as near-black.
+          let r = baseR, g = baseG, b = baseB;
+          if (tracksAt) {
+            const avg = (
+              tracksAt(ci,     cj,     ck    ) +
+              tracksAt(ci + 1, cj,     ck    ) +
+              tracksAt(ci,     cj + 1, ck    ) +
+              tracksAt(ci + 1, cj + 1, ck    ) +
+              tracksAt(ci,     cj,     ck + 1) +
+              tracksAt(ci + 1, cj,     ck + 1) +
+              tracksAt(ci,     cj + 1, ck + 1) +
+              tracksAt(ci + 1, cj + 1, ck + 1)
+            ) / (8 * 255);
+            const t = (avg > 1 ? 1 : avg) * TRACK_MAX_MIX;
+            r = r + (TRACK_R - r) * t;
+            g = g + (TRACK_G - g) * t;
+            b = b + (TRACK_B - b) * t;
+          }
+          // 3) Scorch darkens the (possibly already-tracked) base toward BURNT.
           let s = 0;
           if (scorchAt) {
             const avg = (
@@ -236,9 +268,9 @@ export function buildSurfaceNetsChunk(
             ) / (8 * 255);
             s = avg > 1 ? 1 : avg;
           }
-          let r = baseR + (BURNT_R - baseR) * s;
-          let g = baseG + (BURNT_G - baseG) * s;
-          let b = baseB + (BURNT_B - baseB) * s;
+          r = r + (BURNT_R - r) * s;
+          g = g + (BURNT_G - g) * s;
+          b = b + (BURNT_B - b) * s;
           if (bedrockTopY !== undefined) {
             // Smoothly take over below bedrockTopY: 1 at the surface, 0 a
             // BEDROCK_BLEND_HEIGHT band above. Anything well below is fully grey.

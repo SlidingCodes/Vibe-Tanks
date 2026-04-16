@@ -22,6 +22,7 @@ import {
   SPAWN_MIN_DISTANCE,
   TICK_RATE,
   SIM_TICK_RATE,
+  TANK_TREAD_HALF_WIDTH,
 } from '../../../shared/src/constants';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
@@ -34,6 +35,7 @@ import {
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
+import { VoxelPaint } from '../../../shared/src/terrain/VoxelPaint';
 import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
 import {
   DamageTotals,
@@ -53,6 +55,16 @@ const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#a
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+/** Minimum horizontal distance a tank must move before the next tread-track
+ *  paint stroke is committed. Tuned so a driving tank lays a continuous strip
+ *  at ~half a voxel cell, dense enough to read as a trail. */
+const TRACK_PAINT_STEP = 0.4;
+/** Paint sphere radius at each tread contact — covers 2–3 voxels so the
+ *  mesher's 8-corner average reads a clear darkening at the surface. */
+const TRACK_PAINT_RADIUS = 0.55;
+/** Strength per stroke. Sub-1.0 so repeated passes over the same patch
+ *  deepen the tone without instantly saturating. */
+const TRACK_PAINT_STRENGTH = 0.5;
 
 interface PlayerState {
   socket: Socket;
@@ -62,6 +74,10 @@ interface PlayerState {
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
   respawnAllowedAt: number;
+  /** Last tank XZ position at which we committed a tread-track paint stroke.
+   *  null before the tank has moved (or just respawned) — forces a paint on
+   *  the first post-respawn tick so tracks start right at the spawn point. */
+  lastTrackPos: { x: number; z: number } | null;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -107,6 +123,10 @@ export class Room {
    *  on every impact; all physics, simulation and client rendering read from
    *  this single source of truth. */
   voxels: VoxelGrid;
+  /** Authoritative tread-track paint parallel to the voxel grid. Painted in
+   *  the 60Hz movement tick as tanks drive; shipped to joining clients via
+   *  voxel_snapshot so late joiners see the existing trails. */
+  tracks: VoxelPaint;
   /** Rapier world: per-chunk TriMesh terrain colliders + a kinematic-position
    *  ball body per tank driven by Rapier's KinematicCharacterController.
    *  Authoritative for tank movement and shot/terrain collisions. */
@@ -144,8 +164,15 @@ export class Room {
       minYCells: -16,
     });
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
+    this.tracks = new VoxelPaint(this.voxels);
     this.physics = new RapierVoxelWorld(this.voxels);
     this.scheduleReset();
+  }
+
+  /** Attach the current tracks bytes to the grid snapshot so clients receive
+   *  both atomically on join / match reset / match start. */
+  private getVoxelSnapshot() {
+    return { ...this.voxels.toSnapshot(), tracks: this.tracks.serialize() };
   }
 
   private scheduleReset(): void {
@@ -166,6 +193,7 @@ export class Room {
     this.terrainSeed = createRandomTerrainSeed();
     this.voxels.clear();
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
+    this.tracks.clear();
     this.physics.setGrid(this.voxels);
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
@@ -182,13 +210,14 @@ export class Room {
       if (player) {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
+        player.lastTrackPos = null;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -202,13 +231,14 @@ export class Room {
       lastFireTime: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
+      lastTrackPos: null,
     });
 
     this.spawnTank(playerId, playerName, color);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
-    socket.emit('voxel_snapshot', this.voxels.toSnapshot());
+    socket.emit('voxel_snapshot', this.getVoxelSnapshot());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -701,13 +731,14 @@ export class Room {
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    player.lastTrackPos = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
   private startMatch(): void {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
-    this.io.to(this.id).emit('voxel_snapshot', this.voxels.toSnapshot());
+    this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.startLoop();
   }
 
@@ -763,6 +794,7 @@ export class Room {
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
       this.alignTankToVoxelSurface(tank, cellSize);
+      this.paintTankTracks(pid, tank);
 
       // Deep water suicide: if the tank's Y (voxel surface) is significantly
       // below SEA_LEVEL, it's a kill.
@@ -783,6 +815,35 @@ export class Room {
         });
       }
     }
+  }
+
+  /** Paint tread tracks on the voxel surface at each tread contact point.
+   *  Throttled by horizontal travel distance per tank so a stationary tank
+   *  doesn't stack paint, and so high-speed tanks don't skip coverage. */
+  private paintTankTracks(playerId: PlayerId, tank: TankState): void {
+    const player = this.players.get(playerId);
+    if (!player) return;
+    const px = tank.position.x;
+    const pz = tank.position.z;
+    const prev = player.lastTrackPos;
+    if (prev) {
+      const dx = px - prev.x;
+      const dz = pz - prev.z;
+      if (dx * dx + dz * dz < TRACK_PAINT_STEP * TRACK_PAINT_STEP) return;
+    }
+    // Tread offset is the right-vector × ±half-width (yaw-only so client and
+    // server agree without threading pitch/roll through).
+    const rightX = Math.cos(tank.bodyRotation);
+    const rightZ = -Math.sin(tank.bodyRotation);
+    const leftX = px - TANK_TREAD_HALF_WIDTH * rightX;
+    const leftZ = pz - TANK_TREAD_HALF_WIDTH * rightZ;
+    const rightTreadX = px + TANK_TREAD_HALF_WIDTH * rightX;
+    const rightTreadZ = pz + TANK_TREAD_HALF_WIDTH * rightZ;
+    const leftY = this.voxels.getHeight(leftX, leftZ);
+    const rightY = this.voxels.getHeight(rightTreadX, rightTreadZ);
+    this.tracks.addSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
+    this.tracks.addSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
+    player.lastTrackPos = { x: px, z: pz };
   }
 
   /** Snap Y/pitch/roll to the voxel surface so the server-computed muzzle
