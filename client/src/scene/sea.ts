@@ -48,8 +48,9 @@ export function createSea(scene: THREE.Scene): SeaHandle {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
 
-    const head = `
+    const vertexHead = `
       uniform float uTime;
+      varying float vFoam;
       float waveSum(vec2 p) {
         float h = 0.0;
         h += sin(dot(vec2( 0.98,  0.20), p) * 0.50 + uTime * 1.2) * 0.45;
@@ -59,7 +60,7 @@ export function createSea(scene: THREE.Scene): SeaHandle {
       }
     `;
 
-    shader.vertexShader = head + shader.vertexShader
+    shader.vertexShader = vertexHead + shader.vertexShader
       .replace(
         '#include <beginnormal_vertex>',
         `
@@ -73,6 +74,7 @@ export function createSea(scene: THREE.Scene): SeaHandle {
         // Local normal of the displaced surface. Y component is +(hZ-h0)/eps
         // (not -) because local +Y → world -Z, so the gradient flips sign.
         vec3 objectNormal = normalize(vec3(-(hX - h0_n) / eps, (hZ - h0_n) / eps, 1.0));
+        vFoam = h0_n;
         `,
       )
       .replace(
@@ -83,6 +85,19 @@ export function createSea(scene: THREE.Scene): SeaHandle {
         transformed.z += h0_n;
         `,
       );
+
+    shader.fragmentShader = 'varying float vFoam;\n' + shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `
+      #include <color_fragment>
+      // Whitecap: top ~30 % of the wave height fades the diffuse colour
+      // toward off-white. Lambert lighting still tints it (sun side
+      // brighter, shade side faintly cyan from ambient), so foam reads as
+      // wet spray rather than a flat white sticker.
+      float foam = smoothstep(0.45, 0.85, vFoam);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95, 0.97, 1.0), foam);
+      `,
+    );
   };
 
   const mesh = new THREE.Mesh(geometry, material);
