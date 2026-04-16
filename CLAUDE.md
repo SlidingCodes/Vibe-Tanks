@@ -30,6 +30,12 @@ npm run dev:client
 # Build client for production
 npm run build:client
 
+# Run the shared/ unit test suite (Vitest)
+npm test
+
+# Re-run tests on change while editing
+npm run test:watch
+
 # Type-check server
 cd server && npx tsc --noEmit
 
