@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "postinstall": "cd server && npm install && cd ../client && npm install",
-    "dev:server": "cd server && npx ts-node src/index.ts",
+    "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npx vite",
     "build:client": "cd client && npx vite build",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
