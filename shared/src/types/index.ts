@@ -39,6 +39,16 @@ export interface TankState {
   alive: boolean;
   score: number;
   color: string;
+  /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
+   *  tossed, or mid-fall after the ground was carved away). In this mode the
+   *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
+   *  yaw reflect the body's actual rotation rather than the terrain tilt. */
+  airborne: boolean;
+  /** Linear velocity (world units / second). Only meaningful when `airborne`. */
+  linVel: Vec3;
+  /** Angular velocity around X/Y/Z axes (radians / second). Only meaningful
+   *  when `airborne`. */
+  angVel: Vec3;
 }
 
 // ── Weapons ──
@@ -265,6 +275,11 @@ export interface ShotResult {
   weaponId: string;
   steps: ShotStep[];
   damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
+  /** Per-tank kinetic impulse (world-units / second velocity delta) to be
+   *  applied at impact time. Populated by the simulator; the room applies
+   *  it to the tank's linVel and flips airborne if |delta| exceeds the
+   *  AIRBORNE_ENTRY_SPEED threshold. */
+  impulses?: { playerId: PlayerId; impulse: Vec3 }[];
 }
 
 // ── Network events: client → server ──

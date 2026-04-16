@@ -187,7 +187,12 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     existingIds.delete(tankState.playerId);
 
     if (tankState.playerId === myId) {
-      predictedState = { ...tankState, position: { ...tankState.position } };
+      predictedState = {
+        ...tankState,
+        position: { ...tankState.position },
+        linVel: { ...tankState.linVel },
+        angVel: { ...tankState.angVel },
+      };
     }
   }
   for (const id of existingIds) {
@@ -332,8 +337,13 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.maxHp = tankState.maxHp;
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
-        predictedState.bodyPitch = tankState.bodyPitch;
-        predictedState.bodyRoll = tankState.bodyRoll;
+        predictedState.airborne = tankState.airborne;
+        predictedState.linVel.x = tankState.linVel.x;
+        predictedState.linVel.y = tankState.linVel.y;
+        predictedState.linVel.z = tankState.linVel.z;
+        predictedState.angVel.x = tankState.angVel.x;
+        predictedState.angVel.y = tankState.angVel.y;
+        predictedState.angVel.z = tankState.angVel.z;
 
         if (justRespawned) {
           predictedState.position.x = tankState.position.x;
@@ -347,7 +357,20 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedVel.x = 0;
           predictedVel.z = 0;
           triggerRespawnAnim(myId);
+        } else if (tankState.airborne) {
+          // Airborne is fully server-authoritative: no client prediction
+          // can model gravity + angVel + terrain contact accurately, so
+          // we snap to the broadcast transform. The mesh still interpolates
+          // between state_updates via updateLocalTankMesh each frame.
+          predictedState.position.x = tankState.position.x;
+          predictedState.position.y = tankState.position.y;
+          predictedState.position.z = tankState.position.z;
+          predictedState.bodyRotation = tankState.bodyRotation;
+          predictedState.bodyPitch = tankState.bodyPitch;
+          predictedState.bodyRoll = tankState.bodyRoll;
         } else {
+          predictedState.bodyPitch = tankState.bodyPitch;
+          predictedState.bodyRoll = tankState.bodyRoll;
           const RECONCILE_RATE = 0.15;
           predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
           predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
@@ -609,7 +632,15 @@ function animate(): void {
     }
 
     const { w: mapW, h: mapH } = getMapBounds();
-    stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, voxelGrid?.cellSize ?? 1);
+    if (predictedState.airborne) {
+      // Airborne: server owns the trajectory. We still pump predictedVel to
+      // zero so the moment the server returns the tank to grounded the
+      // local integrator doesn't inherit stale driving momentum.
+      predictedVel.x = 0;
+      predictedVel.z = 0;
+    } else {
+      stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, voxelGrid?.cellSize ?? 1);
+    }
 
     updateLocalTankMesh(predictedState);
 

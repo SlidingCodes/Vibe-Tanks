@@ -9,7 +9,7 @@ import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
  *  catch on crater lips / tunnel stipes the way a cuboid did, and the
  *  KCC enforces a slope climb limit so it won't ride up overhanging
  *  terrain instead of entering the opening. */
-const HULL_RADIUS = 0.8;
+export const HULL_RADIUS = 0.8;
 const BODY_Y_OFFSET = HULL_RADIUS;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
@@ -210,11 +210,39 @@ export class RapierVoxelWorld {
     entry.input = { ...input };
   }
 
+  /** Bypass the KCC and write the tank body's next translation directly.
+   *  Used while a tank is airborne (ragdoll mode): the shared airborne
+   *  integrator computes the next position, and Rapier just tracks it.
+   *  Rotation is left alone since the collider is a sphere — pitch/roll
+   *  live on TankState and are rendered client-side. */
+  setTankPosition(id: PlayerId, pos: Vec3): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.body.setNextKinematicTranslation({
+      x: pos.x,
+      y: pos.y + BODY_Y_OFFSET + 0.3,
+      z: pos.z,
+    });
+  }
+
+  /** Clear internal gravity accumulator so a tank returning from airborne
+   *  to grounded doesn't inherit stale falling velocity on the next KCC
+   *  tick. Yaw is re-synced from the TankState authority. */
+  resumeGrounded(id: PlayerId, yaw: number): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.verticalVel = 0;
+    entry.yaw = yaw;
+  }
+
   /** Translate per-tank input into desired movement, let the KCC solve
    *  against the voxel collider mesh, then commit the result as the tank's
-   *  next kinematic translation. Must be called before stepping the world. */
-  applyTankInputs(dt: number): void {
-    for (const entry of this.tanks.values()) {
+   *  next kinematic translation. Must be called before stepping the world.
+   *  Tanks listed in `skipIds` are left alone — the caller (Room) drives
+   *  their transform via setTankPosition while they're airborne. */
+  applyTankInputs(dt: number, skipIds?: Set<PlayerId>): void {
+    for (const [id, entry] of this.tanks) {
+      if (skipIds && skipIds.has(id)) continue;
       const input = entry.input;
       const body = entry.body;
 
