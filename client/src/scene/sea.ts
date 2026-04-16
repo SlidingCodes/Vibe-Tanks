@@ -1,9 +1,11 @@
 import * as THREE from 'three';
+import { SEA_LEVEL } from '@shared/terrain';
 
 // Deep saturated blue matching the lower hemisphere of sky_36_2k. The scene
 // fog blends the far edge of this plane into FOG_COLOR, giving a free
 // near→far gradient that meets the skybox horizon seamlessly.
-const SEA_COLOR = 0x2a5fa8;
+// Deeper, more vibrant blue matching the skybox's lower atmosphere.
+const SEA_COLOR = 0x1a4f9c;
 
 // Plane size + subdivision are sized for a "patch follows camera" setup:
 // the plane half-width (400) reaches past fog far (~380 on the default
@@ -18,7 +20,7 @@ const SEA_SEGMENTS = 300;
 // blocks crater carves, so the sea is never exposed inside the playable
 // area — it only fills the void around the map perimeter, where the
 // bedrock cliff between -8 and SEA_Y reads as a stony shoreline.
-const SEA_Y = -13;
+const SEA_Y = SEA_LEVEL;
 
 // Snap the camera-follow position to a 2-unit grid so the plane geometry
 // never slides sub-pixel distances (which would cause shimmer at the far
@@ -36,27 +38,66 @@ export interface SeaHandle {
 
 export function createSea(scene: THREE.Scene): SeaHandle {
   const geometry = new THREE.PlaneGeometry(SEA_SIZE, SEA_SIZE, SEA_SEGMENTS, SEA_SEGMENTS);
-  const material = new THREE.MeshLambertMaterial({ color: SEA_COLOR, fog: true });
+  const material = new THREE.MeshLambertMaterial({
+    color: SEA_COLOR,
+    fog: true,
+    transparent: true,
+    opacity: 0.88,
+  });
   const uniforms = { uTime: { value: 0 } };
 
-  // Three crossing sine waves (different directions, frequencies, speeds)
-  // displace each vertex vertically. Normals are reconstructed from the
-  // analytical gradient so the directional sun catches the wave faces and
-  // produces real moving light/dark bands — the actual "wave" look.
-  // The wave function keys off WORLD XZ so the surface motion is locked
-  // to world space even while the plane mesh follows the camera.
+  // Gerstner Waves provide a more "artistic" and natural ocean look by
+  // shifting vertices horizontally toward crests, creating peaked waves
+  // rather than simple troughs. Displacement and normals are calculated
+  // analytically in the vertex shader.
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
 
     const vertexHead = `
       uniform float uTime;
       varying float vFoam;
-      float waveSum(vec2 p) {
-        float h = 0.0;
-        h += sin(dot(vec2( 0.98,  0.20), p) * 0.50 + uTime * 1.2) * 0.45;
-        h += sin(dot(vec2(-0.41,  0.91), p) * 0.70 + uTime * 0.9) * 0.30;
-        h += sin(dot(vec2( 0.60, -0.80), p) * 1.10 + uTime * 1.6) * 0.15;
-        return h;
+      varying vec2 vUv;
+
+      struct Wave {
+          vec2 dir;
+          float steepness;
+          float wavelength;
+      };
+
+      // Compact noise for subtle surface variation
+      float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p);
+          vec2 u = f*f*(3.0-2.0*f);
+          return mix(mix(hash(i+vec2(0,0)),hash(i+vec2(1,0)),u.x),
+                     mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y);
+      }
+
+      vec3 gerstnerWave(vec2 p, Wave w, float time, inout vec3 tangent, inout vec3 binormal) {
+          float k = 2.0 * 3.14159 / w.wavelength;
+          float c = sqrt(9.8 / k);
+          vec2 d = normalize(w.dir);
+          float f = k * (dot(d, p) - c * time);
+          float a = w.steepness / k;
+
+          tangent += vec3(
+              -d.x * d.x * (w.steepness * sin(f)),
+              d.x * (w.steepness * cos(f)),
+              -d.x * d.y * (w.steepness * sin(f))
+          );
+          binormal += vec3(
+              -d.x * d.y * (w.steepness * sin(f)),
+              d.y * (w.steepness * cos(f)),
+              -d.y * d.y * (w.steepness * sin(f))
+          );
+
+          return vec3(
+              d.x * (a * cos(f)),
+              a * sin(f),
+              d.y * (a * cos(f))
+          );
       }
     `;
 
@@ -64,38 +105,60 @@ export function createSea(scene: THREE.Scene): SeaHandle {
       .replace(
         '#include <beginnormal_vertex>',
         `
-        // World XZ (the plane is rotated -PI/2 around X, so local +Y maps
-        // to world -Z — the wave field stays world-locked).
         vec2 wPos = (modelMatrix * vec4(position, 1.0)).xz;
-        float eps = 0.5;
-        float h0_n = waveSum(wPos);
-        float hX = waveSum(wPos + vec2(eps, 0.0));
-        float hZ = waveSum(wPos + vec2(0.0, eps));
-        // Local normal of the displaced surface. Y component is +(hZ-h0)/eps
-        // (not -) because local +Y → world -Z, so the gradient flips sign.
-        vec3 objectNormal = normalize(vec3(-(hX - h0_n) / eps, (hZ - h0_n) / eps, 1.0));
-        vFoam = h0_n;
+        vec3 tangent = vec3(1.0, 0.0, 0.0);
+        vec3 binormal = vec3(0.0, 0.0, 1.0);
+        vec3 p = vec3(0.0);
+
+        // 6 waves with irrational/prime coefficients to break tiling
+        Wave w1 = Wave(vec2(1.1, 0.2), 0.32, 37.0);
+        Wave w2 = Wave(vec2(-0.5, 0.8), 0.22, 23.0);
+        Wave w3 = Wave(vec2(0.3, -0.7), 0.18, 13.0);
+        Wave w4 = Wave(vec2(0.9, -0.3), 0.12, 8.5);
+        Wave w5 = Wave(vec2(-0.1, -1.0), 0.08, 5.3);
+        Wave w6 = Wave(vec2(0.6, 0.4), 0.05, 3.1);
+
+        p += gerstnerWave(wPos, w1, uTime, tangent, binormal);
+        p += gerstnerWave(wPos, w2, uTime, tangent, binormal);
+        p += gerstnerWave(wPos, w3, uTime, tangent, binormal);
+        p += gerstnerWave(wPos, w4, uTime, tangent, binormal);
+        p += gerstnerWave(wPos, w5, uTime, tangent, binormal);
+        p += gerstnerWave(wPos, w6, uTime, tangent, binormal);
+
+        // Subtle noise perturbation to break the analytical "perfection"
+        float n = noise(wPos * 0.15 + uTime * 0.2) * 0.4;
+        p.y += n;
+        vFoam = p.y;
+        vUv = wPos;
+
+        vec3 objectNormal = normalize(cross(binormal, tangent));
         `,
       )
       .replace(
         '#include <begin_vertex>',
         `
         vec3 transformed = vec3(position);
-        // Local Z displacement → world Y displacement after the plane's rotation.
-        transformed.z += h0_n;
+        transformed.x += p.x;
+        transformed.y -= p.z;
+        transformed.z += p.y;
         `,
       );
 
-    shader.fragmentShader = 'varying float vFoam;\n' + shader.fragmentShader.replace(
+    shader.fragmentShader = 'uniform float uTime;\nvarying float vFoam;\nvarying vec2 vUv;\n' + shader.fragmentShader.replace(
       '#include <color_fragment>',
       `
       #include <color_fragment>
-      // Whitecap: top ~30 % of the wave height fades the diffuse colour
-      // toward off-white. Lambert lighting still tints it (sun side
-      // brighter, shade side faintly cyan from ambient), so foam reads as
-      // wet spray rather than a flat white sticker.
-      float foam = smoothstep(0.45, 0.85, vFoam);
-      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95, 0.97, 1.0), foam);
+      // Organic foam: crest-based foam perturbed by noise to break the rings.
+      // Now keyed to vUv (world XZ) so it doesn't "swim" when the camera moves.
+      float n = fract(sin(dot(vUv * 0.1, vec2(12.9898, 78.233))) * 43758.5453);
+      float noiseMask = (sin(vUv.x * 0.5 + uTime) * sin(vUv.y * 0.5 - uTime)) * 0.5 + 0.5;
+      
+      float foam = smoothstep(0.7, 1.35, vFoam + noiseMask * 0.25);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 1.0), foam);
+      diffuseColor.a = mix(diffuseColor.a, 1.0, foam);
+
+      float trough = smoothstep(-1.5, 0.6, vFoam);
+      diffuseColor.rgb *= mix(0.7, 1.0, trough);
       `,
     );
   };

@@ -67,9 +67,11 @@ const scene = new THREE.Scene();
 // Horizon-matched fog color so distant terrain blends into the painted skybox
 // rather than the old flat cyan. Picked to match the hazy band right above the
 // horizon line of sky_36_2k.
-const FOG_COLOR = 0xa8c0d8;
+// Vibrant sky blue that matches the lower atmosphere of the skybox.
+// Tends slightly toward cyan to make the sea-meeting horizon feel deeper.
+const FOG_COLOR = 0x8baed0;
 scene.background = new THREE.Color(FOG_COLOR);
-scene.fog = new THREE.Fog(FOG_COLOR, 60, 120);
+scene.fog = new THREE.Fog(FOG_COLOR, 80, 160);
 
 // Equirectangular skybox — single 2K JPG (~123 KB), loaded async so it never
 // blocks first paint. The flat fallback color above stays visible until the

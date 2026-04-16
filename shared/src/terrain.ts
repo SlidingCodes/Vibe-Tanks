@@ -11,6 +11,9 @@ export function createRandomTerrainSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff);
 }
 
+// ── Visual / Terrain Constants ──
+export const SEA_LEVEL = -10.0;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -126,8 +129,7 @@ export function createTerrainHeightSampler(
   function edgeFlattenFactor(worldX: number, worldZ: number): number {
     const margin = Math.max(p.edgeFlatMargin, 0.001);
     const distToEdge = Math.min(worldX, worldZ, maxX - worldX, maxZ - worldZ);
-    const edgeT = smoothStep01(distToEdge / margin);
-    return 1 - p.edgeFlatStrength * (1 - edgeT);
+    return smoothStep01(distToEdge / margin);
   }
 
   function sample(worldX: number, worldZ: number): number {
@@ -150,7 +152,10 @@ export function createTerrainHeightSampler(
         shape += mountainMask * peakShape * peakWeight;
       }
     }
-    return p.baseHeight + p.heightScale * shape * edgeFactor;
+    const landHeight = p.baseHeight + p.heightScale * shape;
+    // Taper to 5 units below sea level at the extreme edges
+    const targetHeight = SEA_LEVEL - 5;
+    return lerp(targetHeight, landHeight, edgeFactor);
   }
 
   return { settings, seed, sample };

@@ -1,4 +1,5 @@
 import { VoxelGrid, DENSITY_THRESHOLD } from './VoxelGrid';
+import { SEA_LEVEL } from '../terrain';
 
 /** Side length (in voxels) of one meshing chunk. */
 export const SURFACE_NETS_CHUNK_SIZE = 16;
@@ -77,6 +78,8 @@ const [BURNT_R, BURNT_G, BURNT_B] = srgbHex(0x080503);
 // Bedrock — neutral medium grey, distinctly stony vs the elevation palette's
 // low-tone grey. Blends in over a half-cell band beneath bedrockTopY.
 const [BED_R, BED_G, BED_B] = srgbHex(0x6a6a6a);
+// Clean, warm sand tone for the shoreline.
+const [SAND_R, SAND_G, SAND_B] = srgbHex(0xdbc19a);
 const BEDROCK_BLEND_HEIGHT = 0.5;
 
 function smoothStep01(t: number): number {
@@ -207,6 +210,16 @@ export function buildSurfaceNetsChunk(
               baseG = MID_G + (HIGH_G - MID_G) * u;
               baseB = MID_B + (HIGH_B - MID_B) * u;
             }
+
+            // Beach: Take over with sand tone as the vertex approaching SEA_LEVEL.
+            // Softness=2.5 ensures a wide enough band for 2-3 cell slopes to read
+            // as sand before hitting the water.
+            const beachSoftness = 2.5;
+            const beachThreshold = SEA_LEVEL + 1.2;
+            const beachT = smoothStep01((beachThreshold - wy) / beachSoftness + 0.5);
+            baseR += (SAND_R - baseR) * beachT;
+            baseG += (SAND_G - baseG) * beachT;
+            baseB += (SAND_B - baseB) * beachT;
           }
           // 2) Scorch darkens the base toward BURNT, additive across hits.
           let s = 0;
