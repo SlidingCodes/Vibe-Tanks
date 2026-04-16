@@ -1,8 +1,8 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { MovementInput, PlayerId, TankState, Vec3 } from '../../../shared/src/types/index';
-import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
-import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../../../shared/src/terrain/surfaceNetsMesher';
-import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '../../../shared/src/constants';
+import { MovementInput, PlayerId, TankState, Vec3 } from '@shared/types/index';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '@shared/terrain/surfaceNetsMesher';
+import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
 
 // ── Tank tuning ─────────────────────────────────────────────────────
 /** Sphere collider for the tank hull. Ball + KCC means the tank cannot

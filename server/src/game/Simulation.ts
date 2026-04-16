@@ -5,10 +5,10 @@ import {
   TankState,
   Vec3,
   WeaponDefinition,
-} from '../../../shared/src/types/index';
-import { GRAVITY } from '../../../shared/src/constants';
-import { computeMuzzle } from '../../../shared/src/muzzle';
-import { resolveRailEndpoint } from '../../../shared/src/rail';
+} from '@shared/types/index';
+import { GRAVITY, SIM_DT, SHOT_MAX_SIM_TICKS } from '@shared/constants';
+import { computeMuzzle } from '@shared/muzzle';
+import { resolveRailEndpoint } from '@shared/rail';
 
 /**
  * Terrain surface Simulation queries for shell collisions. Satisfied directly
@@ -24,10 +24,8 @@ export interface SimulationTerrain {
   getSurfaceNormal(x: number, z: number): Vec3;
 }
 
-export const SIM_DT = 1 / 60;
 export const SAMPLE_EVERY_TICKS = 4;
 export const SECONDS_PER_SAMPLE = SAMPLE_EVERY_TICKS * SIM_DT;
-const MAX_TICKS = 900;
 
 interface SegmentOptions {
   splitTime?: number;
@@ -210,7 +208,7 @@ export function simulateSegment(
   let reason: SegmentResult['reason'] = 'bounds';
   let elapsed = 0;
 
-  for (let tick = 0; tick < MAX_TICKS; tick++) {
+  for (let tick = 0; tick < SHOT_MAX_SIM_TICKS; tick++) {
     vel.y += GRAVITY * SIM_DT;
     pos.x += vel.x * SIM_DT;
     pos.y += vel.y * SIM_DT;

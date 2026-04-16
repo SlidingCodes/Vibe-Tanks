@@ -1,8 +1,8 @@
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { ClientEvents, ServerEvents } from '../../shared/src/types/index';
-import { SERVER_PORT } from '../../shared/src/constants';
-import { getRandomTerrainPresetId } from '../../shared/src/terrain';
+import { ClientEvents, ServerEvents } from '@shared/types/index';
+import { SERVER_PORT } from '@shared/constants';
+import { getRandomTerrainPresetId } from '@shared/terrain';
 import { initRapier } from './physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 

@@ -16,7 +16,7 @@ import {
   TrackHistory,
   TrackHistoryPoint,
   Vec3,
-} from '../../../shared/src/types/index';
+} from '@shared/types/index';
 import {
   TANK_MAX_HP,
   MIN_PLAYERS_TO_START,
@@ -25,7 +25,7 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
   TANK_TREAD_HALF_WIDTH,
-} from '../../../shared/src/constants';
+} from '@shared/constants';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -34,9 +34,9 @@ import {
   getRandomTerrainPresetId,
   getTerrainSettingsForPreset,
   SEA_LEVEL,
-} from '../../../shared/src/terrain';
-import { WEAPONS } from '../../../shared/src/weapons';
-import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
+} from '@shared/terrain';
+import { WEAPONS } from '@shared/weapons';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { RapierVoxelWorld } from '../physics/RapierVoxelWorld';
 import {
   DamageTotals,
