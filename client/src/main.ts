@@ -45,7 +45,7 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, VoxelSnapshot } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
@@ -230,6 +230,15 @@ let atmosphere: AtmosphereHandle | null = null;
 // Minimum horizontal distance a tank must move before a new tread segment is
 // drawn. Prevents stationary tanks from overdrawing the same canvas pixels.
 const TRACK_PAINT_STEP = 0.25;
+// Max plausible per-frame tread travel. Anything larger means a teleport
+// (respawn, server reconciliation snap, interpolation seed) and the segment
+// is skipped — we only update the baseline so subsequent strokes resume
+// correctly. 4 units is ~4× the tank's top speed at 1/60s.
+const TRACK_MAX_JUMP = 4.0;
+
+// Scratch Vector3 reused each frame for the local tank position passed to
+// updateTankNameLabels. Avoids allocating a new object per frame.
+const _scratchLocalPos = new THREE.Vector3();
 
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
@@ -480,6 +489,20 @@ socket.on('shot_resolved', (result: ShotResult) => {
   }, impactMs * 1000);
 });
 
+socket.on('track_history', (history: TrackHistory) => {
+  if (!trackDecal) return;
+  for (const entry of history) {
+    const pts = entry.points;
+    for (let i = 1; i < pts.length; i++) {
+      const p0 = pts[i - 1];
+      const p1 = pts[i];
+      trackDecal.strokeSegment(p0.leftX, p0.leftZ, p1.leftX, p1.leftZ);
+      trackDecal.strokeSegment(p0.rightX, p0.rightZ, p1.rightX, p1.rightZ);
+    }
+  }
+  trackDecal.flush();
+});
+
 socket.on('player_spawned', (tank: TankState) => {
   if (!getAllTankMeshes().has(tank.playerId)) {
     createTankMesh(tank, scene, myId);
@@ -541,9 +564,14 @@ function paintLiveTreadTracks(): void {
     if (prev) {
       const dx = px - (prev.leftX + prev.rightX) * 0.5;
       const dz = pz - (prev.leftZ + prev.rightZ) * 0.5;
-      if (dx * dx + dz * dz < TRACK_PAINT_STEP * TRACK_PAINT_STEP) continue;
-      trackDecal.strokeSegment(prev.leftX, prev.leftZ, leftX, leftZ);
-      trackDecal.strokeSegment(prev.rightX, prev.rightZ, rightTreadX, rightTreadZ);
+      const d2 = dx * dx + dz * dz;
+      if (d2 < TRACK_PAINT_STEP * TRACK_PAINT_STEP) continue;
+      // Teleport guard: respawn, server snap, interpolation seed, or stale
+      // baseline after a tab-hidden gap. Reset the baseline without drawing.
+      if (d2 <= TRACK_MAX_JUMP * TRACK_MAX_JUMP) {
+        trackDecal.strokeSegment(prev.leftX, prev.leftZ, leftX, leftZ);
+        trackDecal.strokeSegment(prev.rightX, prev.rightZ, rightTreadX, rightTreadZ);
+      }
     }
     lastTreadPosByPlayer.set(pid, { leftX, leftZ, rightX: rightTreadX, rightZ: rightTreadZ });
   }
@@ -737,8 +765,12 @@ function animate(): void {
   const occlusionObjects: THREE.Object3D[] = [];
   if (surfaceNetsVisible && surfaceNets) occlusionObjects.push(surfaceNets.group);
   if (cuberilleVisible && voxelTerrain) occlusionObjects.push(voxelTerrain.group);
-  const localPos = predictedState ? new THREE.Vector3(predictedState.position.x, predictedState.position.y, predictedState.position.z) : new THREE.Vector3();
-  updateTankNameLabels(camera, localPos, occlusionObjects, myId);
+  if (predictedState) {
+    _scratchLocalPos.set(predictedState.position.x, predictedState.position.y, predictedState.position.z);
+  } else {
+    _scratchLocalPos.set(0, 0, 0);
+  }
+  updateTankNameLabels(camera, _scratchLocalPos, occlusionObjects, myId);
 
   if (atmosphere) {
     atmosphere.update(dt, camera, getAllTankMeshes());
