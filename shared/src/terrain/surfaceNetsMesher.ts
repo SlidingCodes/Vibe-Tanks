@@ -85,7 +85,7 @@ const [TRACK_R, TRACK_G, TRACK_B] = srgbHex(0x3a281a);
 /** Cap the per-vertex track mix so fully saturated paint still lets the base
  *  palette show through. Scorch goes to full black for clean burn rings;
  *  tracks should never look like burns. */
-const TRACK_MAX_MIX = 0.55;
+const TRACK_MAX_MIX = 0.8;
 // Bedrock — neutral medium grey, distinctly stony vs the elevation palette's
 // low-tone grey. Blends in over a half-cell band beneath bedrockTopY.
 const [BED_R, BED_G, BED_B] = srgbHex(0x6a6a6a);

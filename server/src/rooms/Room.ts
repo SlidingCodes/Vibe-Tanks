@@ -58,13 +58,14 @@ const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 /** Minimum horizontal distance a tank must move before the next tread-track
  *  paint stroke is committed. Tuned so a driving tank lays a continuous strip
  *  at ~half a voxel cell, dense enough to read as a trail. */
-const TRACK_PAINT_STEP = 0.4;
-/** Paint sphere radius at each tread contact — covers 2–3 voxels so the
- *  mesher's 8-corner average reads a clear darkening at the surface. */
-const TRACK_PAINT_RADIUS = 0.55;
-/** Strength per stroke. Sub-1.0 so repeated passes over the same patch
- *  deepen the tone without instantly saturating. */
-const TRACK_PAINT_STRENGTH = 0.5;
+const TRACK_PAINT_STEP = 0.35;
+/** Paint sphere radius at each tread contact — covers ~3×3×3 voxels so the
+ *  mesher's 8-corner average reads a clear darkening at the surface.
+ *  Smaller radii (near 0.5) hit too few corners and the average washes out. */
+const TRACK_PAINT_RADIUS = 1.3;
+/** Strength per stroke — saturates a painted cell immediately so even a
+ *  single pass reads on the terrain. */
+const TRACK_PAINT_STRENGTH = 1.0;
 
 interface PlayerState {
   socket: Socket;

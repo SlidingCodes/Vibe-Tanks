@@ -227,9 +227,13 @@ let cuberilleVisible = false;
 let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
 
-const TRACK_PAINT_STEP = 0.4;
-const TRACK_PAINT_RADIUS = 0.55;
-const TRACK_PAINT_STRENGTH = 0.5;
+const TRACK_PAINT_STEP = 0.35;
+// Radius needs to be comfortably larger than the voxel cell so the 8-corner
+// average inside the surface-nets mesher reads a clear darkening at the
+// painted point — a radius near 0.5 only hits 1-2 corners, averaging to
+// near zero. 1.3 covers a 3×3×3 cell neighbourhood around each stroke.
+const TRACK_PAINT_RADIUS = 1.3;
+const TRACK_PAINT_STRENGTH = 1.0;
 
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
@@ -549,6 +553,10 @@ function paintLiveTreadTracks(): void {
     voxelTracks.addSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
     surfaceNets.invalidateSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS);
     surfaceNets.invalidateSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS);
+    if (!prev) {
+      // eslint-disable-next-line no-console
+      console.log(`[tracks] first paint for ${pid} at (${px.toFixed(1)}, ${pz.toFixed(1)})`);
+    }
     lastTrackPosByPlayer.set(pid, { x: px, z: pz });
   }
 }
