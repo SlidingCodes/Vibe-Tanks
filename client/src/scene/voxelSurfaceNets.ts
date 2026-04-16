@@ -1,12 +1,20 @@
 import * as THREE from 'three';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE, SurfaceNetsOptions } from '@shared/terrain/surfaceNetsMesher';
-import { VoxelPaint } from '@shared/terrain/VoxelPaint';
 import { Vec3 } from '@shared/types/index';
 import { VoxelScorch } from './voxelScorch';
+import { TrackDecalHandle } from './trackDecal';
 
 const CHUNK_SIZE = SURFACE_NETS_CHUNK_SIZE;
 const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
+
+// Warm dark-earth tone for tread-track decals — blended on top of the baked
+// vertex color in the fragment shader. Softer than scorch so tracks never
+// read as burn rings.
+const TRACK_COLOR = new THREE.Color(0x3a281a).convertSRGBToLinear();
+// Cap how much the decal can darken the base. Tracks accumulate by canvas
+// alpha blending, so tall mix values still leave the palette visible.
+const TRACK_MAX_MIX = 0.85;
 
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
@@ -27,7 +35,7 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
 export interface SurfaceNetsHandle {
   group: THREE.Group;
   dispose(): void;
-  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, tracks?: VoxelPaint): void;
+  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, trackDecal?: TrackDecalHandle | null): void;
   invalidateSphere(center: Vec3, radius: number): void;
   /** Rebuild all chunks dirtied since the last flush. Call once per frame
    *  before renderer.render() to batch multiple same-frame invalidations. */
@@ -59,17 +67,75 @@ export function createSurfaceNetsTerrain(
   grid: VoxelGrid,
   scene: THREE.Scene,
   scorch?: VoxelScorch,
-  tracks?: VoxelPaint,
+  trackDecal?: TrackDecalHandle | null,
 ): SurfaceNetsHandle {
   // Always vertex-coloured: the mesher emits a heightmap-style gray/brown/
-  // green palette + an optional scorch overlay. Material colour stays white
-  // so the per-vertex colour passes through unmodified.
+  // green palette + an optional scorch overlay. Tread tracks live in a
+  // separate CanvasTexture sampled in the fragment shader — see the
+  // onBeforeCompile block below.
   const material = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.85,
     metalness: 0,
     vertexColors: true,
   });
+
+  // Uniforms live on a closure so rebuild() can swap the underlying texture
+  // (match reset) without recompiling the shader.
+  const uTrackMap: { value: THREE.Texture | null } = { value: trackDecal?.texture ?? null };
+  const uTrackWorldMin = new THREE.Vector2(0, 0);
+  const uTrackWorldSize = new THREE.Vector2(1, 1);
+  const uTrackEnabled: { value: number } = { value: trackDecal ? 1 : 0 };
+  if (trackDecal) {
+    uTrackWorldMin.copy(trackDecal.worldMin);
+    uTrackWorldSize.copy(trackDecal.worldSize);
+  }
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTrackMap = uTrackMap;
+    shader.uniforms.uTrackWorldMin = { value: uTrackWorldMin };
+    shader.uniforms.uTrackWorldSize = { value: uTrackWorldSize };
+    shader.uniforms.uTrackColor = { value: TRACK_COLOR };
+    shader.uniforms.uTrackMaxMix = { value: TRACK_MAX_MIX };
+    shader.uniforms.uTrackEnabled = uTrackEnabled;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec2 vTrackWorldXZ;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vTrackWorldXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec2 vTrackWorldXZ;
+uniform sampler2D uTrackMap;
+uniform vec2 uTrackWorldMin;
+uniform vec2 uTrackWorldSize;
+uniform vec3 uTrackColor;
+uniform float uTrackMaxMix;
+uniform float uTrackEnabled;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+if (uTrackEnabled > 0.5) {
+  vec2 trackUv = (vTrackWorldXZ - uTrackWorldMin) / uTrackWorldSize;
+  if (trackUv.x >= 0.0 && trackUv.x <= 1.0 && trackUv.y >= 0.0 && trackUv.y <= 1.0) {
+    float trackMask = texture2D(uTrackMap, trackUv).a;
+    float mixAmount = clamp(trackMask, 0.0, 1.0) * uTrackMaxMix;
+    diffuseColor.rgb = mix(diffuseColor.rgb, uTrackColor, mixAmount);
+  }
+}`,
+      );
+  };
 
   const group = new THREE.Group();
   group.name = '__voxel_surface_nets';
@@ -79,13 +145,11 @@ export function createSurfaceNetsTerrain(
   const dirtyChunks = new Set<string>();
   let activeGrid = grid;
   let activeScorch = scorch;
-  let activeTracks = tracks;
   let activeElevation = computeElevationRange(grid);
   const meshOptions = (): SurfaceNetsOptions => ({
     elevationRange: activeElevation,
     bedrockTopY: activeGrid.bedrockSurfaceY,
     ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
-    ...(activeTracks ? { tracksAt: (ix, iy, iz) => activeTracks!.sampleAt(ix, iy, iz) } : {}),
   });
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
@@ -119,10 +183,17 @@ export function createSurfaceNetsTerrain(
     chunks.clear();
   }
 
-  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: VoxelPaint): void {
+  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
     activeGrid = g;
     if (s !== undefined) activeScorch = s;
-    if (t !== undefined) activeTracks = t;
+    if (t !== undefined) {
+      uTrackMap.value = t?.texture ?? null;
+      uTrackEnabled.value = t ? 1 : 0;
+      if (t) {
+        uTrackWorldMin.copy(t.worldMin);
+        uTrackWorldSize.copy(t.worldSize);
+      }
+    }
     // Snapshot terrain bounds for the elevation palette. Recomputed on each
     // full rebuild — incremental carves don't refresh it, so the palette
     // drifts very slightly as deep craters appear, but never enough to be
@@ -198,7 +269,7 @@ export function createSurfaceNetsTerrain(
       material.dispose();
       scene.remove(group);
     },
-    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: VoxelPaint): void {
+    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
       dirtyChunks.clear();
       rebuildAll(g, s, t);
     },

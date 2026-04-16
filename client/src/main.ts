@@ -8,7 +8,7 @@ import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfac
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
-import { VoxelPaint } from '@shared/terrain/VoxelPaint';
+import { createTrackDecal, TrackDecalHandle } from './scene/trackDecal';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
@@ -217,23 +217,19 @@ let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 let voxelScorch: VoxelScorch | null = null;
-let voxelTracks: VoxelPaint | null = null;
-/** Last XZ position at which we painted a tread-track stroke for each tank.
- *  Drives the distance-based throttle that keeps stationary tanks from
- *  stacking paint on one spot. Entries are cleared on voxel_snapshot (match
- *  reset / rejoin) and when a tank goes dead → alive (new spawn point). */
-const lastTrackPosByPlayer = new Map<string, { x: number; z: number }>();
+let trackDecal: TrackDecalHandle | null = null;
+/** Last XZ position of each tread endpoint for each tank. The decal draws a
+ *  line segment from the previous tread position to the current one, so the
+ *  trail is continuous even at high speed. Entries are cleared on
+ *  voxel_snapshot (match reset / rejoin) and when a tank goes dead → alive. */
+const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
 
-const TRACK_PAINT_STEP = 0.35;
-// Radius needs to be comfortably larger than the voxel cell so the 8-corner
-// average inside the surface-nets mesher reads a clear darkening at the
-// painted point — a radius near 0.5 only hits 1-2 corners, averaging to
-// near zero. 1.3 covers a 3×3×3 cell neighbourhood around each stroke.
-const TRACK_PAINT_RADIUS = 1.3;
-const TRACK_PAINT_STRENGTH = 1.0;
+// Minimum horizontal distance a tank must move before a new tread segment is
+// drawn. Prevents stationary tanks from overdrawing the same canvas pixels.
+const TRACK_PAINT_STEP = 0.25;
 
 
 socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
@@ -249,20 +245,18 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
-  // Tread tracks are server-authoritative: the snapshot ships the paint
-  // bytes so late joiners see existing trails. Subsequent live painting
-  // happens locally each frame from broadcast tank positions (consistent
-  // with the server's own painting at the voxel resolution).
-  voxelTracks = new VoxelPaint(voxelGrid);
-  if (snap.tracks) {
-    voxelTracks.loadBytes(new Uint8Array(snap.tracks));
-  }
-  lastTrackPosByPlayer.clear();
+  // Tread tracks are client-only, drawn into a top-down CanvasTexture that
+  // the terrain shader samples in planar XZ UVs. Higher resolution than the
+  // voxel grid, so two cingoli ~1.4 units apart render as distinct lines.
+  // Each client redraws locally from broadcast tank positions; no network
+  // traffic and no late-joiner replay (trails start from connect time).
+  trackDecal = createTrackDecal(voxelGrid);
+  lastTreadPosByPlayer.clear();
   if (!surfaceNets) {
-    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, voxelTracks);
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal);
     surfaceNets.setVisible(surfaceNetsVisible);
   } else {
-    surfaceNets.rebuild(voxelGrid, voxelScorch, voxelTracks);
+    surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal);
     surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
@@ -316,6 +310,9 @@ socket.on('state_update', (state: RoomStateUpdate) => {
       // existing.state would otherwise keep reporting alive=true.)
       existing.state = tankState;
       existing.group.visible = false;
+      // Drop the last tread position so the first paint after respawn
+      // doesn't draw a long straight line from the death site.
+      lastTreadPosByPlayer.delete(tankState.playerId);
     }
 
     if (tankState.playerId === myId) {
@@ -522,24 +519,16 @@ function getMapBounds(): { w: number; h: number } {
   };
 }
 
-/** Paint tread tracks into the voxel paint buffer for every alive tank.
- *  Runs after interpolation so every mesh's position/rotation reflects the
- *  current render state. Mirrors the server's 60Hz paint loop — since tanks
- *  are broadcast and interpolated consistently across clients, each client
- *  draws the same trail locally (no per-paint network traffic; the initial
- *  snapshot carries existing state for late joiners). */
+/** Paint tread tracks into the decal canvas for every alive tank. Draws a
+ *  line segment from each tread's previous XZ position to its current one,
+ *  so the trail is continuous at any speed. Runs after interpolation so
+ *  every mesh's position/rotation reflects the rendered state. */
 function paintLiveTreadTracks(): void {
-  if (!voxelTracks || !surfaceNets) return;
+  if (!trackDecal) return;
   for (const [pid, tm] of getAllTankMeshes()) {
     if (!tm.state.alive) continue;
     const px = tm.group.position.x;
     const pz = tm.group.position.z;
-    const prev = lastTrackPosByPlayer.get(pid);
-    if (prev) {
-      const dx = px - prev.x;
-      const dz = pz - prev.z;
-      if (dx * dx + dz * dz < TRACK_PAINT_STEP * TRACK_PAINT_STEP) continue;
-    }
     const yaw = tm.group.rotation.y;
     const rightX = Math.cos(yaw);
     const rightZ = -Math.sin(yaw);
@@ -547,18 +536,18 @@ function paintLiveTreadTracks(): void {
     const leftZ = pz - TANK_TREAD_HALF_WIDTH * rightZ;
     const rightTreadX = px + TANK_TREAD_HALF_WIDTH * rightX;
     const rightTreadZ = pz + TANK_TREAD_HALF_WIDTH * rightZ;
-    const leftY = getTerrainHeight(leftX, leftZ);
-    const rightY = getTerrainHeight(rightTreadX, rightTreadZ);
-    voxelTracks.addSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
-    voxelTracks.addSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS, TRACK_PAINT_STRENGTH);
-    surfaceNets.invalidateSphere({ x: leftX, y: leftY, z: leftZ }, TRACK_PAINT_RADIUS);
-    surfaceNets.invalidateSphere({ x: rightTreadX, y: rightY, z: rightTreadZ }, TRACK_PAINT_RADIUS);
-    if (!prev) {
-      // eslint-disable-next-line no-console
-      console.log(`[tracks] first paint for ${pid} at (${px.toFixed(1)}, ${pz.toFixed(1)})`);
+
+    const prev = lastTreadPosByPlayer.get(pid);
+    if (prev) {
+      const dx = px - (prev.leftX + prev.rightX) * 0.5;
+      const dz = pz - (prev.leftZ + prev.rightZ) * 0.5;
+      if (dx * dx + dz * dz < TRACK_PAINT_STEP * TRACK_PAINT_STEP) continue;
+      trackDecal.strokeSegment(prev.leftX, prev.leftZ, leftX, leftZ);
+      trackDecal.strokeSegment(prev.rightX, prev.rightZ, rightTreadX, rightTreadZ);
     }
-    lastTrackPosByPlayer.set(pid, { x: px, z: pz });
+    lastTreadPosByPlayer.set(pid, { leftX, leftZ, rightX: rightTreadX, rightZ: rightTreadZ });
   }
+  trackDecal.flush();
 }
 
 function animate(): void {

@@ -211,10 +211,6 @@ export interface VoxelSnapshot {
   minYCells: number;
   /** Raw density bytes (length = sizeX * sizeY * sizeZ). 0 = empty, >0 = solid. */
   data: ArrayBuffer;
-  /** Optional per-voxel tread-track paint (length = sizeX * sizeY * sizeZ).
-   *  Present on join / match reset so late joiners see tracks painted before
-   *  they connected. 0..255 darkness, mostly zeros → compresses well. */
-  tracks?: ArrayBuffer;
 }
 
 // ── Match snapshot ──
