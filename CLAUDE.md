@@ -46,11 +46,17 @@ client/src/
                              backed by the VoxelGrid (used by camera collision,
                              trajectory preview, and prediction)
   scene/voxelSurfaceNets.ts  Primary terrain renderer — per-chunk Surface Nets
-                             meshes with elevation palette + scorch coloring
+                             meshes with elevation palette + scorch coloring +
+                             shoreline sand blending and tread-track paint
   scene/voxelTerrain.ts      Debug cuberille renderer (greedy meshing). Toggle
                              with V (mutually exclusive with Surface Nets)
   scene/voxelDebris.ts       Particle debris spawned at each carve
   scene/voxelScorch.ts       Per-voxel burn overlay sampled during SN meshing
+  scene/sea.ts               Gerstner-wave ocean surface (6 waves, analytical
+                             normals) with whitecap foam on crests
+  scene/atmosphere.ts        Air-dust particle cloud with tank-repulsion, tread
+                             dust, exhaust smoke, muzzle smoke, shell trails, sparks
+  scene/killcamOverlay.ts    Killcam framing/overlay after death
   scene/camera.ts            Third-person follow camera + FPV preset
   scene/lights.ts            Ambient + directional + hemisphere lights
   entities/tank.ts           Tank mesh (body + turretGroup + barrel), CSS2D name
@@ -62,16 +68,25 @@ client/src/
   ui/input.ts                Keyboard + mouse state; setVirtual* hooks that
                              mobile controls write into
   ui/minimap.ts              Topographic contour minimap rasterised from the
-                             VoxelGrid column heights; incremental redraw on carve
+                             VoxelGrid column heights with sea-level/sand
+                             coloring; incremental redraw on carve
   ui/login.ts                Pre-game username + color picker
   ui/randomNames.json        100 Xbox-Live-style fallback names
   ui/mobileControls.ts       Virtual joystick, tap-aim pad, fire button
   ui/fullscreen.ts           Fullscreen toggle button (with WebKit fallbacks)
   ui/audioToggle.ts          Sound on/off toggle (top-right, persists in localStorage)
+  ui/settings.ts             Settings panel (music/SFX volume sliders, etc.)
   ui/trajectoryPreview.ts    Per-weapon preview dots for the selected shot
+  ui/damagePopups.ts         Floating damage numbers on hit
+  ui/feed.ts                 Kill/event feed (top-right killfeed rows)
+  ui/fpsCounter.ts           FPS counter overlay
+  ui/matchTimer.ts           Match countdown timer overlay
   audio/sounds.ts            Procedural Web Audio API SFX (shoot, explosion,
                              death, respawn, weapon switch, hit marker)
-  audio/music.ts             MP3-driven background music rotated on match reset
+  audio/music.ts             MP3-driven background music (2 tracks in public/music/,
+                             rotated on match reset)
+  public/sky/sky_36_2k.jpg   Equirectangular skybox (2K), loaded async
+  public/music/*.mp3         Background music tracks
 server/src/
   index.ts                   HTTP + Socket.IO server bootstrap, single room
   rooms/Room.ts              Real-time game loop: movement tick (60hz), state
@@ -109,10 +124,14 @@ scripts/
 
 - **Real-time, server authoritative**: server runs a 60hz movement loop and a 20hz broadcast loop. Clients send input/aim, server integrates and resolves shots.
 - **Controls**:
-  - Desktop: WASD to move, mouse to aim (ground-plane raycast), left-click to fire, digits 1–3 or chip click to switch weapon.
+  - Desktop: WASD to move, mouse to aim (ground-plane raycast), left-click to fire, digit keys (1–9, 0) or chip click to switch weapon, mouse wheel to cycle through slots.
   - Mobile (`body.mobile`, toggled by touch detection or `?mobile=1`): virtual joystick (bottom-left) feeds the same WASD booleans via `setVirtualKey`; any touch outside the joystick/fire/HUD updates the aim NDC via `setVirtualAim`; fire button (bottom-right) calls `triggerVirtualFire`; weapon chips are tappable. The existing desktop read path (`getMovementInput`, `getAimTarget`, `consumeClick`, `consumeWeaponSlot`) stays the single source of truth.
+- **Weapons**: 10 distinct `WeaponDefinition` entries in `shared/src/weapons.ts` — `standard`, `big_blast`, `splitter`, `bouncer`, `drill`, `napalm`, `seeker`, `rail`, `mortar_rain`, `mine`. Each has its own `ShotStep[]` behaviour, cooldown, and blast/carve profile.
 - **Fullscreen**: top-right corner button toggles `document.requestFullscreen` with WebKit fallbacks; hides itself when the API is unavailable (iPhone Safari).
-- **Audio**: procedural sounds + music via Web Audio API (no external files). Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. SFX: shoot, explosion (scaled by blast radius), tank death boom, Dark Souls-style death (descending wah + choir chord + "YOU DIED" voice), respawn jingle, weapon-switch click, hit-marker ting. Background music: 3 procedural chiptune tracks — Heroic March (D minor 128 BPM), Relentless Assault (A minor 140 BPM), Iron Waltz (F minor 116 BPM) — random start, rotated on each match reset.
+- **Audio**: procedural SFX via Web Audio API + MP3 music files. Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. SFX: shoot, explosion (scaled by blast radius), tank death boom, Dark Souls-style death (descending wah + choir chord + "YOU DIED" voice), respawn jingle, weapon-switch click, hit-marker ting. Background music: 2 MP3 tracks in `client/public/music/` (`song1.mp3`, `song2.mp3`), random start index, rotated on each match reset. Volume slider in the settings panel adjusts music and SFX independently via a shared `GainNode`.
+- **Skybox**: equirectangular 2K JPEG (`client/public/sky/sky_36_2k.jpg`) loaded async into an `EquirectangularReflectionMapping` envmap; scene fog color is matched to the horizon band so terrain fades into the sky.
+- **Ocean**: `scene/sea.ts` renders a Gerstner-wave surface using 6 summed sine-waves with analytical tangent/binormal for per-fragment normals; crest sharpness drives a procedural whitecap-foam mix. Terrain shader blends into a sand palette in a narrow band above sea level so beaches read correctly.
+- **Atmosphere**: `scene/atmosphere.ts` drives a particle cloud (~1000 air-dust points with tank-proximity repulsion) plus transient effects — tread dust kicked up when a tank is moving, exhaust smoke tied to throttle, muzzle smoke on fire, shell trails, and spark bursts on impact.
 - **Third-person camera**: smoothed lerp follow behind the player's tank, offset rotates with tank body rotation.
 - **Shared tank physics** (client-side prediction only): `shared/src/physics.ts` exports `stepTankPhysics` used by the client to predict local-tank motion between server broadcasts. The server is authoritative via Rapier — see below. Model:
   - Kinematic in XZ, y from `voxels.getHeight` (bilinear), pitch/roll from voxel surface gradient.
@@ -130,7 +149,7 @@ scripts/
 1. Client blocks on `showLogin()` (name + color picker). No socket connects before submission, so the server cannot spawn a tank for a player who hasn't committed to joining.
 2. On submit: socket connects → client emits `join_room { playerName, color? }` → server sanitizes/validates, spawns the tank, and grants a 3 s spawn-protection window (damage ignored while active).
 3. Server emits `room_snapshot` (tanks + match metadata) and `voxel_snapshot` (full VoxelGrid bytes) to the joining socket. The client builds the Surface Nets mesh, seeds the minimap, and sizes the fog/camera/lights from the voxel grid dimensions.
-4. Server starts game loop at 60hz (movement) + 20hz (state broadcast).
+4. Server starts game loop at 60hz (movement) + 20hz (`state_update` broadcast). Life-cycle events `player_spawned`, `player_left`, and `match_event` (kill feed, match start/reset) are emitted alongside.
 5. Client sends `movement_input` on input change, `aim_update` every frame.
 6. Fire: `fire_request` → server runs `simulateShot()` (pure) → emits `shot_resolved` immediately for animation → commits each `ShotStep`'s carve (`voxels.carveSphere` + `physics.invalidateSphere` — only when `step.carveTerrain` is true) at `startDelay + flight` and cumulative damage + score at the last impact, so opponents don't sink before visual impact. The client replays the same carve on its own voxel grid from the `shot_resolved` steps to keep meshes, minimap, and physics in sync without an extra network event.
 7. Death: server flips `alive=false` and stores `respawnAllowedAt = now + 5s`. Client shows the "YOU DIED" overlay with a visible countdown; the "SPAWN AGAIN" button enables at 0 and emits `respawn_request`.
