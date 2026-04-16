@@ -10,12 +10,13 @@ const SEA_COLOR = 0x2a5fa8;
 // 4 vertices, so there's no reason to tighten it.
 const SEA_SIZE = 4000;
 
-// Sits below the uncarvable bedrock layer (top at world Y = -8 with the
-// default voxel grid: minYCells = -16, BEDROCK_DEPTH_CELLS = 8). Bedrock
+// Sits 3 units below the uncarvable bedrock surface (Y = -2 with the
+// default voxel grid: minYCells = -16, BEDROCK_DEPTH_CELLS = 14). Bedrock
 // blocks crater carves, so the sea is never exposed inside the playable
 // area — it only fills the void around the map perimeter, where the
-// bedrock cliff between -8 and SEA_Y reads as a stony shoreline.
-const SEA_Y = -13;
+// bedrock cliff between -2 and SEA_Y reads as a stony shoreline visible
+// from the normal third-person camera angle.
+const SEA_Y = -5;
 
 export interface SeaHandle {
   /** Re-centre the plane on the active map. Safe to call repeatedly. */

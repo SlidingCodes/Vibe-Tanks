@@ -25,8 +25,13 @@ const DENSITY_SCALE = 127;
  * Forms a permanent uncarvable bedrock floor capping how deep craters can dig.
  * The SN mesher tints these vertices a neutral grey so the floor reads as
  * exposed stone substrate at the bottom of any deep crater.
+ *
+ * Tuned so the bedrock surface sits ~4 units below the terrain baseline
+ * (heightScale=2.2): close enough to play view that map-edge bedrock cliffs
+ * are visible without tilting the camera way down, while still leaving
+ * enough vertical headroom for moderately deep craters.
  */
-export const BEDROCK_DEPTH_CELLS = 8;
+export const BEDROCK_DEPTH_CELLS = 14;
 
 /**
  * Dense 3D voxel grid. Stores a signed-distance-ish density per cell: 255 deep
