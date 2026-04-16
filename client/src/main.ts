@@ -63,8 +63,21 @@ labelRenderer.domElement.style.pointerEvents = 'none';
 document.body.prepend(labelRenderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
+// Horizon-matched fog color so distant terrain blends into the painted skybox
+// rather than the old flat cyan. Picked to match the hazy band right above the
+// horizon line of sky_36_2k.
+const FOG_COLOR = 0xa8c0d8;
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 60, 120);
+
+// Equirectangular skybox — single 2K JPG (~123 KB), loaded async so it never
+// blocks first paint. The flat fallback color above stays visible until the
+// texture decodes.
+new THREE.TextureLoader().load('/sky/sky_36_2k.jpg', (tex) => {
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  scene.background = tex;
+});
 
 const camera = createCamera();
 const lighting = createLights(scene);
@@ -111,7 +124,7 @@ function endKillcam(): void {
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
-  scene.fog = new THREE.Fog(0x87ceeb, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
   updateCameraScale(terrainWidth, terrainHeight);
   lighting.updateForTerrain(terrainWidth, terrainHeight);
 }
