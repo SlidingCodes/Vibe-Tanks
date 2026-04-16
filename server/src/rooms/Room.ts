@@ -30,6 +30,7 @@ import {
   createTerrainHeightSampler,
   getRandomTerrainPresetId,
   getTerrainSettingsForPreset,
+  SEA_LEVEL,
 } from '../../../shared/src/terrain';
 import { WEAPONS } from '../../../shared/src/weapons';
 import { VoxelGrid } from '../../../shared/src/terrain/VoxelGrid';
@@ -753,20 +754,34 @@ export class Room {
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
       this.physics.readbackTank(pid, tank);
-      // Cheap border clamp — Rapier has no world edge walls yet, so keep
-      // tanks inside the playable square.
-      const border = Math.max(1, cellSize);
-      if (tank.position.x < border) tank.position.x = border;
-      else if (tank.position.x > mapW - border) tank.position.x = mapW - border;
-      if (tank.position.z < border) tank.position.z = border;
-      else if (tank.position.z > mapH - border) tank.position.z = mapH - border;
-      // Align the authoritative tank transform to the voxel surface: Y from
-      // getHeight, pitch/roll from the same finite-difference gradient the
-      // client uses in stepTankPhysics. Without this, Rapier readback
-      // (ball center - HULL_RADIUS, pitch/roll = 0) disagrees with the
-      // client's voxel-driven mesh — on slopes the muzzle Y computed on
-      // the server drifts above the barrel rendered on the client.
+      // Allow tanks to drive a few meters into the water before being
+      // hard-clamped or drowned.
+      const borderPadding = 12.0;
+      if (tank.position.x < -borderPadding) tank.position.x = -borderPadding;
+      else if (tank.position.x > mapW + borderPadding) tank.position.x = mapW + borderPadding;
+      if (tank.position.z < -borderPadding) tank.position.z = -borderPadding;
+      else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
+
       this.alignTankToVoxelSurface(tank, cellSize);
+
+      // Deep water suicide: if the tank's Y (voxel surface) is significantly
+      // below SEA_LEVEL, it's a kill.
+      const drownDepth = 2.4;
+      if (tank.position.y < SEA_LEVEL - drownDepth) {
+        tank.hp = 0;
+        tank.alive = false;
+        const player = this.players.get(pid);
+        if (player) {
+          player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+        }
+        this.io.to(this.id).emit('match_event', {
+          kind: 'suicide',
+          victimId: pid,
+          name: tank.playerName,
+          color: tank.color,
+          weaponId: 'water',
+        });
+      }
     }
   }
 

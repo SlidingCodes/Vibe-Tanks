@@ -20,6 +20,7 @@ import { connect } from './net/socket';
 import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
+import { createSea } from './scene/sea';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
 import { triggerRecoil } from './entities/tank';
 
@@ -63,11 +64,27 @@ labelRenderer.domElement.style.pointerEvents = 'none';
 document.body.prepend(labelRenderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
+// Horizon-matched fog color so distant terrain blends into the painted skybox
+// rather than the old flat cyan. Picked to match the hazy band right above the
+// horizon line of sky_36_2k.
+// Vibrant sky blue that matches the lower atmosphere of the skybox.
+// Tends slightly toward cyan to make the sea-meeting horizon feel deeper.
+const FOG_COLOR = 0x8baed0;
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 80, 160);
+
+// Equirectangular skybox — single 2K JPG (~123 KB), loaded async so it never
+// blocks first paint. The flat fallback color above stays visible until the
+// texture decodes.
+new THREE.TextureLoader().load('/sky/sky_36_2k.jpg', (tex) => {
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  scene.background = tex;
+});
 
 const camera = createCamera();
 const lighting = createLights(scene);
+const sea = createSea(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -111,7 +128,7 @@ function endKillcam(): void {
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
-  scene.fog = new THREE.Fog(0x87ceeb, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
   updateCameraScale(terrainWidth, terrainHeight);
   lighting.updateForTerrain(terrainWidth, terrainHeight);
 }
@@ -233,6 +250,7 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
   const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
   updateSceneScale(worldW, worldH);
+  sea.setMapBounds(worldW, worldH);
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
@@ -699,6 +717,7 @@ function animate(): void {
   }
 
   voxelDebris?.update(dt, voxelGrid);
+  sea.update(dt, camera);
 
 
   surfaceNets?.flushDirtyChunks();

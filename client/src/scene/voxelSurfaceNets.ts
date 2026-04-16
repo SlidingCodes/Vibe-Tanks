@@ -80,6 +80,7 @@ export function createSurfaceNetsTerrain(
   let activeElevation = computeElevationRange(grid);
   const meshOptions = (): SurfaceNetsOptions => ({
     elevationRange: activeElevation,
+    bedrockTopY: activeGrid.bedrockSurfaceY,
     ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
   });
 

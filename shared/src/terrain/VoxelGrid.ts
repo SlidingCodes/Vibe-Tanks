@@ -21,6 +21,14 @@ export const DENSITY_THRESHOLD = 128;
 const DENSITY_SCALE = 127;
 
 /**
+ * Number of voxel layers from the grid bottom that are immune to carving.
+ * Forms a permanent uncarvable bedrock floor capping how deep craters can dig.
+ * The SN mesher tints these vertices a neutral grey so the floor reads as
+ * exposed stone substrate at the bottom of any deep crater.
+ */
+export const BEDROCK_DEPTH_CELLS = 8;
+
+/**
  * Dense 3D voxel grid. Stores a signed-distance-ish density per cell: 255 deep
  * inside, 128 at the surface, 0 deep outside. The density gradient lets the
  * client surface-nets renderer place triangle vertices at the actual isosurface
@@ -123,6 +131,11 @@ export class VoxelGrid {
     }
   }
 
+  /** World-Y of the top of the uncarvable bedrock layer. */
+  get bedrockSurfaceY(): number {
+    return (this.minYCells + BEDROCK_DEPTH_CELLS) * this.cellSize;
+  }
+
   /** Grid-width alias so VoxelGrid satisfies the SimulationTerrain shape. */
   get width(): number { return this.sizeX; }
   /** Grid-depth alias (Z). Named `height` for SimulationTerrain compatibility. */
@@ -194,8 +207,9 @@ export class VoxelGrid {
     const ixMax = Math.min(this.sizeX - 1, Math.ceil((center.x + effRadius) / cs));
     const izMin = Math.max(0, Math.floor((center.z - effRadius) / cs));
     const izMax = Math.min(this.sizeZ - 1, Math.ceil((center.z + effRadius) / cs));
-    const iyMin = Math.max(0, Math.floor((center.y - effRadius) / cs) - this.minYCells);
+    const iyMin = Math.max(BEDROCK_DEPTH_CELLS, Math.floor((center.y - effRadius) / cs) - this.minYCells);
     const iyMax = Math.min(this.sizeY - 1, Math.ceil((center.y + effRadius) / cs) - this.minYCells);
+    if (iyMin > iyMax) return;
     const invR = 1 / radius;
     // Per-impact phase — a cheap hash of the center position so repeated
     // impacts don't align their lobes. Radian units.
@@ -267,8 +281,9 @@ export class VoxelGrid {
     const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs));
     const izMin = Math.max(0, Math.floor(minZ / cs));
     const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs));
-    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells);
+    const iyMin = Math.max(BEDROCK_DEPTH_CELLS, Math.floor(minY / cs) - this.minYCells);
     const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells);
+    if (iyMin > iyMax) return;
     const invLength = 1 / length;
 
     for (let iy = iyMin; iy <= iyMax; iy++) {
