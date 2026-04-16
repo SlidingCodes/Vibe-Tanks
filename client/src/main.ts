@@ -20,6 +20,7 @@ import { connect } from './net/socket';
 import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
+import { createSea } from './scene/sea';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
 import { triggerRecoil } from './entities/tank';
 
@@ -81,6 +82,7 @@ new THREE.TextureLoader().load('/sky/sky_36_2k.jpg', (tex) => {
 
 const camera = createCamera();
 const lighting = createLights(scene);
+const sea = createSea(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -246,6 +248,7 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
   const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
   updateSceneScale(worldW, worldH);
+  sea.setMapBounds(worldW, worldH);
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
