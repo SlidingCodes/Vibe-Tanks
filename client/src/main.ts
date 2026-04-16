@@ -715,6 +715,7 @@ function animate(): void {
   }
 
   voxelDebris?.update(dt, voxelGrid);
+  sea.update(dt);
 
 
   surfaceNets?.flushDirtyChunks();
