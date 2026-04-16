@@ -1165,7 +1165,17 @@ export class Room {
   private regroundAliveTanks(): void {
     const cellSize = this.voxels.cellSize;
     for (const tank of this.tanks.values()) {
-      if (tank.alive) this.alignTankToVoxelSurface(tank, cellSize);
+      if (!tank.alive || tank.airborne) continue;
+      // Terrain just changed under our feet. If the voxel surface dropped
+      // by more than AIRBORNE_DROP_THRESHOLD, flip airborne and let the
+      // integrator handle the fall; otherwise snap Y/pitch/roll to the
+      // new (small) change as before.
+      const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
+      if (tank.position.y - freshTerrainY > AIRBORNE_DROP_THRESHOLD) {
+        this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+      } else {
+        this.alignTankToVoxelSurface(tank, cellSize);
+      }
     }
   }
 
