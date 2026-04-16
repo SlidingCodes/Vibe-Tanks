@@ -5,6 +5,7 @@ import { SERVER_PORT } from '@shared/constants';
 import { getRandomTerrainPresetId } from '@shared/terrain';
 import { initRapier } from './physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
+import { JoinRoomSchema, onValidated } from './validation';
 
 async function main(): Promise<void> {
   // Rapier wasm must be loaded before any RapierVoxelWorld is constructed.
@@ -24,7 +25,7 @@ async function main(): Promise<void> {
   io.on('connection', (socket) => {
     console.log(`Player connected: ${socket.id}`);
 
-    socket.on('join_room', (data: { playerName: string; color?: string }) => {
+    onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
       mainRoom.addPlayer(socket, data.playerName, data.color);
       console.log(`Player ${data.playerName} (${socket.id}) joined room`);
     });
