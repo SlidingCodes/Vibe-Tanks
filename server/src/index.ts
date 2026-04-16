@@ -13,6 +13,10 @@ async function main(): Promise<void> {
   const httpServer = createServer();
   const io = new Server<ClientEvents, ServerEvents>(httpServer, {
     cors: { origin: '*' },
+    // Gzip payloads over 1 KB. The voxel_snapshot (~1.9 MB raw) shrinks
+    // ~5-7× after DEFLATE, which is the dominant cost of joining. Tiny
+    // per-tick state_updates stay below the threshold and skip compression.
+    perMessageDeflate: { threshold: 1024 },
   });
 
   const mainRoom = new Room('main', io, getRandomTerrainPresetId());

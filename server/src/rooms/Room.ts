@@ -13,6 +13,8 @@ import {
   TankState,
   TerrainPresetId,
   TerrainSettings,
+  TrackHistory,
+  TrackHistoryPoint,
   Vec3,
 } from '../../../shared/src/types/index';
 import {
@@ -22,6 +24,7 @@ import {
   SPAWN_MIN_DISTANCE,
   TICK_RATE,
   SIM_TICK_RATE,
+  TANK_TREAD_HALF_WIDTH,
 } from '../../../shared/src/constants';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
@@ -53,6 +56,13 @@ const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#a
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+/** Min horizontal distance a tank must move between consecutive track samples.
+ *  Slightly coarser than the client's live paint step so the history payload
+ *  stays compact. Clients interpolate between samples via straight segments. */
+const TRACK_SAMPLE_STEP = 0.4;
+/** Rolling cap per tank on stored samples. ~1000 points × ~0.4 units ≈ 400
+ *  units of trail, plenty for one match; older samples drop off silently. */
+const TRACK_HISTORY_MAX_POINTS = 1000;
 
 interface PlayerState {
   socket: Socket;
@@ -62,6 +72,9 @@ interface PlayerState {
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
   respawnAllowedAt: number;
+  /** Last tank XZ at which a track history sample was appended. null before
+   *  the first sample or after a respawn (so the next movement seeds fresh). */
+  lastTrackSampleAt: { x: number; z: number } | null;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -107,6 +120,10 @@ export class Room {
    *  on every impact; all physics, simulation and client rendering read from
    *  this single source of truth. */
   voxels: VoxelGrid;
+  /** Rolling tread-track sample buffer per player. Appended when a tank
+   *  moves ≥ TRACK_SAMPLE_STEP; capped to TRACK_HISTORY_MAX_POINTS so old
+   *  trails fade away. Sent to each joining client after voxel_snapshot. */
+  private trackHistory: Map<PlayerId, TrackHistoryPoint[]> = new Map();
   /** Rapier world: per-chunk TriMesh terrain colliders + a kinematic-position
    *  ball body per tank driven by Rapier's KinematicCharacterController.
    *  Authoritative for tank movement and shot/terrain collisions. */
@@ -171,6 +188,8 @@ export class Room {
     this.voxels.clear();
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
     this.physics.setGrid(this.voxels);
+    this.trackHistory.clear();
+    for (const player of this.players.values()) player.lastTrackSampleAt = null;
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
       tank.position = pos;
@@ -186,6 +205,7 @@ export class Room {
       if (player) {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
+        player.lastTrackSampleAt = null;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -206,6 +226,7 @@ export class Room {
       lastFireTime: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
+      lastTrackSampleAt: null,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -213,6 +234,7 @@ export class Room {
 
     socket.emit('room_snapshot', this.getSnapshot());
     socket.emit('voxel_snapshot', this.getVoxelSnapshot());
+    socket.emit('track_history', this.buildTrackHistoryPayload());
 
     const tank = this.tanks.get(playerId)!;
     socket.broadcast.emit('player_spawned', tank);
@@ -767,6 +789,7 @@ export class Room {
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
       this.alignTankToVoxelSurface(tank, cellSize);
+      this.sampleTrackHistory(pid, tank);
 
       // Deep water suicide: if the tank's Y (voxel surface) is significantly
       // below SEA_LEVEL, it's a kill.
@@ -787,6 +810,49 @@ export class Room {
         });
       }
     }
+  }
+
+  /** Append a tread-track sample for this tank if it has moved far enough
+   *  since the last sample. Old samples roll off once the rolling cap is hit. */
+  private sampleTrackHistory(playerId: PlayerId, tank: TankState): void {
+    const player = this.players.get(playerId);
+    if (!player || !tank.alive) return;
+    const px = tank.position.x;
+    const pz = tank.position.z;
+    const prev = player.lastTrackSampleAt;
+    if (prev) {
+      const dx = px - prev.x;
+      const dz = pz - prev.z;
+      if (dx * dx + dz * dz < TRACK_SAMPLE_STEP * TRACK_SAMPLE_STEP) return;
+    }
+    const rightX = Math.cos(tank.bodyRotation);
+    const rightZ = -Math.sin(tank.bodyRotation);
+    const point: TrackHistoryPoint = {
+      leftX: px - TANK_TREAD_HALF_WIDTH * rightX,
+      leftZ: pz - TANK_TREAD_HALF_WIDTH * rightZ,
+      rightX: px + TANK_TREAD_HALF_WIDTH * rightX,
+      rightZ: pz + TANK_TREAD_HALF_WIDTH * rightZ,
+    };
+    let arr = this.trackHistory.get(playerId);
+    if (!arr) {
+      arr = [];
+      this.trackHistory.set(playerId, arr);
+    }
+    arr.push(point);
+    if (arr.length > TRACK_HISTORY_MAX_POINTS) arr.shift();
+    player.lastTrackSampleAt = { x: px, z: pz };
+  }
+
+  /** Build the TrackHistory payload sent to a joining client. One entry per
+   *  player that has ever laid down tracks in the current match (including
+   *  disconnected players — their trails persist until match reset). */
+  private buildTrackHistoryPayload(): TrackHistory {
+    const payload: TrackHistory = [];
+    for (const [playerId, points] of this.trackHistory) {
+      if (points.length === 0) continue;
+      payload.push({ playerId, points: points.slice() });
+    }
+    return payload;
   }
 
   /** Snap Y/pitch/roll to the voxel surface so the server-computed muzzle

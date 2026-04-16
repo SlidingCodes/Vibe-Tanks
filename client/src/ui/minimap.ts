@@ -1,5 +1,6 @@
 import { PlayerId, TankState, Vec3 } from '@shared/types/index';
 import { SEA_LEVEL } from '@shared/terrain';
+import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 
 // Minimap with topographic contour lines. The full map is rasterised once
 // from the voxel grid's per-column surface heights, and then partially
