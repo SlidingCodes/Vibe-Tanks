@@ -12,7 +12,9 @@ const finiteNumber = z.number().finite();
 // numbers, or unexpected fields. Any payload that fails validation is
 // silently dropped (logged server-side) without crashing the handler.
 
-const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+// Accept both short (#rgb) and long (#rrggbb) hex — the client's login
+// palette uses the short form, while user-typed colors tend to be long.
+const hexColor = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
 
 export const JoinRoomSchema = z.object({
   playerName: z.string().min(1).max(32),
@@ -43,16 +45,17 @@ export const FireRequestSchema = z.object({
 });
 
 /** Attach a type-checked `.on` handler. Invalid payloads are logged and
- *  dropped; the user-supplied `handler` only runs on parsed data. Returns
- *  nothing — the `.on` binding lives on the socket as usual. */
-export function onValidated<T>(
+ *  dropped; the user-supplied `handler` only runs on parsed data. The
+ *  handler's `data` parameter is typed as `z.infer<Schema>`, so there's no
+ *  need to annotate it at call sites. */
+export function onValidated<S extends z.ZodType>(
   socket: Socket,
   event: string,
-  schema: z.ZodType<T>,
-  handler: (data: T) => void,
+  schema: S,
+  handler: (data: z.infer<S>) => void,
 ): void {
   // Socket.IO's typed events give us no static hook for "arbitrary event
-  // name with unknown payload", so we cast here. The validation below is
+  // name with unknown payload", so we cast here. The safeParse below is
   // the actual type guard.
   (socket as unknown as Socket).on(event, (raw: unknown) => {
     const parsed = schema.safeParse(raw);

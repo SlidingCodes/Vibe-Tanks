@@ -10,6 +10,8 @@ describe('JoinRoomSchema', () => {
   it('accepts a well-formed join payload', () => {
     expect(JoinRoomSchema.safeParse({ playerName: 'Alice', color: '#abcdef' }).success).toBe(true);
     expect(JoinRoomSchema.safeParse({ playerName: 'Alice' }).success).toBe(true);
+    // Short-form (#rgb) is what the default palette uses.
+    expect(JoinRoomSchema.safeParse({ playerName: 'Alice', color: '#e44' }).success).toBe(true);
   });
 
   it('rejects empty, oversized, or non-string names', () => {
@@ -21,7 +23,7 @@ describe('JoinRoomSchema', () => {
 
   it('rejects malformed color strings', () => {
     expect(JoinRoomSchema.safeParse({ playerName: 'a', color: 'red' }).success).toBe(false);
-    expect(JoinRoomSchema.safeParse({ playerName: 'a', color: '#abc' }).success).toBe(false);
+    expect(JoinRoomSchema.safeParse({ playerName: 'a', color: '#abcd' }).success).toBe(false);
     expect(JoinRoomSchema.safeParse({ playerName: 'a', color: 'abcdef' }).success).toBe(false);
   });
 });
