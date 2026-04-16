@@ -1,5 +1,5 @@
-import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { PlayerId, TankState, Vec3 } from '@shared/types/index';
+import { SEA_LEVEL } from '@shared/terrain';
 
 // Minimap with topographic contour lines. The full map is rasterised once
 // from the voxel grid's per-column surface heights, and then partially
@@ -130,10 +130,26 @@ function redrawPartialMap(x0: number, z0: number, x1: number, z1: number): void 
       const h11 = sampleHeight(gx + 1, gz + 1);
       const h = (h00 * (1 - tx) + h10 * tx) * (1 - tz) + (h01 * (1 - tx) + h11 * tx) * tz;
 
-      const t = (h - minH) / range;
-      const r = Math.round(80 + t * 160);
-      const g = Math.round(130 + t * 90);
-      const b = Math.round(60 + t * 120);
+      let r, g, b;
+      if (h < SEA_LEVEL) {
+        // Sea blue (matching SEA_COLOR #1a4f9c)
+        r = 26; g = 79; b = 156;
+      } else {
+        // Linear transition to sand #dbc19a at sea level
+        const sandT = Math.max(0, 1 - (h - SEA_LEVEL) / 2.0);
+        const baseR = 80, baseG = 130, baseB = 60;
+        const sandR = 219, sandG = 193, sandB = 154;
+        
+        const tr = baseR + (sandR - baseR) * sandT;
+        const tg = baseG + (sandG - baseG) * sandT;
+        const tb = baseB + (sandB - baseB) * sandT;
+
+        // Apply elevation-based brightening on top of the base/sand tone.
+        const t = Math.max(0, (h - SEA_LEVEL) / Math.max(1, range));
+        r = Math.min(255, Math.round(tr + t * 160));
+        g = Math.min(255, Math.round(tg + t * 90));
+        b = Math.min(255, Math.round(tb + t * 120));
+      }
 
       const idx = (py * W + px) * 4;
       img.data[idx] = r;
@@ -224,7 +240,7 @@ export function updateMinimap(
   ctx.save();
   ctx.clearRect(0, 0, size, size);
 
-  ctx.fillStyle = '#2a2a2a';
+  ctx.fillStyle = '#1a4f9c'; // Sea blue
   ctx.fillRect(0, 0, size, size);
 
   if (myPos) {
