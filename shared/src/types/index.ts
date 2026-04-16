@@ -202,6 +202,26 @@ export interface RoomStateUpdate {
   hazards: HazardState[];
 }
 
+// ── Tread track history ──
+/** A sampled pair of tread positions (left + right) at one instant along a
+ *  tank's recent path. Enough to draw a continuous trail by connecting
+ *  consecutive points for each tread. */
+export interface TrackHistoryPoint {
+  leftX: number;
+  leftZ: number;
+  rightX: number;
+  rightZ: number;
+}
+
+export interface TrackHistoryEntry {
+  playerId: PlayerId;
+  points: TrackHistoryPoint[];
+}
+
+/** Full tread-track history for the current match. Sent to each joining
+ *  client after voxel_snapshot so late arrivals see existing trails. */
+export type TrackHistory = TrackHistoryEntry[];
+
 // ── Voxel snapshot ──
 export interface VoxelSnapshot {
   sizeX: number;
@@ -269,6 +289,9 @@ export interface ServerEvents {
   room_snapshot: (snapshot: MatchSnapshot) => void;
   /** Sent alongside room_snapshot on join / match reset / match start. */
   voxel_snapshot: (snapshot: VoxelSnapshot) => void;
+  /** Sent once after voxel_snapshot so the joiner can replay tread trails
+   *  that other tanks laid down before they arrived. */
+  track_history: (history: TrackHistory) => void;
   state_update: (state: RoomStateUpdate) => void;
   shot_resolved: (result: ShotResult) => void;
   player_spawned: (tank: TankState) => void;
