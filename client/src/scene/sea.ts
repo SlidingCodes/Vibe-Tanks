@@ -10,10 +10,12 @@ const SEA_COLOR = 0x2a5fa8;
 // 4 vertices, so there's no reason to tighten it.
 const SEA_SIZE = 4000;
 
-// Slightly below the natural ground baseline so it reads as "island in
-// ocean" at map edges without poking through typical terrain. Deep enough
-// that average craters (radius 1–3) don't expose it.
-const SEA_Y = -2;
+// Sits below the uncarvable bedrock layer (top at world Y = -8 with the
+// default voxel grid: minYCells = -16, BEDROCK_DEPTH_CELLS = 8). Bedrock
+// blocks crater carves, so the sea is never exposed inside the playable
+// area — it only fills the void around the map perimeter, where the
+// bedrock cliff between -8 and SEA_Y reads as a stone shoreline.
+const SEA_Y = -13;
 
 export interface SeaHandle {
   /** Re-centre the plane on the active map. Safe to call repeatedly. */

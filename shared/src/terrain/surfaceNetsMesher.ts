@@ -44,6 +44,10 @@ export interface SurfaceNetsOptions {
    *  base color follows a gray (low) → brown (mid) → green (high) palette
    *  matching the original heightmap renderer. */
   elevationRange?: { min: number; max: number };
+  /** World-Y of the top of the uncarvable bedrock layer. Vertices at or below
+   *  this Y blend toward a neutral grey, overriding both elevation palette
+   *  and scorch tint, so deep crater floors read as exposed stone. */
+  bedrockTopY?: number;
 }
 
 // Three.js (color management on, default since r152) treats BufferAttribute
@@ -70,6 +74,10 @@ const [HIGH_R,  HIGH_G,  HIGH_B ] = srgbHex(0x5f9b45); // green
 const [BASE_R,  BASE_G,  BASE_B ] = srgbHex(0x9c6a38);
 // Target at full scorch — near black for clean burn rings.
 const [BURNT_R, BURNT_G, BURNT_B] = srgbHex(0x080503);
+// Bedrock — neutral medium grey, distinctly stony vs the elevation palette's
+// low-tone grey. Blends in over a half-cell band beneath bedrockTopY.
+const [BED_R, BED_G, BED_B] = srgbHex(0x6a6a6a);
+const BEDROCK_BLEND_HEIGHT = 0.5;
 
 function smoothStep01(t: number): number {
   const c = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -109,7 +117,8 @@ export function buildSurfaceNetsChunk(
   const colors: number[] = [];
   const scorchAt = options.scorchAt;
   const elevationRange = options.elevationRange;
-  const emitColors = scorchAt !== undefined || elevationRange !== undefined;
+  const bedrockTopY = options.bedrockTopY;
+  const emitColors = scorchAt !== undefined || elevationRange !== undefined || bedrockTopY !== undefined;
   const elevMin = elevationRange ? elevationRange.min : 0;
   const elevSpan = elevationRange ? Math.max(1e-3, elevationRange.max - elevationRange.min) : 1;
 
@@ -214,11 +223,18 @@ export function buildSurfaceNetsChunk(
             ) / (8 * 255);
             s = avg > 1 ? 1 : avg;
           }
-          colors.push(
-            baseR + (BURNT_R - baseR) * s,
-            baseG + (BURNT_G - baseG) * s,
-            baseB + (BURNT_B - baseB) * s,
-          );
+          let r = baseR + (BURNT_R - baseR) * s;
+          let g = baseG + (BURNT_G - baseG) * s;
+          let b = baseB + (BURNT_B - baseB) * s;
+          if (bedrockTopY !== undefined) {
+            // Smoothly take over below bedrockTopY: 1 at the surface, 0 a
+            // BEDROCK_BLEND_HEIGHT band above. Anything well below is fully grey.
+            const m = smoothStep01((bedrockTopY - wy) / BEDROCK_BLEND_HEIGHT + 1);
+            r = r + (BED_R - r) * m;
+            g = g + (BED_G - g) * m;
+            b = b + (BED_B - b) * m;
+          }
+          colors.push(r, g, b);
         }
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
