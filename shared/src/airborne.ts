@@ -6,28 +6,54 @@ import {
   AIRBORNE_CONTACT_DISTANCE,
   AIRBORNE_EXIT_SPEED,
   AIRBORNE_EXIT_VERTICAL,
-  AIRBORNE_DROP_THRESHOLD,
-  AIRBORNE_STEEP_DROP_THRESHOLD,
-  AIRBORNE_CLIFF_SLOPE,
+  AIRBORNE_GROUND_EPSILON,
 } from './constants';
 
 export type AirborneHeightSampler = (x: number, z: number) => number;
 
-/** True when a tank currently at `staleY` (Y from before the latest terrain
- *  change or physics tick) should flip to airborne given `freshTerrainY`
- *  (newly-sampled voxel surface at the tank's XZ) and `slopeMagnitude`
- *  (|∇h| there). Combines a flat-ground gap threshold with a smaller
- *  steep-slope threshold so carves that open a modest hole next to a cliff
- *  still trigger the ragdoll. */
-export function shouldEnterAirborne(
-  staleY: number,
-  freshTerrainY: number,
-  slopeMagnitude: number,
-): boolean {
-  const gap = staleY - freshTerrainY;
-  if (gap > AIRBORNE_DROP_THRESHOLD) return true;
-  if (gap > AIRBORNE_STEEP_DROP_THRESHOLD && slopeMagnitude > AIRBORNE_CLIFF_SLOPE) return true;
-  return false;
+/** Per-tick "would the tank leave the ground right now?" check. Physics-
+ *  first: we project the tank one tick forward under its current vertical
+ *  velocity plus gravity, and compare to the terrain it would land on. If
+ *  the projected position is above the terrain by more than a small epsilon,
+ *  the tank is airborne — no slope/speed/gap thresholds involved.
+ *
+ *  Returns the resolved Y and the next-tick vertical velocity so the caller
+ *  can use one uniform code path for both outcomes:
+ *    - grounded: Y snaps to terrain, vY derives from terrain change rate
+ *    - airborne: Y floats freely, vY accumulates gravity
+ */
+export interface GroundedTickResult {
+  airborne: boolean;
+  /** Y to write onto tank.position.y. For grounded this is the terrain;
+   *  for airborne this is the projected free-flight position (the tank
+   *  has physically left the ground this tick). */
+  newY: number;
+  /** Vertical velocity to track for next tick. For grounded this follows
+   *  the terrain's rate of change; for airborne this is current vY plus
+   *  one tick of gravity. */
+  newVy: number;
+}
+
+export function resolveGroundedTick(
+  oldY: number,
+  vY: number,
+  dt: number,
+  newTerrainY: number,
+): GroundedTickResult {
+  const vYWithGravity = vY + GRAVITY * dt;
+  const projectedY = oldY + vY * dt + 0.5 * GRAVITY * dt * dt;
+  if (projectedY > newTerrainY + AIRBORNE_GROUND_EPSILON) {
+    // Gravity alone can't keep the tank on the ground — it has physically
+    // lifted off. Hand over to the airborne integrator.
+    return { airborne: true, newY: projectedY, newVy: vYWithGravity };
+  }
+  // Terrain supports the tank. Snap Y to the surface and derive vY from
+  // the terrain gradient along the tank's path so the next tick has the
+  // right implicit velocity to feed back into this check (e.g. a tank
+  // driving fast downhill will accumulate a real negative vY that carries
+  // over a convex crest and launches it naturally).
+  const newVyFromTerrain = dt > 0 ? (newTerrainY - oldY) / dt : 0;
+  return { airborne: false, newY: newTerrainY, newVy: newVyFromTerrain };
 }
 
 export interface AirborneStepResult {

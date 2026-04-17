@@ -25,25 +25,18 @@ import {
   SIM_TICK_RATE,
   AIRBORNE_ENTRY_SPEED,
   AIRBORNE_EXIT_TICKS,
-  AIRBORNE_CARVE_LIFT,
-  AIRBORNE_CARVE_WOBBLE,
   AIRBORNE_CARVE_SPIN,
 } from '@shared/constants';
-import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
+import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
 
-/** Seed a small liftoff + wobble + spin on a carve-triggered ragdoll so the
- *  tank visibly detaches from the collapsing rock instead of starting a
- *  clean vertical fall (which reads as a snap). Written as a helper to keep
- *  the two enterAirborne call sites consistent. */
-function carveLiftSeed(): { lin: Vec3; ang: Vec3 } {
-  const wobbleX = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
-  const wobbleZ = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
-  const spinX = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
-  const spinY = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
-  const spinZ = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+/** Random angular velocity seed so the tank ragdolls visually instead of
+ *  staying bolt-upright while airborne (the physics trigger itself doesn't
+ *  generate spin — it only computes linear velocities). */
+function carveSpinSeed(): Vec3 {
   return {
-    lin: { x: wobbleX, y: AIRBORNE_CARVE_LIFT, z: wobbleZ },
-    ang: { x: spinX, y: spinY, z: spinZ },
+    x: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
+    y: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
+    z: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
   };
 }
 import {
@@ -106,6 +99,14 @@ interface PlayerState {
    *  or any non-settled step. Once it crosses AIRBORNE_EXIT_TICKS the tank
    *  returns to grounded mode. */
   airborneSettledTicks: number;
+  /** Full tank position at the end of last grounded tick. Used to derive
+   *  an instantaneous vertical velocity (from Y delta) for the implicit
+   *  airborne check, and an instantaneous horizontal velocity (from XZ
+   *  delta) to seed linVel when the ragdoll fires — so a fast-driving
+   *  tank launches off a crest with the right momentum. null after
+   *  respawn / match reset / mid-airborne so the first grounded tick
+   *  doesn't sample a stale reference. */
+  lastGroundedPos: { x: number; y: number; z: number } | null;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -241,6 +242,7 @@ export class Room {
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.airborneSettledTicks = 0;
+        player.lastGroundedPos = null;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -263,6 +265,7 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       airborneSettledTicks: 0,
+      lastGroundedPos: null,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -762,6 +765,7 @@ export class Room {
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     player.airborneSettledTicks = 0;
+    player.lastGroundedPos = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -833,24 +837,42 @@ export class Room {
       if (tank.position.z < -borderPadding) tank.position.z = -borderPadding;
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
-      // Crater/cliff ragdoll: the previous tick's alignment left
-      // tank.position.y at the then-terrain surface; after that the ground
-      // may have been carved away or the tank may have crossed an edge.
-      // If the fresh terrain-Y is significantly below the stale tank-Y,
-      // the ground fell out from under us — flip airborne before the
-      // alignment step would snap Y back down and hide the gap.
+      // Physics-based airborne check. We derive the tank's current vertical
+      // velocity from the grounded motion of the previous tick (last Y vs
+      // current Y, with Y snapping to terrain every tick). Then we project
+      // one tick forward under gravity; if that projected Y is above the
+      // new terrain, the tank has physically left the ground — no drop-
+      // threshold or slope heuristic needed. Subsumes cliff drives, crater
+      // falls, and crest launches in one rule.
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
-      if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
-        const seed = carveLiftSeed();
-        this.enterAirborne(tank, seed.lin, seed.ang);
+      const player = this.players.get(pid);
+      const last = player?.lastGroundedPos ?? null;
+      const vY = last ? (tank.position.y - last.y) / dt : 0;
+      const resolved = resolveGroundedTick(tank.position.y, vY, dt, freshTerrainY);
+
+      if (resolved.airborne) {
+        // Seed linVel with the horizontal velocity the tank had while
+        // driving into this condition, plus the implicit-vertical vY that
+        // brought us here (so a fast downhill launches forward + down, a
+        // static-tank crater drops straight down). Random angular velocity
+        // makes the ragdoll tumble rather than stand rigid.
+        const horizVx = last ? (tank.position.x - last.x) / dt : 0;
+        const horizVz = last ? (tank.position.z - last.z) / dt : 0;
+        tank.position.y = resolved.newY;
+        this.enterAirborne(
+          tank,
+          { x: horizVx, y: resolved.newVy, z: horizVz },
+          carveSpinSeed(),
+        );
         continue;
       }
 
+      // Grounded branch: align snaps Y to terrain + computes pitch/roll,
+      // then we stash the full position so next tick can compute vY.
       this.alignTankToVoxelSurface(tank, cellSize);
 
-      const player = this.players.get(pid);
       if (player) {
+        player.lastGroundedPos = { x: tank.position.x, y: tank.position.y, z: tank.position.z };
         const newSample = appendTrackSample(this.trackHistory, pid, tank, player.lastTrackSampleAt);
         if (newSample) player.lastTrackSampleAt = newSample;
       }
@@ -959,7 +981,10 @@ export class Room {
     // doesn't immediately snap it back down and exit.
     if (wasGrounded) tank.position.y += 0.05;
     const player = this.players.get(tank.playerId);
-    if (player) player.airborneSettledTicks = 0;
+    if (player) {
+      player.airborneSettledTicks = 0;
+      player.lastGroundedPos = null;
+    }
   }
 
   /** Return to grounded mode: zero tossed velocities, re-seed the KCC, and
@@ -970,7 +995,10 @@ export class Room {
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
     this.physics.resumeGrounded(pid, tank.bodyRotation);
     const player = this.players.get(pid);
-    if (player) player.airborneSettledTicks = 0;
+    if (player) {
+      player.airborneSettledTicks = 0;
+      player.lastGroundedPos = null;
+    }
   }
 
   /** Snap Y/pitch/roll to the voxel surface so the server-computed muzzle
@@ -1184,19 +1212,30 @@ export class Room {
 
   private regroundAliveTanks(): void {
     const cellSize = this.voxels.cellSize;
+    // A carve just changed the voxel surface. Use the same physics check
+    // that tickMovement runs so the trigger lines up with steady-state
+    // behaviour: project with current vY (if tracked), see if the tank
+    // would be above the new terrain.
+    const syntheticDt = 1 / SIM_TICK_RATE;
     for (const tank of this.tanks.values()) {
       if (!tank.alive || tank.airborne) continue;
-      // Terrain just changed under our feet. If the voxel surface dropped
-      // by more than AIRBORNE_DROP_THRESHOLD, flip airborne and let the
-      // integrator handle the fall; otherwise snap Y/pitch/roll to the
-      // new (small) change as before.
+      const player = this.players.get(tank.playerId);
+      const last = player?.lastGroundedPos ?? null;
+      const vY = last ? (tank.position.y - last.y) / syntheticDt : 0;
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
-      if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
-        const seed = carveLiftSeed();
-        this.enterAirborne(tank, seed.lin, seed.ang);
+      const resolved = resolveGroundedTick(tank.position.y, vY, syntheticDt, freshTerrainY);
+      if (resolved.airborne) {
+        tank.position.y = resolved.newY;
+        this.enterAirborne(
+          tank,
+          { x: 0, y: resolved.newVy, z: 0 },
+          carveSpinSeed(),
+        );
       } else {
         this.alignTankToVoxelSurface(tank, cellSize);
+        if (player) {
+          player.lastGroundedPos = { x: tank.position.x, y: tank.position.y, z: tank.position.z };
+        }
       }
     }
   }
