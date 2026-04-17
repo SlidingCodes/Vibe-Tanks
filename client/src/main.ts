@@ -45,9 +45,8 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { stepAirborneTank } from '@shared/airborne';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
 
@@ -453,25 +452,13 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             clientPhysics.addTank(predictedState);
             localTankRegistered = true;
           }
-        } else if (tankState.airborne) {
-          // Airborne is fully server-authoritative: the shared integrator
-          // runs on the server with the exact linVel/angVel history, and
-          // the client can't replay that without the same impulse stream.
-          // Snap the transform and keep the Rapier body tracking so the
-          // collider remains in the right chunks for any later grounded
-          // transition.
-          predictedState.position.x = tankState.position.x;
-          predictedState.position.y = tankState.position.y;
-          predictedState.position.z = tankState.position.z;
-          predictedState.bodyRotation = tankState.bodyRotation;
-          predictedState.bodyPitch = tankState.bodyPitch;
-          predictedState.bodyRoll = tankState.bodyRoll;
-          if (clientPhysics && localTankRegistered) {
-            clientPhysics.setTankPosition(myId, tankState.position);
-          }
         } else {
-          // Grounded: rewind-and-replay reconciliation. Tilt comes straight
-          // from the server (voxel-gradient sample; matches remote tanks).
+          // Unified grounded + airborne reconciliation via rewind-and-
+          // replay. Tilt comes straight from the server (voxel-gradient
+          // sample; the Rapier body's X/Z rotations are locked). Airborne
+          // tanks replay with drive suppressed in applyTankInputs, so
+          // gravity and contact carry the body through the arc just like
+          // on the server.
           predictedState.bodyPitch = tankState.bodyPitch;
           predictedState.bodyRoll = tankState.bodyRoll;
           const serverSeq = tankState.lastAppliedSeq;
@@ -785,30 +772,13 @@ function animate(): void {
     const sampleGround = (x: number, z: number): number =>
       getGroundBelow(x, localState.position.y + LOCAL_HULL_RADIUS, z);
 
-    if (predictedState.airborne) {
-      // Locally predict the ragdoll with the same integrator the server
-      // runs, so the fall is smooth between 20 Hz state_updates instead
-      // of snapping every broadcast. State_update snaps position + vel
-      // back onto the authoritative path, so any drift is corrected
-      // within 50 ms. Inputs are still emitted (tick-stamped) so the
-      // server's input seq stays monotonic across the airborne window.
-      stepAirborneTank(predictedState, dt, sampleGround, LOCAL_HULL_RADIUS);
-      if (clientPhysics && localTankRegistered) {
-        clientPhysics.setTankPosition(myId, predictedState.position);
-      }
-      // Emit input once per render frame while airborne; no physics tick
-      // advances locally (server integrator is authoritative), so we
-      // just keep the server aware that we're still here.
-      socket.emit('movement_input', { ...rawInput, seq: clientSeq });
-      predictedVel.x = 0;
-      predictedVel.z = 0;
-    } else if (clientPhysics && localTankRegistered) {
-      // Grounded prediction: step the client Rapier mirror with the same
-      // fixed dt as the server. Each step advances clientSeq, buffers
-      // its input for replay, and ships the input with seq to the server
-      // so the ACK path can line up. Rewind-and-replay reconciliation
-      // happens in the state_update handler, anchored on the highest
-      // seq the server reports as applied.
+    if (clientPhysics && localTankRegistered) {
+      // Unified Rapier prediction: same fixed dt, same dynamic body,
+      // same drive pipeline as the server. Drive is gated on grounded
+      // inside applyTankInputs, so mid-air (cliff drive, blast toss)
+      // integrates gravity + residual momentum without a separate
+      // ragdoll code path. Each step advances clientSeq, buffers its
+      // input for replay, and ships the input with seq to the server.
       physicsAccumulator = Math.min(
         physicsAccumulator + dt,
         CLIENT_PHYSICS_STEP * MAX_PHYSICS_STEPS_PER_FRAME,

@@ -31,10 +31,14 @@ const HULL_LINEAR_DAMPING = 0.5;
  *  parasitic spin from collisions (walls, blast torque in future C5). */
 const HULL_ANGULAR_DAMPING = 8.0;
 /** World-unit gap between the ball bottom and the voxel ground at which
- *  the tank is considered "in contact". 15 cm tolerates the few-cm float
- *  noise from the TriMesh collision solver without going airborne on
- *  flat ground; small enough that real cliff edges trip it promptly. */
-const GROUND_CONTACT_EPSILON = 0.15;
+ *  the tank is considered "in contact". Voxel terrain has ~1-unit-tall
+ *  stair-steps that are smaller than the ball radius — Rapier's ball vs
+ *  TriMesh resolution handles them by rolling/sliding over the edge,
+ *  which briefly lifts the ball several decimetres above the sampler-
+ *  reported ground. 0.5 m absorbs those transient lifts (driving on
+ *  stepped voxel terrain stays grounded) while a real cliff drop crosses
+ *  the threshold within 1–2 ticks of gravity. */
+const GROUND_CONTACT_EPSILON = 0.5;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -275,30 +279,44 @@ export class RapierVoxelWorld {
     entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** Arcade-dynamic drive: compute the horizontal target velocity and yaw
-   *  rate from the input and commit them directly to the dynamic body.
-   *  Gravity-driven Y velocity is preserved so gravity and jumps still
-   *  integrate normally; the X/Z components come straight from the
-   *  driving intent, which makes the tank feel kinematic at the control
-   *  surface even though the body is dynamic underneath. Must be called
-   *  before stepping the world. Tanks listed in `skipIds` are left alone
-   *  — the caller (Room) drives their transform via setTankPosition
-   *  while they're in the airborne ragdoll pipeline. */
+  /** Arcade-dynamic drive with an airborne gate:
+   *
+   *  - Grounded: commit a horizontal target velocity + yaw rate directly
+   *    to the dynamic body. Gravity-driven Y velocity is preserved so
+   *    ground contact / small bumps / ramps still integrate naturally;
+   *    the X/Z components come straight from the driving intent. This
+   *    gives the tank a kinematic-like control surface over a real
+   *    dynamic body.
+   *  - Airborne (ball clear of the ground by > GROUND_CONTACT_EPSILON):
+   *    skip all drive. The body keeps whatever linvel/angvel it had
+   *    (blast toss, cliff drop momentum, jump arc); Rapier's gravity
+   *    and eventual collision response handle the rest. No custom
+   *    integrator runs in parallel, so the tank behaves like one object
+   *    instead of briefly teleporting onto a separate ragdoll path.
+   *
+   *  Must be called before stepping the world. */
   applyTankInputs(dt: number, skipIds?: Set<PlayerId>): void {
     void dt; // present for API compatibility; linvel is a rate, not an impulse.
     for (const [id, entry] of this.tanks) {
       if (skipIds && skipIds.has(id)) continue;
-      const input = entry.input;
       const body = entry.body;
 
       // Update grounded state from the current body position against the
-      // voxel ground. Drives the caller's airborne-transition decision;
-      // also used below to decide whether to apply drive forces (airborne
-      // tanks can't steer themselves).
+      // voxel ground. Room reads this to set TankState.airborne for the
+      // broadcast, and applyTankInputs itself uses it to gate drive.
       const pos = body.translation();
       const terrainY = this.grid.getGroundBelow(pos.x, pos.y, pos.z);
       const ballBottom = pos.y - HULL_RADIUS;
       entry.grounded = (ballBottom - terrainY) < GROUND_CONTACT_EPSILON;
+
+      if (!entry.grounded) {
+        // Mid-air: leave the body alone so Rapier can integrate gravity
+        // and any residual impulse cleanly. Commanded yaw rate is also
+        // suppressed — tanks don't steer in the air.
+        continue;
+      }
+
+      const input = entry.input;
 
       // Yaw — reversing flips the steering sign so left/right control the
       // direction the back of the tank swings (arcade convention).
@@ -328,13 +346,25 @@ export class RapierVoxelWorld {
       }
 
       // Preserve linvel.y so Rapier's gravity + ground-contact response
-      // continue to drive the vertical axis. A tank that just drove off
-      // a cliff edge KEEPS its accumulated downward velocity; a tank
-      // resting on the ground keeps linvel.y ≈ 0; a tank blasted upward
-      // by a future impulse path keeps its jump arc.
+      // continue to drive the vertical axis. A tank that just touched
+      // down with residual downward velocity keeps it for 1 tick until
+      // collision clamps it; a tank resting on the ground keeps linvel.y
+      // ≈ 0 between ticks.
       const currentLinvel = body.linvel();
       body.setLinvel({ x: targetX, y: currentLinvel.y, z: targetZ }, true);
     }
+  }
+
+  /** Apply a world-space linear impulse to the tank — blast knockback,
+   *  direct-hit toss, future vehicle ramming. The dynamic body integrates
+   *  it along with gravity and ground contact, which means a strong
+   *  blast naturally lofts the tank, a glancing one just nudges it, and
+   *  either way the tank converges back onto the grounded drive path
+   *  once the body settles. No custom integrator in parallel. */
+  applyTankImpulse(id: PlayerId, impulse: Vec3): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.body.applyImpulse({ x: impulse.x, y: impulse.y, z: impulse.z }, true);
   }
 
   /** True iff the hull bottom is close to the voxel ground as of the last

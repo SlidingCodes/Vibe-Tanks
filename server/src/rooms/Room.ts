@@ -23,9 +23,7 @@ import {
   MAX_PLAYERS,
   TICK_RATE,
   SIM_TICK_RATE,
-  AIRBORNE_ENTRY_SPEED,
 } from '@shared/constants';
-import { stepAirborneTank } from '@shared/airborne';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -70,17 +68,6 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
-/** Sim ticks after a landing during which the airborne trigger is muted.
- *  ~0.25 s at 60 Hz — the "suspension" window. Long enough to smooth over
- *  terrain undulations right after touchdown, short enough that driving
- *  straight off a real cliff still flips airborne almost immediately. */
-const POST_LANDING_GRACE_TICKS = 15;
-
-/** Reused zero Vec3 for airborne entries that don't want to add linear or
- *  angular delta (e.g. a clean crater fall — no torque, gravity does it
- *  all). Avoids allocating a new {x:0,y:0,z:0} per-call. */
-const ZERO_VEC3: Vec3 = { x: 0, y: 0, z: 0 };
-
 interface PlayerState {
   socket: Socket;
   input: MovementInput;
@@ -92,20 +79,6 @@ interface PlayerState {
   /** Last tank XZ at which a track history sample was appended. null before
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
-  /** Full tank position at the end of last grounded tick. Used to derive
-   *  an instantaneous vertical velocity (from Y delta) for the implicit
-   *  airborne check, and an instantaneous horizontal velocity (from XZ
-   *  delta) to seed linVel when the ragdoll fires — so a fast-driving
-   *  tank launches off a crest with the right momentum. null after
-   *  respawn / match reset / mid-airborne so the first grounded tick
-   *  doesn't sample a stale reference. */
-  lastGroundedPos: { x: number; y: number; z: number } | null;
-  /** Countdown (in sim ticks) during which the airborne trigger is
-   *  suppressed after a landing. Acts like a suspension absorbing the
-   *  first fraction of a second: prevents the tank from re-entering
-   *  ragdoll on small terrain undulations right after touching down.
-   *  0 = no grace active. */
-  postLandingGraceTicks: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -241,7 +214,6 @@ export class Room {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
-        player.lastGroundedPos = null;
         player.input.seq = 0;
       }
       this.physics.resetTank(pid, tank.position, 0);
@@ -264,8 +236,6 @@ export class Room {
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
-      lastGroundedPos: null,
-      postLandingGraceTicks: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -536,30 +506,13 @@ export class Room {
         const mag = Math.hypot(imp.x, imp.y, imp.z);
         if (mag <= 0) continue;
 
-        victim.linVel.x += imp.x;
-        victim.linVel.y += imp.y;
-        victim.linVel.z += imp.z;
-
-        if (!victim.airborne && mag >= AIRBORNE_ENTRY_SPEED) {
-          // Seed an angVel perpendicular to the impulse in the horizontal
-          // plane so the ragdoll tumbles around the "struck side" rather
-          // than spinning on the spot. Magnitude loosely proportional to
-          // the impulse — bigger hits = wilder spin.
-          const horiz = Math.hypot(imp.x, imp.z) || 1;
-          const spinAxisX = -imp.z / horiz;
-          const spinAxisZ = imp.x / horiz;
-          const spinMagnitude = Math.min(8, mag * 0.45);
-          const yawJitter = (Math.random() - 0.5) * 2.5;
-          this.enterAirborne(
-            victim,
-            { x: 0, y: 0, z: 0 }, // linVel already added above
-            {
-              x: spinAxisX * spinMagnitude,
-              y: yawJitter,
-              z: spinAxisZ * spinMagnitude,
-            },
-          );
-        }
+        // Push the Rapier body directly — the ball body integrates the
+        // impulse alongside gravity and ground contact, so a strong
+        // blast lofts the tank and a glancing one just nudges it. No
+        // custom ragdoll integrator; the tank converges back onto the
+        // grounded drive path once the body settles (rotations are
+        // locked so it can't tumble wheels-up).
+        this.physics.applyTankImpulse(victim.playerId, imp);
       }
     }
   }
@@ -770,7 +723,6 @@ export class Room {
     tank.lastAppliedSeq = 0;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
-    player.lastGroundedPos = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -805,11 +757,12 @@ export class Room {
   }
 
   private tickMovement(dt: number): void {
-    // Hybrid physics: tanks are Rapier kinematic bodies driven by the KCC
-    // while grounded, but while airborne we bypass the KCC and integrate
-    // linVel/angVel manually (gravity + drag + terrain contact) via the
-    // shared airborne integrator. This keeps the responsive driving feel
-    // while letting big blasts and cliff falls ragdoll the hull.
+    // Unified dynamic physics: every alive tank is a Rapier dynamic body
+    // with its X/Z rotations locked. Drive forces are applied only while
+    // grounded (see RapierVoxelWorld.applyTankInputs); mid-air momentum
+    // is preserved by Rapier so blast tosses, cliff drives, and jump
+    // arcs "just work" through gravity + contact integration. No custom
+    // airborne integrator runs in parallel.
     const cellSize = this.voxels.cellSize;
     const mapW = this.voxels.sizeX * cellSize;
     const mapH = this.voxels.sizeZ * cellSize;
@@ -818,29 +771,27 @@ export class Room {
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank) continue;
-      this.physics.setTankInput(pid, tank.alive && !tank.airborne ? player.input : EMPTY);
+      this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
     }
 
-    const airborneIds = this.collectAirborneIds();
-    this.physics.applyTankInputs(dt, airborneIds);
+    this.physics.applyTankInputs(dt);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
 
-      if (tank.airborne) {
-        this.tickAirborneTank(pid, tank, dt);
-        continue;
-      }
-
       this.physics.readbackTank(pid, tank);
       // Stamp the applied input seq so clients can do rewind-and-replay
-      // reconciliation. The input we just applied was set in the
-      // `setTankInput` loop above; for grounded alive tanks we use the
-      // player's most recent input, so its seq is the one the physics
-      // tick consumed.
-      const playerForSeq = this.players.get(pid);
-      if (playerForSeq) tank.lastAppliedSeq = playerForSeq.input.seq;
+      // reconciliation. For alive tanks the input we just applied was
+      // set in the `setTankInput` loop above, so its seq is the one the
+      // physics tick consumed.
+      const player = this.players.get(pid);
+      if (player) tank.lastAppliedSeq = player.input.seq;
+      // Airborne is now a pure readout of the body's contact state —
+      // broadcast to clients for HUD / mesh effects, not used as a
+      // separate simulation path.
+      tank.airborne = !this.physics.isGrounded(pid);
+
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
       const borderPadding = 12.0;
@@ -849,55 +800,20 @@ export class Room {
       if (tank.position.z < -borderPadding) tank.position.z = -borderPadding;
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
-      // Airborne trigger now rides on the KCC's contact manifold from the
-      // step we just ran. The KCC saw the full 3D collider, so it
-      // correctly reports "no ground under the hull" for a tank that
-      // drove off a cliff, over a fresh crater lip, or out of a tunnel
-      // mouth onto thin air — regardless of what the voxel column-top
-      // says at that XZ.
-      //
-      // Post-landing grace is preserved: for a brief window after
-      // touchdown we suppress the trigger so small terrain undulations
-      // right after landing don't cause a re-ragdoll.
-      const player = this.players.get(pid);
-      const last = player?.lastGroundedPos ?? null;
-      const inLandingGrace = player ? player.postLandingGraceTicks > 0 : false;
-      if (inLandingGrace && player) player.postLandingGraceTicks -= 1;
-
-      const grounded = this.physics.isGrounded(pid);
-      if (!grounded && !inLandingGrace) {
-        // Seed linVel with whatever motion the Rapier body had over the
-        // last tick so a fast-driving tank launches off a crest with the
-        // right momentum. No artificial angVel — blast impulses handle
-        // torque separately in applyResolvedDamage.
-        const horizVx = last ? (tank.position.x - last.x) / dt : 0;
-        const horizVz = last ? (tank.position.z - last.z) / dt : 0;
-        const vY = last ? (tank.position.y - last.y) / dt : 0;
-        this.enterAirborne(
-          tank,
-          { x: horizVx, y: vY, z: horizVz },
-          ZERO_VEC3,
-        );
-        continue;
-      }
-
-      // Grounded: tilt from the voxel gradient (Y already came from Rapier
-      // via readbackTank — no Y override so caves / overhangs work).
+      // Tilt from the voxel gradient — visual only, the Rapier body's
+      // X/Z rotations are locked.
       this.alignTankTilt(tank, cellSize);
 
-      if (player) {
-        player.lastGroundedPos = { x: tank.position.x, y: tank.position.y, z: tank.position.z };
+      if (player && !tank.airborne) {
         const newSample = appendTrackSample(this.trackHistory, pid, tank, player.lastTrackSampleAt);
         if (newSample) player.lastTrackSampleAt = newSample;
       }
 
-      // Deep water suicide: if the tank's Y (voxel surface) is significantly
-      // below SEA_LEVEL, it's a kill.
+      // Deep water suicide.
       const drownDepth = 2.4;
       if (tank.position.y < SEA_LEVEL - drownDepth) {
         tank.hp = 0;
         tank.alive = false;
-        const player = this.players.get(pid);
         if (player) {
           player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
         }
@@ -909,118 +825,6 @@ export class Room {
           weaponId: 'water',
         });
       }
-    }
-  }
-
-  /** Set of player IDs whose tanks are currently airborne. Used by
-   *  tickMovement to split the tank population between the KCC path and
-   *  the airborne integrator path each sim tick. */
-  private collectAirborneIds(): Set<PlayerId> | undefined {
-    let ids: Set<PlayerId> | undefined;
-    for (const [pid, tank] of this.tanks) {
-      if (tank.airborne) {
-        if (!ids) ids = new Set();
-        ids.add(pid);
-      }
-    }
-    return ids;
-  }
-
-  /** Integrate one airborne step for a single tank: advance position/vel,
-   *  keep Rapier in sync, check exit conditions, and handle drowning + map
-   *  clamp while tossed. */
-  private tickAirborneTank(pid: PlayerId, tank: TankState, dt: number): void {
-    const player = this.players.get(pid);
-    // Ragdoll samples the floor under the hull at EACH sub-step, so the
-    // reference tracks the tank as it falls — a tank tumbling into a
-    // tunnel from a cliff edge lands on the tunnel floor instead of
-    // snapping onto the overhang roof above.
-    const stepResult = stepAirborneTank(
-      tank,
-      dt,
-      (x, z) => this.voxels.getGroundBelow(x, tank.position.y + HULL_RADIUS, z),
-      HULL_RADIUS,
-    );
-
-    const cellSize = this.voxels.cellSize;
-    const mapW = this.voxels.sizeX * cellSize;
-    const mapH = this.voxels.sizeZ * cellSize;
-    const borderPadding = 12.0;
-    if (tank.position.x < -borderPadding) { tank.position.x = -borderPadding; tank.linVel.x = 0; }
-    else if (tank.position.x > mapW + borderPadding) { tank.position.x = mapW + borderPadding; tank.linVel.x = 0; }
-    if (tank.position.z < -borderPadding) { tank.position.z = -borderPadding; tank.linVel.z = 0; }
-    else if (tank.position.z > mapH + borderPadding) { tank.position.z = mapH + borderPadding; tank.linVel.z = 0; }
-
-    // Keep Rapier's kinematic body aligned with our integrator so the
-    // collider stays in the right chunks (shells / queries remain valid).
-    this.physics.setTankPosition(pid, tank.position);
-
-    // Drown while airborne.
-    if (tank.position.y < SEA_LEVEL - 2.4) {
-      tank.hp = 0;
-      tank.alive = false;
-      tank.airborne = false;
-      if (player) {
-        player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
-      }
-      this.io.to(this.id).emit('match_event', {
-        kind: 'suicide',
-        victimId: pid,
-        name: tank.playerName,
-        color: tank.color,
-        weaponId: 'water',
-      });
-      return;
-    }
-
-    // Single-tick exit: stepAirborneTank now reports "settled" only when
-    // the body is physically at rest (in contact, upright, slow), so as
-    // soon as that's true we can resume grounded driving. No timer.
-    if (stepResult.settledOnGround) {
-      this.exitAirborne(pid, tank);
-    }
-  }
-
-  /** Flip the tank into airborne mode with the given linear and angular
-   *  velocity deltas added to its current state. No-op on already airborne
-   *  tanks beyond summing in the extra velocity (second hit in flight).
-   *  Also seeds a "takeoff" bump so a tank sitting on the ground can get
-   *  off it cleanly when a blast lifts it. */
-  private enterAirborne(tank: TankState, linDelta: Vec3, angDelta: Vec3): void {
-    const wasGrounded = !tank.airborne;
-    tank.airborne = true;
-    tank.linVel.x += linDelta.x;
-    tank.linVel.y += linDelta.y;
-    tank.linVel.z += linDelta.z;
-    tank.angVel.x += angDelta.x;
-    tank.angVel.y += angDelta.y;
-    tank.angVel.z += angDelta.z;
-    // Lift the body a hair above the surface so the first airborne tick
-    // doesn't immediately snap it back down and exit.
-    if (wasGrounded) tank.position.y += 0.05;
-    const player = this.players.get(tank.playerId);
-    if (player) {
-      player.lastGroundedPos = null;
-      // Airborne cancels any lingering landing-grace — we're truly off
-      // the ground now, not absorbing a prior landing.
-      player.postLandingGraceTicks = 0;
-    }
-  }
-
-  /** Return to grounded mode: zero tossed velocities, re-seed the KCC, and
-   *  snap pitch/roll back to the terrain tilt on the next alignment pass.
-   *  Also seeds lastGroundedPos + a short post-landing grace window so the
-   *  airborne trigger can't fire again while the tank is still settling
-   *  onto uneven ground right after landing (the "keeps bouncing" bug). */
-  private exitAirborne(pid: PlayerId, tank: TankState): void {
-    tank.airborne = false;
-    tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
-    tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
-    this.physics.resumeGrounded(pid, tank.bodyRotation);
-    const player = this.players.get(pid);
-    if (player) {
-      player.lastGroundedPos = { x: tank.position.x, y: tank.position.y, z: tank.position.z };
-      player.postLandingGraceTicks = POST_LANDING_GRACE_TICKS;
     }
   }
 
