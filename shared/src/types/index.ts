@@ -10,7 +10,7 @@ export enum MatchPhase {
 }
 
 // ── Special Events ──
-export type SpecialEvent = 'none' | 'double_terrain_damage' | 'low_gravity' | 'dense_fog';
+export type SpecialEvent = 'none' | 'double_terrain_damage' | 'low_gravity' | 'dense_fog' | 'space_invaders';
 
 // ── Vectors ──
 export interface Vec3 {
@@ -83,7 +83,8 @@ export type ShotVisualStyle =
   | 'rail'
   | 'mortar_shell'
   | 'mine_deploy'
-  | 'mine_burst';
+  | 'mine_burst'
+  | 'space_invaders_beam';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 

@@ -142,7 +142,7 @@ interface ScheduledStrike {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
-  visualStyle: 'drill_burst' | 'mortar_shell';
+  visualStyle: 'drill_burst' | 'mortar_shell' | 'space_invaders_beam';
   spawnHeight: number;
 }
 
@@ -179,6 +179,8 @@ export class Room {
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
   private matchResetAt: number = 0; // epoch seconds
   specialEvent: SpecialEvent = 'none';
+  /** Accumulated sim-time for the space_invaders periodic strike scheduler. */
+  private invaderStrikeTimer = 0;
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
@@ -199,7 +201,7 @@ export class Room {
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
     
     // Pick an initial event
-    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog'];
+    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog', 'space_invaders'];
     this.specialEvent = events[Math.floor(Math.random() * events.length)];
     setGravity(this.specialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
 
@@ -228,8 +230,9 @@ export class Room {
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.terrainSeed = createRandomTerrainSeed();
-    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog'];
+    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog', 'space_invaders'];
     this.specialEvent = events[Math.floor(Math.random() * events.length)];
+    this.invaderStrikeTimer = 0;
     setGravity(this.specialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
     
     this.voxels.clear();
@@ -807,6 +810,7 @@ export class Room {
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
+      this.tickSpaceInvaders(simDt);
     }, simDt * 1000);
 
     this.broadcastInterval = setInterval(() => {
@@ -1210,6 +1214,68 @@ export class Room {
       if (hazard.timeRemaining <= 0) {
         this.activeHazards.delete(hazardId);
       }
+    }
+  }
+
+  /** During 'space_invaders' event: periodically fires green laser beams from
+   *  the sky at random terrain positions. They carve terrain but deal zero
+   *  player damage. A mortar_marker warning ring appears ~1.5s before impact. */
+  private tickSpaceInvaders(dt: number): void {
+    if (this.specialEvent !== 'space_invaders') return;
+
+    const STRIKE_INTERVAL = 3.0;  // seconds between batches
+    const WARN_DELAY = 1.5;       // warning ring duration before impact
+    const BLAST_RADIUS = 4.5;     // terrain carve radius
+    const STRIKES_PER_BATCH = 2;  // beams per batch
+    const BEAM_HEIGHT = 50;       // how high the beam comes from
+
+    this.invaderStrikeTimer += dt;
+    if (this.invaderStrikeTimer < STRIKE_INTERVAL) return;
+    this.invaderStrikeTimer -= STRIKE_INTERVAL;
+
+    const mapW = this.voxels.sizeX * this.voxels.cellSize;
+    const mapH = this.voxels.sizeZ * this.voxels.cellSize;
+
+    for (let s = 0; s < STRIKES_PER_BATCH; s++) {
+      const x = Math.random() * mapW;
+      const z = Math.random() * mapH;
+      const surfaceY = this.voxels.getHeight(x, z);
+      const targetPos = { x, y: surfaceY, z };
+
+      // Warning ring — reuse mortar_marker hazard type so clients
+      // render the existing glowing ring indicator.
+      const markerId = `hazard_${this.nextHazardId++}`;
+      this.activeHazards.set(markerId, {
+        hazardId: markerId,
+        ownerId: 'server',
+        weaponId: 'space_invaders',
+        type: 'mortar_marker',
+        position: targetPos,
+        radius: BLAST_RADIUS * 1.2,
+        armed: true,
+        timeRemaining: WARN_DELAY + 0.4,
+        damage: 0,
+        tickInterval: 0,
+        tickTimer: 0,
+        triggerRadius: 0,
+        blastRadius: 0,
+        terrainDamage: 0,
+      });
+
+      // Scheduled beam strike arriving after the warning delay.
+      this.scheduledStrikes.push({
+        strikeId: `strike_${this.nextStrikeId++}`,
+        kind: 'mortar',
+        ownerId: 'server',
+        weaponId: 'space_invaders',
+        triggerAt: this.simTime + WARN_DELAY,
+        position: targetPos,
+        blastRadius: BLAST_RADIUS,
+        damage: 0,
+        terrainDamage: 1,
+        visualStyle: 'space_invaders_beam',
+        spawnHeight: BEAM_HEIGHT,
+      });
     }
   }
 

@@ -243,6 +243,8 @@ export function triggerSpecialEventBanner(eventName: string): void {
       specialEventBanner.style.setProperty('--event-color', '#aaa');
     } else if (eventName === 'double_terrain_damage') {
       specialEventBanner.style.setProperty('--event-color', '#fa0');
+    } else if (eventName === 'space_invaders') {
+      specialEventBanner.style.setProperty('--event-color', '#39ff14');
     } else {
       specialEventBanner.style.setProperty('--event-color', '#fff');
     }
