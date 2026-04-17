@@ -228,19 +228,24 @@ export function triggerHitFeedback(killed = false): void {
 
 /** Triggers the UI banner announcing a new special event. */
 export function triggerSpecialEventBanner(eventName: string): void {
-  if (eventName === 'none' || !specialEventBanner) return;
+  if (!specialEventBanner) return;
   
-  const formattedName = eventName.split('_').map(word => word.toUpperCase()).join(' ');
-  specialEventBanner.textContent = `NEW EVENT: ${formattedName}`;
-  
-  if (eventName === 'low_gravity') {
-    specialEventBanner.style.setProperty('--event-color', '#4af');
-  } else if (eventName === 'dense_fog') {
-    specialEventBanner.style.setProperty('--event-color', '#aaa');
-  } else if (eventName === 'double_terrain_damage') {
-    specialEventBanner.style.setProperty('--event-color', '#fa0');
-  } else {
+  if (eventName === 'none') {
+    specialEventBanner.textContent = `NO SPECIAL EVENT`;
     specialEventBanner.style.setProperty('--event-color', '#fff');
+  } else {
+    const formattedName = eventName.split('_').map(word => word.toUpperCase()).join(' ');
+    specialEventBanner.textContent = `NEW EVENT: ${formattedName}`;
+    
+    if (eventName === 'low_gravity') {
+      specialEventBanner.style.setProperty('--event-color', '#4af');
+    } else if (eventName === 'dense_fog') {
+      specialEventBanner.style.setProperty('--event-color', '#aaa');
+    } else if (eventName === 'double_terrain_damage') {
+      specialEventBanner.style.setProperty('--event-color', '#fa0');
+    } else {
+      specialEventBanner.style.setProperty('--event-color', '#fff');
+    }
   }
   
   specialEventBanner.classList.remove('show');

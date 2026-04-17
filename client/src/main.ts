@@ -101,6 +101,7 @@ window.addEventListener('resize', () => {
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
 let activeSpecialEvent: SpecialEvent = 'none';
+let hasReceivedInitialEvent = false;
 let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
@@ -193,8 +194,9 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
     scene.fog = new THREE.Fog(FOG_COLOR, 10, 45);
   }
 
-  if (activeSpecialEvent !== previousEvent && activeSpecialEvent !== 'none') {
+  if (!hasReceivedInitialEvent || activeSpecialEvent !== previousEvent) {
     hud.triggerSpecialEventBanner(activeSpecialEvent);
+    hasReceivedInitialEvent = true;
   }
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
