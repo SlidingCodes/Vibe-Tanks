@@ -29,7 +29,7 @@ import { triggerRecoil } from './entities/tank';
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
-import { initFpsCounter, tickFpsCounter } from './ui/fpsCounter';
+import { initFpsCounter, reportTankTelemetry, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
@@ -764,6 +764,11 @@ function animate(): void {
   const dt = Math.min(clock.getDelta(), 0.1);
   const now = clock.getElapsedTime();
   tickFpsCounter(dt);
+  if (predictedState && predictedState.alive) {
+    reportTankTelemetry(predictedState.linVel.x, predictedState.linVel.z, dt);
+  } else {
+    reportTankTelemetry(null, null, dt);
+  }
 
   const requestedWeaponSlot = consumeWeaponSlot();
   if (requestedWeaponSlot !== null) {
