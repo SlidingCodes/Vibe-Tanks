@@ -12,6 +12,7 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\""
   },
   "devDependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
     "concurrently": "^8.2.2",
     "typescript": "^5.4.5",
     "vitest": "^4.1.4"

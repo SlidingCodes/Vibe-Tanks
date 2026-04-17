@@ -3,7 +3,7 @@ import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '@shared/types/index';
 import { SERVER_PORT } from '@shared/constants';
 import { getRandomTerrainPresetId } from '@shared/terrain';
-import { initRapier } from './physics/RapierVoxelWorld';
+import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { JoinRoomSchema, onValidated } from './validation';
 

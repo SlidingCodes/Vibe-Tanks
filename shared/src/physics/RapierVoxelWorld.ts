@@ -1,8 +1,8 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { MovementInput, PlayerId, TankState, Vec3 } from '@shared/types/index';
-import { VoxelGrid } from '@shared/terrain/VoxelGrid';
-import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '@shared/terrain/surfaceNetsMesher';
-import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '@shared/constants';
+import { MovementInput, PlayerId, TankState, Vec3 } from '../types/index';
+import { VoxelGrid } from '../terrain/VoxelGrid';
+import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../terrain/surfaceNetsMesher';
+import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '../constants';
 
 // ── Tank tuning ─────────────────────────────────────────────────────
 /** Sphere collider for the tank hull. Ball + KCC means the tank cannot
@@ -42,9 +42,12 @@ const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false
 
 let rapierReady: Promise<void> | null = null;
 
-/** Must be awaited once at server bootstrap before constructing a RapierVoxelWorld. */
+/** Must be awaited once per process (server bootstrap, or client on the
+ *  first voxel snapshot) before constructing a RapierVoxelWorld. Idempotent;
+ *  safe to call from both sides. */
 export function initRapier(): Promise<void> {
-  if (!rapierReady) rapierReady = RAPIER.init();
+  if (rapierReady) return rapierReady;
+  rapierReady = RAPIER.init();
   return rapierReady;
 }
 
