@@ -21,13 +21,12 @@ export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second
 /** Acceleration toward commanded target velocity (m/s²). With TANK_SPEED
- *  = 8 the tank reaches top speed in ~0.33 s from rest — snappy arcade
- *  feel. Set high so that even on steep slopes, where the contact solver
- *  absorbs a chunk of each tick's impulse, enough force gets through to
- *  maintain forward motion. Lower values led to "tank stuck on 37° rim"
- *  because the per-tick impulse budget was eaten by contact and velocity
- *  never built up. */
-export const TANK_ACCEL = 24;
+ *  = 8 the tank reaches top speed in ~0.5 s — arcade-snappy but with a
+ *  perceptible ramp, which is what the player feels as "inertia". Used
+ *  by the velocity-ramped setLinvel drive (not an impulse budget), so
+ *  this value directly controls the slope of the velocity curve from
+ *  rest to top speed and is not fighting the contact solver. */
+export const TANK_ACCEL = 16;
 /** Deceleration toward zero when no throttle is held (m/s²). Acts as
  *  rolling resistance — the tank coasts briefly after releasing the stick
  *  instead of stopping instantly, but slows to idle in well under a

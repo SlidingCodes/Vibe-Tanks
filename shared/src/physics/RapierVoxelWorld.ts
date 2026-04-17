@@ -90,16 +90,18 @@ const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${
  * dynamics one-way (Rapier's own guide) and never receive pushback, so
  * applyImpulse is a no-op on the tank. Dynamic body closes the gap.
  *
- * Drive model: acceleration-based. Each tick we compute a commanded
- * horizontal target velocity from the input + current yaw and apply an
- * impulse proportional to (target - current), capped per tick by
- * TANK_ACCEL (or TANK_COAST_DECEL when no throttle). Momentum accumulates
- * and persists through contact; driving into a slope converts sustained
- * horizontal thrust into climbing motion via Rapier's contact solver,
- * which is what replaced the earlier synthetic climb-assist cleanly.
- * Yaw is still hard-set via setAngvel (instant steering response —
- * matches arcade-tank feel and avoids the floaty-oversteery problem of
- * fully physical car controllers).
+ * Drive model: velocity-ramped setLinvel. Each tick we ramp the body's
+ * horizontal linvel toward the commanded target at TANK_ACCEL m/s²
+ * (TANK_COAST_DECEL when no throttle) and commit via setLinvel. This
+ * forces horizontal motion each tick — the contact solver can't absorb
+ * the drive the way it did with an impulse-based approach, so the tank
+ * climbs rims/stairs/slopes because Rapier resolves compenetration by
+ * pushing the body up along the surface. Blasts via applyImpulse add
+ * instantaneously to linvel and persist: the ramp reads currentLinvel
+ * each tick, so a knockback decays smoothly over ~1 s instead of being
+ * clobbered on the next frame. Y is untouched — gravity and ground
+ * contact own the vertical axis. Yaw is hard-set via setAngvel (instant
+ * arcade steering).
  */
 export class RapierVoxelWorld {
   readonly world: RAPIER.World;
@@ -345,57 +347,49 @@ export class RapierVoxelWorld {
       const fwdX = Math.sin(currentYaw);
       const fwdZ = Math.cos(currentYaw);
 
-      let targetX = 0, targetY = 0, targetZ = 0;
-      if (moveDir !== 0) {
-        const speed = moveDir > 0 ? FORWARD_SPEED : BACKWARD_SPEED;
-        // Horizontal commanded direction from yaw + move sign.
-        const hx = fwdX * moveDir;
-        const hz = fwdZ * moveDir;
-        // "Uphill-assisted" thrust: measure the terrain rise strictly in
-        // front of the tank (baseline = ground height under the tank
-        // centre, forward sample 1.5 m ahead along the driving direction)
-        // and tilt the thrust vector UP by that angle if positive. The
-        // asymmetry is deliberate:
-        //   - Climbing into a crater rim or hill: forward height rises
-        //     steeply, thrust tilts up to 45–70°, most of the commanded
-        //     speed becomes vertical, contact solver accepts it because
-        //     it's roughly parallel to the slope → tank climbs out.
-        //   - Cresting a ridge: forward sample falls below the tank
-        //     baseline → climb angle is negative → clamp to zero →
-        //     horizontal thrust, gravity handles the descent naturally.
-        // This is cleaner than trying to reconstruct a contact normal
-        // from a heightmap, and unlike the surface-normal projection it
-        // never tilts the thrust downward.
-        const probeAhead = 1.5;
-        const hCenter = this.grid.getHeight(pos.x, pos.z);
-        const hAhead = this.grid.getHeight(pos.x + hx * probeAhead, pos.z + hz * probeAhead);
-        const climbRad = Math.atan2(hAhead - hCenter, probeAhead);
-        const climb = climbRad > 0 ? climbRad : 0;
-        const cc = Math.cos(climb);
-        const ss = Math.sin(climb);
-        targetX = hx * cc * speed;
-        targetY = ss * speed;
-        targetZ = hz * cc * speed;
+      let targetX = 0, targetZ = 0;
+      if (moveDir > 0) {
+        targetX = fwdX * FORWARD_SPEED;
+        targetZ = fwdZ * FORWARD_SPEED;
+      } else if (moveDir < 0) {
+        targetX = -fwdX * BACKWARD_SPEED;
+        targetZ = -fwdZ * BACKWARD_SPEED;
       }
 
-      // Acceleration-based drive: nudge linvel toward the commanded target
-      // by at most (rate·dt) per tick. Target is now 3D (has a Y component
-      // when on a slope) so the impulse lifts the ball along the surface
-      // rather than pushing it into the wall. Gravity still integrates
-      // normally — the Y target is the quasi-steady speed along the slope,
-      // not an extra jump. On flat ground n=(0,1,0) → targetY=0 and the
-      // drive reduces exactly to the old horizontal behaviour.
+      // Velocity-ramped drive: read current horizontal linvel, ramp toward
+      // the commanded target at TANK_ACCEL m/s² (TANK_COAST_DECEL when
+      // no throttle), then commit via setLinvel. This is the classic
+      // "arcade dynamic" control surface — setLinvel forces the horizontal
+      // velocity each tick, so the contact solver can't absorb the drive
+      // (which was the failure mode of the impulse-based approach: on a
+      // crater rim ~95% of each impulse was eaten by contact resolution
+      // and velocity never built up). Rapier then resolves compenetration
+      // with the slope by pushing the ball up along the surface — that's
+      // the mechanism that climbs rims and stairs. Y is preserved so
+      // gravity and ground contact own the vertical axis.
+      //
+      // Acceleration feel: target velocity is approached at TANK_ACCEL
+      // per second, not set instantly. Momentum buildup, not teleport.
+      //
+      // Blast knockback survives: applyImpulse adds to linvel immediately,
+      // and because we read currentLinvel each tick the kick persists —
+      // the ramp-down toward target takes ~(|blast| / TANK_COAST_DECEL)
+      // seconds, so a 20 m/s blast decays visibly over ~1 s instead of
+      // being instantly clobbered. During airborne the drive is skipped
+      // entirely, so blast arcs are untouched.
       const currentLinvel = body.linvel();
       const dvx = targetX - currentLinvel.x;
-      const dvy = targetY - currentLinvel.y;
       const dvz = targetZ - currentLinvel.z;
-      const dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+      const dvMag = Math.hypot(dvx, dvz);
+      let newVx = currentLinvel.x;
+      let newVz = currentLinvel.z;
       if (dvMag > 1e-6) {
         const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
         const scale = Math.min(1, (rate * dt) / dvMag);
-        const mass = body.mass();
-        body.applyImpulse({ x: dvx * scale * mass, y: dvy * scale * mass, z: dvz * scale * mass }, true);
+        newVx = currentLinvel.x + dvx * scale;
+        newVz = currentLinvel.z + dvz * scale;
       }
+      body.setLinvel({ x: newVx, y: currentLinvel.y, z: newVz }, true);
     }
   }
 
