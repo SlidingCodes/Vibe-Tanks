@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { MovementInput, PlayerId, TankState, Vec3 } from '../types/index';
 import { VoxelGrid } from '../terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../terrain/surfaceNetsMesher';
-import { GRAVITY, TANK_SPEED, TANK_TURN_SPEED } from '../constants';
+import { GRAVITY, TANK_ACCEL, TANK_COAST_DECEL, TANK_SPEED, TANK_TURN_SPEED } from '../constants';
 
 // ── Tank tuning ─────────────────────────────────────────────────────
 /** Sphere collider for the tank hull. Ball keeps the body from catching
@@ -22,10 +22,12 @@ const HULL_DENSITY = 1400; // → ~3000 kg at r = 0.8
  *  via setLinvel every tick, so friction would just be fighting the
  *  commanded motion. Restitution is zero — tanks don't bounce. */
 const HULL_FRICTION = 0.05;
-/** Mild linear damping. With setLinvel-forced horizontal motion this
- *  only affects the vertical axis (gravity-induced velocity), where a
- *  tiny bit of damping keeps "just landed" bounces from oscillating. */
-const HULL_LINEAR_DAMPING = 0.5;
+/** Linear damping is zero: horizontal deceleration is owned explicitly by
+ *  the TANK_COAST_DECEL accel-drive path, and adding Rapier damping on
+ *  top would double-count rolling resistance (and also drag Y velocity
+ *  during airborne flight, which we want to keep momentum-preserving so
+ *  blast arcs and cliff drops carry visibly). */
+const HULL_LINEAR_DAMPING = 0.0;
 /** Aggressive angular damping so yaw commands feel crisp. The Y angvel
  *  is also hard-set each tick from input, so damping mostly kills any
  *  parasitic spin from collisions (walls, blast torque in future C5). */
@@ -88,10 +90,16 @@ const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${
  * dynamics one-way (Rapier's own guide) and never receive pushback, so
  * applyImpulse is a no-op on the tank. Dynamic body closes the gap.
  *
- * Why not free dynamic driving (physical forces only): dynamic cars feel
- * floaty and oversteery; tank games want "goes where the stick points".
- * setLinvel each tick is the classic "arcade dynamic" compromise —
- * kinematic-feeling control surface, dynamic-feeling interactions.
+ * Drive model: acceleration-based. Each tick we compute a commanded
+ * horizontal target velocity from the input + current yaw and apply an
+ * impulse proportional to (target - current), capped per tick by
+ * TANK_ACCEL (or TANK_COAST_DECEL when no throttle). Momentum accumulates
+ * and persists through contact; driving into a slope converts sustained
+ * horizontal thrust into climbing motion via Rapier's contact solver,
+ * which is what replaced the earlier synthetic climb-assist cleanly.
+ * Yaw is still hard-set via setAngvel (instant steering response —
+ * matches arcade-tank feel and avoids the floaty-oversteery problem of
+ * fully physical car controllers).
  */
 export class RapierVoxelWorld {
   readonly world: RAPIER.World;
@@ -279,14 +287,16 @@ export class RapierVoxelWorld {
     entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** Arcade-dynamic drive with an airborne gate:
+  /** Acceleration-based drive with an airborne gate:
    *
-   *  - Grounded: commit a horizontal target velocity + yaw rate directly
-   *    to the dynamic body. Gravity-driven Y velocity is preserved so
-   *    ground contact / small bumps / ramps still integrate naturally;
-   *    the X/Z components come straight from the driving intent. This
-   *    gives the tank a kinematic-like control surface over a real
-   *    dynamic body.
+   *  - Grounded: compute a commanded horizontal target velocity from the
+   *    input + current yaw and nudge the body's horizontal linvel toward
+   *    it by at most TANK_ACCEL·dt per tick (TANK_COAST_DECEL·dt when no
+   *    throttle). Applied as an impulse so built-up momentum persists
+   *    through contact — driving into a slope translates horizontal
+   *    thrust into climbing motion naturally via the contact solver, no
+   *    synthetic climb-assist needed. Yaw rate is still hard-set each
+   *    tick (instant steering, arcade-tank convention).
    *  - Airborne (ball clear of the ground by > GROUND_CONTACT_EPSILON):
    *    skip all drive. The body keeps whatever linvel/angvel it had
    *    (blast toss, cliff drop momentum, jump arc); Rapier's gravity
@@ -296,7 +306,6 @@ export class RapierVoxelWorld {
    *
    *  Must be called before stepping the world. */
   applyTankInputs(dt: number, skipIds?: Set<PlayerId>): void {
-    void dt; // present for API compatibility; linvel is a rate, not an impulse.
     for (const [id, entry] of this.tanks) {
       if (skipIds && skipIds.has(id)) continue;
       const body = entry.body;
@@ -345,17 +354,23 @@ export class RapierVoxelWorld {
         targetZ = -fwdZ * BACKWARD_SPEED;
       }
 
-      // Preserve linvel.y so Rapier's gravity + ground-contact response
-      // continue to drive the vertical axis. Slope climbing is left to
-      // the real physics: the forced horizontal linvel pushes against
-      // the slope surface, collision response converts some of it into
-      // upward motion. Steep rises feel heavy, vertical walls stall —
-      // both physically correct. The planned acceleration-based drive
-      // model (feat/variable-tank-speed) will let the tank build up
-      // power and climb steeper slopes over time by its own momentum,
-      // which replaces this synthetic assist cleanly.
+      // Acceleration-based drive: nudge horizontal linvel toward the
+      // commanded target by at most (rate·dt) per tick. Y is untouched
+      // so gravity and ground-contact response own the vertical axis
+      // exactly as before. Impulses compose with collision response, so
+      // built-up horizontal momentum that meets a slope gets partially
+      // redirected upward by the contact solver — that's the mechanism
+      // that replaces the old synthetic climb-assist.
       const currentLinvel = body.linvel();
-      body.setLinvel({ x: targetX, y: currentLinvel.y, z: targetZ }, true);
+      const dvx = targetX - currentLinvel.x;
+      const dvz = targetZ - currentLinvel.z;
+      const dvMag = Math.hypot(dvx, dvz);
+      if (dvMag > 1e-6) {
+        const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
+        const scale = Math.min(1, (rate * dt) / dvMag);
+        const mass = body.mass();
+        body.applyImpulse({ x: dvx * scale * mass, y: 0, z: dvz * scale * mass }, true);
+      }
     }
   }
 

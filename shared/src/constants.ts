@@ -20,6 +20,20 @@ export const GRAVITY = -9.81;
 export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second
+/** Horizontal acceleration toward commanded target velocity (m/s²).
+ *  With TANK_SPEED = 8 this reaches top speed in ~0.67 s from rest — tanks
+ *  feel weighty, not teleport-fast. Applied as an impulse each tick so
+ *  the acceleration behaves like a real engine force: contact with a slope
+ *  or wall redirects the built-up momentum through Rapier's solver, which
+ *  is what lets the tank climb inclines by pushing into them over time
+ *  instead of needing a synthetic climb-assist. */
+export const TANK_ACCEL = 12;
+/** Deceleration toward zero when no throttle is held (m/s²). Acts as
+ *  rolling resistance — the tank coasts briefly after releasing the stick
+ *  instead of stopping instantly, but slows to idle in well under a
+ *  second. Larger than TANK_ACCEL so braking feels snappier than
+ *  accelerating, matching arcade-driving convention. */
+export const TANK_COAST_DECEL = 20;
 /** Half-distance between the two tread centres — used by tank mesh layout
  *  and tread-track painting on client + server so both sides mark the same
  *  voxel columns. */
