@@ -130,4 +130,69 @@ describe('VoxelGrid', () => {
     g.seedFromNoise(flatSampler(2));
     expect(g.getSlopeMagnitude(16, 16)).toBeLessThan(1e-6);
   });
+
+  describe('getGroundBelow', () => {
+    it('matches getHeight when the reference is above a simple solid surface', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Reference well above the surface — should resolve to the same
+      // column-top height as getHeight.
+      const topFromBelow = g.getGroundBelow(16, 20, 16);
+      const topFromHeight = g.getHeight(16, 16);
+      expect(Math.abs(topFromBelow - topFromHeight)).toBeLessThan(1e-6);
+    });
+
+    // Hand-built overhang/tunnel. Column is uniform across X,Z so bilinear
+    // interpolation is a no-op and the per-column scan is directly
+    // observable.
+    function buildCaveGrid(): VoxelGrid {
+      const g = new VoxelGrid({ sizeX: 4, sizeY: 16, sizeZ: 4, cellSize: 1, minYCells: -4 });
+      // World Y ranges (minYCells=-4, so iy=0 → center Y=-3.5):
+      //   iy=0..5   solid  → ground up to world Y≈2  (floor)
+      //   iy=6..8   empty  → tunnel, world Y≈2..5
+      //   iy=9..11  solid  → overhang slab, world Y≈5..8
+      //   iy=12..15 empty  → sky, world Y≈8..12
+      for (let ix = 0; ix < 4; ix++) {
+        for (let iz = 0; iz < 4; iz++) {
+          for (let iy = 0; iy <= 5; iy++) g.setDensity(ix, iy, iz, 255);
+          for (let iy = 6; iy <= 8; iy++) g.setDensity(ix, iy, iz, 0);
+          for (let iy = 9; iy <= 11; iy++) g.setDensity(ix, iy, iz, 255);
+          for (let iy = 12; iy <= 15; iy++) g.setDensity(ix, iy, iz, 0);
+        }
+      }
+      return g;
+    }
+
+    it('picks the overhang top when the reference is above the cave', () => {
+      const g = buildCaveGrid();
+      const y = g.getGroundBelow(2, 10, 2);
+      expect(Math.abs(y - 8)).toBeLessThan(0.1);
+    });
+
+    it('picks the tunnel floor when the reference is inside the cave', () => {
+      const g = buildCaveGrid();
+      const y = g.getGroundBelow(2, 3, 2);
+      expect(Math.abs(y - 2)).toBeLessThan(0.1);
+    });
+
+    it('picks the overhang top when the reference is inside overhang rock', () => {
+      // Models "tank penetrated the overhang" — resolving to the enclosing
+      // solid's top is what Rapier would push it to anyway.
+      const g = buildCaveGrid();
+      const y = g.getGroundBelow(2, 6, 2);
+      expect(Math.abs(y - 8)).toBeLessThan(0.1);
+    });
+
+    it('picks the tunnel floor when the reference is inside the floor rock', () => {
+      const g = buildCaveGrid();
+      const y = g.getGroundBelow(2, 1, 2);
+      expect(Math.abs(y - 2)).toBeLessThan(0.1);
+    });
+
+    it('falls through to bedrock when the column has no solid below', () => {
+      const g = new VoxelGrid({ sizeX: 4, sizeY: 16, sizeZ: 4, cellSize: 1, minYCells: -4 });
+      const y = g.getGroundBelow(2, 5, 2);
+      expect(y).toBe(g.bedrockSurfaceY);
+    });
+  });
 });

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { getTerrainHeight, setTerrainSource } from './scene/terrain';
+import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
@@ -380,7 +380,14 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           const RECONCILE_RATE = 0.15;
           predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
           predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
-          predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
+          // Y-aware ground: reference the current hull centre so the
+          // reconciliation snap finds the tunnel floor when the tank is
+          // inside a cave, not the overhang column-top above.
+          predictedState.position.y = getGroundBelow(
+            predictedState.position.x,
+            predictedState.position.y + LOCAL_HULL_RADIUS,
+            predictedState.position.z,
+          );
           let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
           while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
           while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
@@ -475,7 +482,11 @@ socket.on('shot_resolved', (result: ShotResult) => {
           // far enough that it's physically above the ground now, flip
           // airborne with the current driving momentum as the initial
           // linVel. Server will reconcile on the next state_update.
-          const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
+          const newTerrainY = grid.getGroundBelow(
+            predictedState.position.x,
+            predictedState.position.y + LOCAL_HULL_RADIUS,
+            predictedState.position.z,
+          );
           // Preemptive carve trigger: a carve just landed locally. The
           // client doesn't track horizSpeed here — use 0 so only the
           // force-drop path fires (craters under / near the tank).
@@ -676,17 +687,28 @@ function animate(): void {
     }
 
     const { w: mapW, h: mapH } = getMapBounds();
+    // Y-aware closure: share one reference (hull centre) across all
+    // sampler calls within a single physics step so tilt stencils and
+    // the central ground query land in the same solid region even at a
+    // cave entrance. The reference reads the CURRENT tank Y on each
+    // call, which is what we want for the ragdoll branch (tank Y moves
+    // each sub-step) and is stable enough for the grounded branch
+    // (stepTankPhysics mutates Y only at the very end).
+    const localState = predictedState;
+    const sampleGround = (x: number, z: number): number =>
+      getGroundBelow(x, localState.position.y + LOCAL_HULL_RADIUS, z);
+
     if (predictedState.airborne) {
       // Locally predict the ragdoll with the same integrator the server
       // runs, so the fall is smooth between 20 Hz state_updates instead
       // of snapping every broadcast. State_update snaps position + vel
       // back onto the authoritative path, so any drift is corrected
       // within 50 ms.
-      stepAirborneTank(predictedState, dt, getTerrainHeight, LOCAL_HULL_RADIUS);
+      stepAirborneTank(predictedState, dt, sampleGround, LOCAL_HULL_RADIUS);
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
-      stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, voxelGrid?.cellSize ?? 1);
+      stepTankPhysics(predictedState, input, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
     }
 
     updateLocalTankMesh(predictedState);

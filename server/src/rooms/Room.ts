@@ -37,7 +37,7 @@ import {
 } from '@shared/terrain';
 import { WEAPONS } from '@shared/weapons';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
-import { HULL_RADIUS, RapierVoxelWorld } from '../physics/RapierVoxelWorld';
+import { HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import {
   findNearestEnemy as findNearestEnemyFn,
   isTargetValid as isTargetValidFn,
@@ -846,7 +846,15 @@ export class Room {
       // mute the trigger entirely. Tanks landing with forward momentum on
       // undulating ground would otherwise flip airborne again on the first
       // small terrain dip, causing visible bouncing.
-      const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
+      // Y-aware ground: reference the current hull centre so a tank that
+      // drove into a tunnel samples the tunnel floor, not the overhang
+      // column-top. Column-top here would force the airborne force-drop
+      // path every frame inside a cave.
+      const freshTerrainY = this.voxels.getGroundBelow(
+        tank.position.x,
+        tank.position.y + HULL_RADIUS,
+        tank.position.z,
+      );
       const player = this.players.get(pid);
       const last = player?.lastGroundedPos ?? null;
       const vY = last ? (tank.position.y - last.y) / dt : 0;
@@ -929,7 +937,16 @@ export class Room {
    *  clamp while tossed. */
   private tickAirborneTank(pid: PlayerId, tank: TankState, dt: number): void {
     const player = this.players.get(pid);
-    const stepResult = stepAirborneTank(tank, dt, (x, z) => this.voxels.getHeight(x, z), HULL_RADIUS);
+    // Ragdoll samples the floor under the hull at EACH sub-step, so the
+    // reference tracks the tank as it falls — a tank tumbling into a
+    // tunnel from a cliff edge lands on the tunnel floor instead of
+    // snapping onto the overhang roof above.
+    const stepResult = stepAirborneTank(
+      tank,
+      dt,
+      (x, z) => this.voxels.getGroundBelow(x, tank.position.y + HULL_RADIUS, z),
+      HULL_RADIUS,
+    );
 
     const cellSize = this.voxels.cellSize;
     const mapW = this.voxels.sizeX * cellSize;
@@ -1018,16 +1035,22 @@ export class Room {
   private alignTankToVoxelSurface(tank: TankState, cellSize: number): void {
     const x = tank.position.x;
     const z = tank.position.z;
-    tank.position.y = this.voxels.getHeight(x, z);
+    // Reference Y = hull centre (tank feet + radius). All 5 samples share
+    // the SAME reference so the 4 tilt neighbours pick the same "layer"
+    // (surface vs tunnel floor) as the centre sample — otherwise a cave
+    // entrance bilinear-blends the tunnel floor with column-top on the
+    // outside column and the tank Y snaps to a garbage mid-value.
+    const refY = tank.position.y + HULL_RADIUS;
+    tank.position.y = this.voxels.getGroundBelow(x, refY, z);
     const d = 1.5 * cellSize;
     const fwdX = Math.sin(tank.bodyRotation);
     const fwdZ = Math.cos(tank.bodyRotation);
     const rgtX = Math.cos(tank.bodyRotation);
     const rgtZ = -Math.sin(tank.bodyRotation);
-    const hF = this.voxels.getHeight(x + fwdX * d, z + fwdZ * d);
-    const hB = this.voxels.getHeight(x - fwdX * d, z - fwdZ * d);
-    const hR = this.voxels.getHeight(x + rgtX * d, z + rgtZ * d);
-    const hL = this.voxels.getHeight(x - rgtX * d, z - rgtZ * d);
+    const hF = this.voxels.getGroundBelow(x + fwdX * d, refY, z + fwdZ * d);
+    const hB = this.voxels.getGroundBelow(x - fwdX * d, refY, z - fwdZ * d);
+    const hR = this.voxels.getGroundBelow(x + rgtX * d, refY, z + rgtZ * d);
+    const hL = this.voxels.getGroundBelow(x - rgtX * d, refY, z - rgtZ * d);
     tank.bodyPitch = Math.atan2(hB - hF, 2 * d);
     tank.bodyRoll = Math.atan2(hR - hL, 2 * d);
   }
@@ -1234,7 +1257,11 @@ export class Room {
       const player = this.players.get(tank.playerId);
       const last = player?.lastGroundedPos ?? null;
       const vY = last ? (tank.position.y - last.y) / syntheticDt : 0;
-      const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
+      const freshTerrainY = this.voxels.getGroundBelow(
+        tank.position.x,
+        tank.position.y + HULL_RADIUS,
+        tank.position.z,
+      );
       // regroundAliveTanks runs right after a carve mutates the voxel grid
       // — we want the force-drop path to catch a crater under a stationary
       // tank, so pass horizSpeed=0 and lean on AIRBORNE_FORCE_DROP.
