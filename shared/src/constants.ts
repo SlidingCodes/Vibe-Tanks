@@ -22,6 +22,19 @@ export const setGravity = (g: number) => { GRAVITY = g; };
 export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second
+/** Acceleration toward commanded target velocity (m/s²). With TANK_SPEED
+ *  = 8 the tank reaches top speed in ~0.5 s — arcade-snappy but with a
+ *  perceptible ramp, which is what the player feels as "inertia". Used
+ *  by the velocity-ramped setLinvel drive (not an impulse budget), so
+ *  this value directly controls the slope of the velocity curve from
+ *  rest to top speed and is not fighting the contact solver. */
+export const TANK_ACCEL = 16;
+/** Deceleration toward zero when no throttle is held (m/s²). Acts as
+ *  rolling resistance — the tank coasts briefly after releasing the stick
+ *  instead of stopping instantly, but slows to idle in well under a
+ *  second. Larger than TANK_ACCEL so braking feels snappier than
+ *  accelerating, matching arcade-driving convention. */
+export const TANK_COAST_DECEL = 20;
 /** Half-distance between the two tread centres — used by tank mesh layout
  *  and tread-track painting on client + server so both sides mark the same
  *  voxel columns. */

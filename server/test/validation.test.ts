@@ -29,21 +29,30 @@ describe('JoinRoomSchema', () => {
 });
 
 describe('MovementInputSchema', () => {
-  it('accepts all-false and arbitrary bool combinations', () => {
+  it('accepts all-false and arbitrary bool combinations with a seq', () => {
     expect(MovementInputSchema.safeParse({
-      forward: false, backward: false, left: false, right: false,
+      forward: false, backward: false, left: false, right: false, seq: 0,
     }).success).toBe(true);
     expect(MovementInputSchema.safeParse({
-      forward: true, backward: false, left: true, right: false,
+      forward: true, backward: false, left: true, right: false, seq: 17,
     }).success).toBe(true);
   });
 
-  it('rejects non-booleans and missing keys', () => {
+  it('rejects non-booleans, missing keys, and negative/NaN seq', () => {
     expect(MovementInputSchema.safeParse({
-      forward: 1, backward: 0, left: true, right: false,
+      forward: 1, backward: 0, left: true, right: false, seq: 0,
     }).success).toBe(false);
     expect(MovementInputSchema.safeParse({
-      forward: true, backward: false, left: true,
+      forward: true, backward: false, left: true, seq: 0,
+    }).success).toBe(false);
+    expect(MovementInputSchema.safeParse({
+      forward: true, backward: false, left: false, right: false,
+    }).success).toBe(false);
+    expect(MovementInputSchema.safeParse({
+      forward: true, backward: false, left: false, right: false, seq: -1,
+    }).success).toBe(false);
+    expect(MovementInputSchema.safeParse({
+      forward: true, backward: false, left: false, right: false, seq: NaN,
     }).success).toBe(false);
   });
 });

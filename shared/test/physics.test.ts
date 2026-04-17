@@ -18,14 +18,18 @@ function makeTank(overrides: Partial<TankState> = {}): TankState {
     alive: true,
     score: 0,
     color: '#fff',
+    airborne: false,
+    linVel: { x: 0, y: 0, z: 0 },
+    angVel: { x: 0, y: 0, z: 0 },
+    lastAppliedSeq: 0,
     ...overrides,
   };
 }
 
-const NO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false };
-const FORWARD: MovementInput = { forward: true, backward: false, left: false, right: false };
-const LEFT: MovementInput = { forward: false, backward: false, left: true, right: false };
-const RIGHT: MovementInput = { forward: false, backward: false, left: false, right: true };
+const NO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
+const FORWARD: MovementInput = { forward: true, backward: false, left: false, right: false, seq: 0 };
+const LEFT: MovementInput = { forward: false, backward: false, left: true, right: false, seq: 0 };
+const RIGHT: MovementInput = { forward: false, backward: false, left: false, right: true, seq: 0 };
 
 // Flat sampler at y=0 — no slopes, no slide.
 const flat = () => 0;

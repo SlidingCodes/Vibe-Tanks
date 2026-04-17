@@ -32,7 +32,12 @@ window.addEventListener('wheel', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-export function getMovementInput(): MovementInput {
+/** Raw input keys — no seq. The caller (main.ts physics loop) stamps the
+ *  monotonic tick counter just before sending/applying, so that the seq
+ *  always matches the physics step it was applied at. */
+export type InputKeys = Omit<MovementInput, 'seq'>;
+
+export function getMovementInput(): InputKeys {
   return {
     forward: !!(keys['KeyW'] || keys['ArrowUp']),
     backward: !!(keys['KeyS'] || keys['ArrowDown']),

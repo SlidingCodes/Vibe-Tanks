@@ -330,6 +330,82 @@ export class VoxelGrid {
     };
   }
 
+  /**
+   * Y-aware column sampler. Returns the world-Y of the solid surface that
+   * the hull at reference `wy` would rest on in this column:
+   *
+   *   - If the reference cell is solid, the hull is inside rock (or
+   *     resting on top of its local region). Walk UP to the first
+   *     solid→empty transition — the top of the enclosing solid.
+   *   - Otherwise the reference is in empty space; walk DOWN to the first
+   *     solid-below-empty-above transition — the floor beneath the hull.
+   *     This is how tunnels and overhangs are resolved: a tank inside a
+   *     cave has its reference in empty space between roof and floor, so
+   *     the scan picks the floor, not the column-top.
+   *   - If the column is empty all the way to the bedrock guard, fall
+   *     through to `bedrockSurfaceY` so the caller treats the tank as
+   *     airborne / unsupported.
+   */
+  private columnGroundBelow(ix: number, iz: number, wy: number): number {
+    const cix = Math.max(0, Math.min(this.sizeX - 1, ix));
+    const ciz = Math.max(0, Math.min(this.sizeZ - 1, iz));
+    const cs = this.cellSize;
+    let iyRef = Math.floor(wy / cs) - this.minYCells;
+    if (iyRef < 0) iyRef = 0;
+    if (iyRef >= this.sizeY) iyRef = this.sizeY - 1;
+
+    const refDensity = this.data[this.index(cix, iyRef, ciz)];
+    const refSolid = refDensity >= DENSITY_THRESHOLD;
+
+    if (refSolid) {
+      for (let iy = iyRef; iy < this.sizeY; iy++) {
+        const d = this.data[this.index(cix, iy, ciz)];
+        const dAbove = iy + 1 < this.sizeY
+          ? this.data[this.index(cix, iy + 1, ciz)]
+          : 0;
+        if (d >= DENSITY_THRESHOLD && dAbove < DENSITY_THRESHOLD) {
+          const f = (DENSITY_THRESHOLD - d) / (dAbove - d);
+          return (this.minYCells + iy + 0.5 + f) * cs;
+        }
+      }
+      return (this.minYCells + this.sizeY) * cs;
+    }
+
+    for (let iy = iyRef - 1; iy >= 0; iy--) {
+      const d = this.data[this.index(cix, iy, ciz)];
+      const dAbove = this.data[this.index(cix, iy + 1, ciz)];
+      if (d >= DENSITY_THRESHOLD && dAbove < DENSITY_THRESHOLD) {
+        const f = (DENSITY_THRESHOLD - d) / (dAbove - d);
+        return (this.minYCells + iy + 0.5 + f) * cs;
+      }
+    }
+    return this.bedrockSurfaceY;
+  }
+
+  /**
+   * Y-aware bilinear ground sampler. Like getHeight, but resolves to the
+   * surface that a hull at reference `wy` would sit on — so a tank inside
+   * a carved tunnel samples the tunnel floor, not the overhang above it.
+   * Reference Y is typically `tank.position.y + HULL_RADIUS` (the hull's
+   * centre). The same `wy` is used across all 4 neighbour columns so tilt
+   * derivatives stay consistent at cave entrances.
+   */
+  getGroundBelow(wx: number, wy: number, wz: number): number {
+    const fx = wx / this.cellSize;
+    const fz = wz / this.cellSize;
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const tx = fx - x0;
+    const tz = fz - z0;
+    const h00 = this.columnGroundBelow(x0,     z0,     wy);
+    const h10 = this.columnGroundBelow(x0 + 1, z0,     wy);
+    const h01 = this.columnGroundBelow(x0,     z0 + 1, wy);
+    const h11 = this.columnGroundBelow(x0 + 1, z0 + 1, wy);
+    const h0 = h00 * (1 - tx) + h10 * tx;
+    const h1 = h01 * (1 - tx) + h11 * tx;
+    return h0 * (1 - tz) + h1 * tz;
+  }
+
   /** World-space height at cell (ix, iz) by finding the iso-threshold crossing. */
   private columnTopHeight(ix: number, iz: number): number {
     const cix = Math.max(0, Math.min(this.sizeX - 1, ix));
