@@ -4,60 +4,78 @@ import { VoxelGrid } from '../terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../terrain/surfaceNetsMesher';
 import { GRAVITY, TANK_ACCEL, TANK_COAST_DECEL, TANK_SPEED, TANK_TURN_SPEED } from '../constants';
 
-// ── Tank tuning ─────────────────────────────────────────────────────
-/** Sphere collider for the tank hull. Ball keeps the body from catching
- *  on crater lips / tunnel stipes the way a cuboid did, and combined with
- *  the pitch/roll rotation lock (only yaw active) it can't roll — so it
- *  drives like a tank even though the underlying shape is spherical. */
+/** Sphere collider for the tank hull. Ball keeps the bottom from catching
+ *  on crater lips / voxel stair-steps the way a cuboid did. Under a
+ *  kinematic-position body driven by `KinematicCharacterController`,
+ *  the collider shape only drives which obstacles are hit; KCC then
+ *  decides how to move the body over them (slope climb, autostep). */
 export const HULL_RADIUS = 0.8;
 const FORWARD_SPEED = TANK_SPEED;
 const BACKWARD_SPEED = TANK_SPEED * 0.6;
 const TURN_ANGVEL = TANK_TURN_SPEED;
-/** Density × ball volume ≈ tank mass. 3 t gives the hull enough inertia
- *  that a blast impulse of a few hundred kN·s displaces it by a few
- *  metres rather than launching it across the map, and enough mass to
- *  push lighter dynamic bodies (future debris, ragdolls) convincingly. */
-const HULL_DENSITY = 1400; // → ~3000 kg at r = 0.8
-/** Low ground friction: the driving pipeline owns horizontal velocity
- *  via setLinvel every tick, so friction would just be fighting the
- *  commanded motion. Restitution is zero — tanks don't bounce. */
-const HULL_FRICTION = 0.05;
-/** Linear damping is zero: horizontal deceleration is owned explicitly by
- *  the TANK_COAST_DECEL accel-drive path, and adding Rapier damping on
- *  top would double-count rolling resistance (and also drag Y velocity
- *  during airborne flight, which we want to keep momentum-preserving so
- *  blast arcs and cliff drops carry visibly). */
-const HULL_LINEAR_DAMPING = 0.0;
-/** Aggressive angular damping so yaw commands feel crisp. The Y angvel
- *  is also hard-set each tick from input, so damping mostly kills any
- *  parasitic spin from collisions (walls, blast torque in future C5). */
-const HULL_ANGULAR_DAMPING = 8.0;
-/** World-unit gap between the ball bottom and the voxel ground at which
- *  the tank is considered "in contact". Voxel terrain has ~1-unit-tall
- *  stair-steps that are smaller than the ball radius — Rapier's ball vs
- *  TriMesh resolution handles them by rolling/sliding over the edge,
- *  which briefly lifts the ball several decimetres above the sampler-
- *  reported ground. 0.5 m absorbs those transient lifts (driving on
- *  stepped voxel terrain stays grounded) while a real cliff drop crosses
- *  the threshold within 1–2 ticks of gravity. */
-const GROUND_CONTACT_EPSILON = 0.5;
+
+// ── KCC tuning ─────────────────────────────────────────────────────
+/** Gap KCC keeps between the character collider and obstacles. Too
+ *  small → numerical instability; too large → visible floating. 5 cm is
+ *  the standard Rapier recommendation. */
+const KCC_OFFSET = 0.05;
+/** Maximum slope the tank can climb under power. 85° leaves only truly
+ *  vertical walls uncllimbable, which matches the "it's a tank, it goes
+ *  everywhere except straight up" feel of pocket-tanks arcade games. */
+const KCC_MAX_SLOPE_CLIMB = (85 * Math.PI) / 180;
+/** Slope above which gravity automatically slides the tank down even
+ *  without throttle. 60° — gentle hills hold you in place, cliff faces
+ *  let you slip off. Matches the arcade expectation. */
+const KCC_MIN_SLOPE_SLIDE = (60 * Math.PI) / 180;
+/** Maximum lip height the tank steps over automatically. Voxel cellSize
+ *  is 1, and crater rims / tunnel entries often have sub-unit ledges
+ *  the ball would otherwise get pinned on. 0.5 m catches all the
+ *  typical cases without letting the tank teleport up real cliffs. */
+const KCC_AUTOSTEP_MAX_HEIGHT = 0.5;
+/** Minimum width of ground that must exist AFTER an autostep for it to
+ *  be valid — prevents stepping onto a knife-edge. */
+const KCC_AUTOSTEP_MIN_WIDTH = 0.2;
+/** Time constant for blast-kick velocity decay (seconds). A knockback
+ *  impulse sits in the extraVel buffer and bleeds off exponentially so
+ *  the visible knockback lasts about 1 s (3·tau) — fast enough to regain
+ *  control, slow enough to feel the hit. */
+const BLAST_DECAY_TAU = 0.35;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
-}
-
-function yawFromQuat(q: { x: number; y: number; z: number; w: number }): number {
-  // With pitch/roll locked, the quaternion is a pure Y rotation, so the
-  // compact formula 2·atan2(y, w) recovers the yaw exactly.
-  return 2 * Math.atan2(q.y, q.w);
 }
 
 interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   input: MovementInput;
-  /** Cached from the last applyTankInputs pass: is the hull's bottom close
-   *  to the voxel ground? Drives the caller's airborne transition. */
+  /** Authoritative yaw. We drive a kinematic body, so rotation is
+   *  whatever we set — keep the value in state so readback and input
+   *  ramping use the same source of truth. */
+  yaw: number;
+  /** Commanded yaw rate applied this tick (rad/s). Stored so readback
+   *  can surface it as angVel.y without the caller needing to re-derive
+   *  it from the input state. */
+  turnRate: number;
+  /** Ramped horizontal velocity from throttle + steering. Accelerates
+   *  toward the commanded target at TANK_ACCEL m/s² (decelerates toward
+   *  zero at TANK_COAST_DECEL when no throttle). This is what gives
+   *  the tank its "inertia" feel without bleeding into KCC's terrain
+   *  resolution. */
+  drivenVel: { x: number; z: number };
+  /** Gravity + vertical-blast accumulator. Integrates `GRAVITY * dt`
+   *  each tick while airborne and clamps to 0 on ground contact (KCC
+   *  reports this). Kept separate from drivenVel so driving intent and
+   *  gravity don't interfere. */
+  verticalVel: number;
+  /** Blast knockback buffer. applyTankImpulse adds to this; each tick
+   *  it decays exponentially (τ = BLAST_DECAY_TAU) and is added on top
+   *  of drivenVel/verticalVel in the KCC desired-movement vector. This
+   *  keeps a blast hit visible and separable from steady-state driving. */
+  extraVel: { x: number; y: number; z: number };
+  /** Cached from KCC's last computeColliderMovement: is the tank on
+   *  solid ground? Room / client reads this each tick for the airborne
+   *  transition. */
   grounded: boolean;
 }
 
@@ -79,29 +97,32 @@ const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${
 /**
  * Rapier world backing Vibe Tanks. Static terrain collider is a set of
  * per-chunk TriMesh colliders generated from the voxel grid via the shared
- * surface-nets mesher. Each tank is a DYNAMIC rigid-body (ball collider)
- * with X/Z rotations locked so pitch/roll can't accumulate on uneven
- * ground — driving is "arcade dynamic": we force horizontal linvel each
- * tick to the input target while letting Rapier integrate gravity and
- * resolve 3D terrain collisions naturally.
+ * surface-nets mesher. Each tank is a KINEMATIC-POSITION-based rigid-body
+ * (ball collider) driven by Rapier's `KinematicCharacterController`.
  *
- * Why not kinematic + KCC: blasts, tank-vs-tank contact, and future
- * ragdoll all need real impulse interactions. Kinematic bodies only push
- * dynamics one-way (Rapier's own guide) and never receive pushback, so
- * applyImpulse is a no-op on the tank. Dynamic body closes the gap.
+ * Drive model — why KCC:
+ * KCC is purpose-built for "move this body through terrain and figure
+ * out slope climbing, step-up, wall sliding". Every tick we compute a
+ * desired displacement (drivenVel · dt + gravity · dt² + blast buffer)
+ * and ask KCC `computeColliderMovement` — it returns a corrected
+ * displacement that respects slopes up to KCC_MAX_SLOPE_CLIMB, steps
+ * over lips up to KCC_AUTOSTEP_MAX_HEIGHT, and slides along walls
+ * instead of stopping. We then commit via setNextKinematicTranslation.
+ * Climbing craters / entering tunnels / riding ridges is all handled by
+ * the controller — no hand-rolled probes or normal projections.
  *
- * Drive model: velocity-ramped setLinvel. Each tick we ramp the body's
- * horizontal linvel toward the commanded target at TANK_ACCEL m/s²
- * (TANK_COAST_DECEL when no throttle) and commit via setLinvel. This
- * forces horizontal motion each tick — the contact solver can't absorb
- * the drive the way it did with an impulse-based approach, so the tank
- * climbs rims/stairs/slopes because Rapier resolves compenetration by
- * pushing the body up along the surface. Blasts via applyImpulse add
- * instantaneously to linvel and persist: the ramp reads currentLinvel
- * each tick, so a knockback decays smoothly over ~1 s instead of being
- * clobbered on the next frame. Y is untouched — gravity and ground
- * contact own the vertical axis. Yaw is hard-set via setAngvel (instant
- * arcade steering).
+ * No snap-to-ground: if the ground disappears under the tank (crater
+ * carve, cliff edge), gravity accumulates in verticalVel and the next
+ * tick's desired movement carries it down. KCC detects no ground below
+ * and the tank falls naturally. No "glued to the surface" feel.
+ *
+ * Blast knockback: applyTankImpulse adds a delta-v to the per-tank
+ * extraVel buffer, which decays exponentially. The KCC desired
+ * movement folds it in, so a blast lofts / nudges the tank visibly
+ * and the player regains control after ~1 s (3·τ). Trade-off vs the
+ * old dynamic body: tank-vs-tank pushback is one-way (kinematic hits
+ * dynamic); we don't rely on tank collisions for gameplay today and
+ * can add an explicit "blast mode" dynamic switch later if needed.
  */
 export class RapierVoxelWorld {
   readonly world: RAPIER.World;
@@ -109,11 +130,21 @@ export class RapierVoxelWorld {
   private terrainBody: RAPIER.RigidBody;
   private colliders: Map<string, RAPIER.Collider> = new Map();
   private tanks: Map<PlayerId, TankEntry> = new Map();
+  private charController: RAPIER.KinematicCharacterController;
 
   constructor(grid: VoxelGrid) {
     this.grid = grid;
     this.world = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
     this.terrainBody = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    this.charController = this.world.createCharacterController(KCC_OFFSET);
+    this.charController.setUp({ x: 0, y: 1, z: 0 });
+    this.charController.setMaxSlopeClimbAngle(KCC_MAX_SLOPE_CLIMB);
+    this.charController.setMinSlopeSlideAngle(KCC_MIN_SLOPE_SLIDE);
+    this.charController.enableAutostep(KCC_AUTOSTEP_MAX_HEIGHT, KCC_AUTOSTEP_MIN_WIDTH, false);
+    this.charController.setSlideEnabled(true);
+    // Snap-to-ground intentionally disabled — see class docstring: a
+    // crater carve or cliff should let gravity pull the tank off the
+    // surface, not glue it back down.
     this.rebuildAll();
   }
 
@@ -197,31 +228,26 @@ export class RapierVoxelWorld {
 
   addTank(tank: TankState): void {
     if (this.tanks.has(tank.playerId)) this.removeTank(tank.playerId);
-    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+    const bodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
       // Spawn with the ball centre HULL_RADIUS above the feet Y so the
-      // bottom of the collider sits on the voxel surface. Rapier's
-      // gravity + collision resolution will hold it there.
+      // bottom of the collider sits on the voxel surface.
       .setTranslation(tank.position.x, tank.position.y + HULL_RADIUS, tank.position.z)
-      .setRotation(quatFromYaw(tank.bodyRotation))
-      .setLinearDamping(HULL_LINEAR_DAMPING)
-      .setAngularDamping(HULL_ANGULAR_DAMPING)
-      // Only yaw is physical. Pitch/roll stay zero on the body; the
-      // TankState.bodyPitch/bodyRoll are a cosmetic tilt derived from the
-      // voxel surface gradient, applied to the mesh at render time only.
-      // This is what keeps the tank from tipping over on slopes or from a
-      // blast torque — the gameplay hull is always upright.
-      .enabledRotations(false, true, false)
-      .setCanSleep(false);
+      .setRotation(quatFromYaw(tank.bodyRotation));
     const body = this.world.createRigidBody(bodyDesc);
-    const colliderDesc = RAPIER.ColliderDesc.ball(HULL_RADIUS)
-      .setDensity(HULL_DENSITY)
-      .setFriction(HULL_FRICTION)
-      .setRestitution(0);
+    // Friction/restitution don't apply to kinematic bodies through KCC
+    // (the controller handles its own contact resolution), but keep a
+    // sane collider configuration for any accidental dynamic interaction.
+    const colliderDesc = RAPIER.ColliderDesc.ball(HULL_RADIUS).setFriction(0.0).setRestitution(0);
     const collider = this.world.createCollider(colliderDesc, body);
     this.tanks.set(tank.playerId, {
       body,
       collider,
       input: { ...ZERO_INPUT },
+      yaw: tank.bodyRotation,
+      turnRate: 0,
+      drivenVel: { x: 0, z: 0 },
+      verticalVel: 0,
+      extraVel: { x: 0, y: 0, z: 0 },
       grounded: true,
     });
   }
@@ -240,8 +266,14 @@ export class RapierVoxelWorld {
     if (!entry) return;
     entry.body.setTranslation({ x: pos.x, y: pos.y + HULL_RADIUS, z: pos.z }, true);
     entry.body.setRotation(quatFromYaw(yaw), true);
-    entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    entry.yaw = yaw;
+    entry.turnRate = 0;
+    entry.drivenVel.x = 0;
+    entry.drivenVel.z = 0;
+    entry.verticalVel = 0;
+    entry.extraVel.x = 0;
+    entry.extraVel.y = 0;
+    entry.extraVel.z = 0;
     entry.input = { ...ZERO_INPUT };
   }
 
@@ -251,102 +283,60 @@ export class RapierVoxelWorld {
     entry.input = { ...input };
   }
 
-  /** Teleport the tank to a specific position. Used while airborne by the
-   *  shared integrator — the body is dynamic, so we overwrite translation
-   *  and zero velocities to stop Rapier from double-integrating gravity on
-   *  top of the integrator's own physics. */
-  setTankPosition(id: PlayerId, pos: Vec3): void {
-    const entry = this.tanks.get(id);
-    if (!entry) return;
-    entry.body.setTranslation({ x: pos.x, y: pos.y + HULL_RADIUS, z: pos.z }, true);
-    entry.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  }
-
   /** Restore the full physics state for a tank in one shot: pos, yaw,
    *  linvel, angvel. Used by the client's rewind-and-replay reconciliation
-   *  to anchor the dynamic body onto the server-broadcast truth at tick
-   *  `lastAppliedSeq` before replaying buffered post-ack inputs forward.
-   *  Does NOT touch the stored input — the caller replays per-tick with
-   *  its own input buffer. */
+   *  to anchor onto the server-broadcast truth at tick `lastAppliedSeq`
+   *  before replaying buffered post-ack inputs forward. Decomposes linVel
+   *  back into drivenVel (horizontal) + verticalVel (Y); the blast
+   *  extraVel buffer is zeroed — a blast that lands mid-rewind can lose
+   *  its decaying kick, which is acceptable for a transient effect. */
   restoreTankState(id: PlayerId, pos: Vec3, yaw: number, linVel: Vec3, angVel: Vec3): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
     entry.body.setTranslation({ x: pos.x, y: pos.y + HULL_RADIUS, z: pos.z }, true);
     entry.body.setRotation(quatFromYaw(yaw), true);
-    entry.body.setLinvel({ x: linVel.x, y: linVel.y, z: linVel.z }, true);
-    entry.body.setAngvel({ x: angVel.x, y: angVel.y, z: angVel.z }, true);
+    entry.yaw = yaw;
+    entry.turnRate = angVel.y;
+    entry.drivenVel.x = linVel.x;
+    entry.drivenVel.z = linVel.z;
+    entry.verticalVel = linVel.y;
+    entry.extraVel.x = 0;
+    entry.extraVel.y = 0;
+    entry.extraVel.z = 0;
   }
 
-  /** Called when the shared airborne integrator hands the tank back to
-   *  the grounded driving pipeline. Yaw on dynamic bodies is owned by
-   *  Rapier; re-apply the caller's authoritative yaw and zero angvel so
-   *  the tank doesn't spin on touchdown. */
-  resumeGrounded(id: PlayerId, yaw: number): void {
-    const entry = this.tanks.get(id);
-    if (!entry) return;
-    entry.body.setRotation(quatFromYaw(yaw), true);
-    entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-  }
-
-  /** Acceleration-based drive with an airborne gate:
+  /** KCC-driven motion step. Must be called before `step(dt)`:
    *
-   *  - Grounded: compute a commanded horizontal target velocity from the
-   *    input + current yaw and nudge the body's horizontal linvel toward
-   *    it by at most TANK_ACCEL·dt per tick (TANK_COAST_DECEL·dt when no
-   *    throttle). Applied as an impulse so built-up momentum persists
-   *    through contact — driving into a slope translates horizontal
-   *    thrust into climbing motion naturally via the contact solver, no
-   *    synthetic climb-assist needed. Yaw rate is still hard-set each
-   *    tick (instant steering, arcade-tank convention).
-   *  - Airborne (ball clear of the ground by > GROUND_CONTACT_EPSILON):
-   *    skip all drive. The body keeps whatever linvel/angvel it had
-   *    (blast toss, cliff drop momentum, jump arc); Rapier's gravity
-   *    and eventual collision response handle the rest. No custom
-   *    integrator runs in parallel, so the tank behaves like one object
-   *    instead of briefly teleporting onto a separate ragdoll path.
-   *
-   *  Must be called before stepping the world. */
+   *   1. Update yaw from input (instant, arcade steering).
+   *   2. Ramp drivenVel toward the commanded target at TANK_ACCEL
+   *      (TANK_COAST_DECEL when no throttle) — gives the tank inertia
+   *      without fighting KCC's terrain resolution.
+   *   3. Integrate gravity into verticalVel.
+   *   4. Decay extraVel (blast buffer).
+   *   5. Sum into a desired displacement vector (dt · combined velocity).
+   *   6. Ask KCC for the corrected displacement that respects slopes,
+   *      autostep, and wall sliding.
+   *   7. Commit via setNextKinematicTranslation/Rotation; clamp
+   *      verticalVel to 0 on ground contact (KCC.computedGrounded).
+   */
   applyTankInputs(dt: number, skipIds?: Set<PlayerId>): void {
     for (const [id, entry] of this.tanks) {
       if (skipIds && skipIds.has(id)) continue;
-      const body = entry.body;
-
-      // Update grounded state from the current body position against the
-      // voxel ground. Room reads this to set TankState.airborne for the
-      // broadcast, and applyTankInputs itself uses it to gate drive.
-      const pos = body.translation();
-      const terrainY = this.grid.getGroundBelow(pos.x, pos.y, pos.z);
-      const ballBottom = pos.y - HULL_RADIUS;
-      entry.grounded = (ballBottom - terrainY) < GROUND_CONTACT_EPSILON;
-
-      if (!entry.grounded) {
-        // Mid-air: leave the body alone so Rapier can integrate gravity
-        // and any residual impulse cleanly. Commanded yaw rate is also
-        // suppressed — tanks don't steer in the air.
-        continue;
-      }
 
       const input = entry.input;
-
-      // Yaw — reversing flips the steering sign so left/right control the
-      // direction the back of the tank swings (arcade convention).
       const moveDir = (input.forward ? 1 : 0) - (input.backward ? 1 : 0);
       const turnScale = moveDir < 0 ? -1 : 1;
       const turnInput = ((input.left ? 1 : 0) - (input.right ? 1 : 0)) * turnScale;
 
-      // Yaw rate: commanded when any turn key is held, otherwise held at
-      // zero so the body doesn't coast-rotate from collision torque. On
-      // dynamic bodies setAngvel overrides any running angular velocity.
-      body.setAngvel({ x: 0, y: turnInput * TURN_ANGVEL, z: 0 }, true);
+      // Yaw: instant steering — TURN_ANGVEL rad/s multiplied by dt, integrated
+      // into entry.yaw each tick. No angular dynamics; kinematic body
+      // just takes whatever rotation we give it.
+      entry.turnRate = turnInput * TURN_ANGVEL;
+      entry.yaw += entry.turnRate * dt;
 
-      // Horizontal target from the body's CURRENT yaw (Rapier integrates
-      // yaw between ticks, so reading the rotation each step keeps drive
-      // direction in sync with what the player sees).
-      const currentYaw = yawFromQuat(body.rotation());
-      const fwdX = Math.sin(currentYaw);
-      const fwdZ = Math.cos(currentYaw);
-
+      // Horizontal target from the authoritative yaw.
+      const fwdX = Math.sin(entry.yaw);
+      const fwdZ = Math.cos(entry.yaw);
       let targetX = 0, targetZ = 0;
       if (moveDir > 0) {
         targetX = fwdX * FORWARD_SPEED;
@@ -356,80 +346,87 @@ export class RapierVoxelWorld {
         targetZ = -fwdZ * BACKWARD_SPEED;
       }
 
-      // Velocity-ramped drive: read current horizontal linvel, ramp toward
-      // the commanded target at TANK_ACCEL m/s² (TANK_COAST_DECEL when
-      // no throttle), then commit via setLinvel. This is the classic
-      // "arcade dynamic" control surface — setLinvel forces the horizontal
-      // velocity each tick, so the contact solver can't absorb the drive
-      // (which was the failure mode of the impulse-based approach: on a
-      // crater rim ~95% of each impulse was eaten by contact resolution
-      // and velocity never built up). Rapier then resolves compenetration
-      // with the slope by pushing the ball up along the surface — that's
-      // the mechanism that climbs rims and stairs. Y is preserved so
-      // gravity and ground contact own the vertical axis.
-      //
-      // Acceleration feel: target velocity is approached at TANK_ACCEL
-      // per second, not set instantly. Momentum buildup, not teleport.
-      //
-      // Blast knockback survives: applyImpulse adds to linvel immediately,
-      // and because we read currentLinvel each tick the kick persists —
-      // the ramp-down toward target takes ~(|blast| / TANK_COAST_DECEL)
-      // seconds, so a 20 m/s blast decays visibly over ~1 s instead of
-      // being instantly clobbered. During airborne the drive is skipped
-      // entirely, so blast arcs are untouched.
-      const currentLinvel = body.linvel();
-      const dvx = targetX - currentLinvel.x;
-      const dvz = targetZ - currentLinvel.z;
+      // Ramp drivenVel toward target at TANK_ACCEL (or TANK_COAST_DECEL
+      // toward zero when no throttle). Not read back from the body —
+      // stored purely in state so KCC's collision corrections don't
+      // poison the ramp (which was the failure mode of the prior
+      // dynamic-body drive).
+      const dvx = targetX - entry.drivenVel.x;
+      const dvz = targetZ - entry.drivenVel.z;
       const dvMag = Math.hypot(dvx, dvz);
-      let newVx = currentLinvel.x;
-      let newVz = currentLinvel.z;
       if (dvMag > 1e-6) {
         const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
         const scale = Math.min(1, (rate * dt) / dvMag);
-        newVx = currentLinvel.x + dvx * scale;
-        newVz = currentLinvel.z + dvz * scale;
+        entry.drivenVel.x += dvx * scale;
+        entry.drivenVel.z += dvz * scale;
       }
-      body.setLinvel({ x: newVx, y: currentLinvel.y, z: newVz }, true);
+
+      // Gravity accumulates into verticalVel. Clamped after KCC reports
+      // ground contact (otherwise it would grow unbounded while parked).
+      entry.verticalVel += GRAVITY * dt;
+
+      // Blast-kick decay. Exponential with time constant BLAST_DECAY_TAU.
+      const decay = Math.exp(-dt / BLAST_DECAY_TAU);
+      entry.extraVel.x *= decay;
+      entry.extraVel.y *= decay;
+      entry.extraVel.z *= decay;
+
+      // Build desired displacement and ask KCC how much we can actually
+      // move. KCC handles slope climbing up to KCC_MAX_SLOPE_CLIMB,
+      // auto-stepping lips up to KCC_AUTOSTEP_MAX_HEIGHT, and sliding
+      // along walls that can't be climbed.
+      const desired = {
+        x: (entry.drivenVel.x + entry.extraVel.x) * dt,
+        y: (entry.verticalVel + entry.extraVel.y) * dt,
+        z: (entry.drivenVel.z + entry.extraVel.z) * dt,
+      };
+      this.charController.computeColliderMovement(entry.collider, desired);
+      const corrected = this.charController.computedMovement();
+      entry.grounded = this.charController.computedGrounded();
+
+      const cur = entry.body.translation();
+      entry.body.setNextKinematicTranslation({
+        x: cur.x + corrected.x,
+        y: cur.y + corrected.y,
+        z: cur.z + corrected.z,
+      });
+      entry.body.setNextKinematicRotation(quatFromYaw(entry.yaw));
+
+      // On ground contact, stop gravity from accumulating. Don't zero
+      // the whole verticalVel because an upward blast (extraVel.y) still
+      // wants to separate the body from the ground next tick.
+      if (entry.grounded && entry.verticalVel < 0) {
+        entry.verticalVel = 0;
+      }
     }
   }
 
-  /** Apply a world-space velocity kick to the tank — blast knockback,
-   *  direct-hit toss, future vehicle ramming. `velocityDelta` is in m/s,
-   *  matching the semantics of the pre-refactor code that just did
-   *  `tank.linVel += imp`. Rapier's applyImpulse takes a real physical
-   *  impulse (kg·m/s), so we multiply by body mass internally — a
-   *  ~10 m/s delta-v on the 3 t hull corresponds to a ~30 kN·s impulse.
-   *  Dynamic-body integration then handles gravity, contact response,
-   *  and settling back onto the drive path. */
+  /** Add a velocity kick to the blast buffer — knockback from shell
+   *  blasts, future vehicle ramming, etc. Decays exponentially each
+   *  tick (see BLAST_DECAY_TAU). `velocityDelta` is m/s, identical to
+   *  the pre-refactor semantics that the caller already uses. */
   applyTankImpulse(id: PlayerId, velocityDelta: Vec3): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
-    const mass = entry.body.mass();
-    entry.body.applyImpulse({
-      x: velocityDelta.x * mass,
-      y: velocityDelta.y * mass,
-      z: velocityDelta.z * mass,
-    }, true);
+    entry.extraVel.x += velocityDelta.x;
+    entry.extraVel.y += velocityDelta.y;
+    entry.extraVel.z += velocityDelta.z;
   }
 
-  /** True iff the hull bottom is close to the voxel ground as of the last
-   *  applyTankInputs pass. Room reads this each tick to drive the airborne
-   *  transition. */
+  /** True iff KCC detected ground contact at the last applyTankInputs pass. */
   isGrounded(id: PlayerId): boolean {
     return this.tanks.get(id)?.grounded ?? false;
   }
 
-  /** Copy Rapier position (X, Y, Z) + yaw + velocities back onto the
-   *  TankState. Y is the tank's "feet" Y — ball bottom = body centre
-   *  minus the hull radius — matching the TankState convention used for
-   *  tread painting, track history, and the voxel-sampled tilt stencil.
-   *  Tilt is NOT set here — Room fills pitch/roll from the voxel gradient
-   *  after readback (the Rapier body's X/Z rotations are locked at zero).
+  /** Copy body position (X, Y, Z) + authoritative yaw + composite
+   *  velocities onto the TankState. Y is the tank's "feet" Y — ball
+   *  bottom = body centre minus hull radius — matching the existing
+   *  TankState convention.
    *
-   *  linVel/angVel carry the full physics velocity every tick (not just
-   *  airborne). The client uses them to restore the Rapier body to the
-   *  server-authoritative state before replaying buffered inputs during
-   *  rewind-and-replay reconciliation. */
+   *  linVel / angVel reflect the combined state (drivenVel + extraVel
+   *  + verticalVel for linear; turnRate for angular-Y). The client uses
+   *  them to restore on rewind-and-replay; they're also exposed to the
+   *  HUD for telemetry. */
   readbackTank(id: PlayerId, tank: TankState): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
@@ -437,18 +434,17 @@ export class RapierVoxelWorld {
     tank.position.x = pos.x;
     tank.position.y = pos.y - HULL_RADIUS;
     tank.position.z = pos.z;
-    tank.bodyRotation = yawFromQuat(entry.body.rotation());
-    const lin = entry.body.linvel();
-    tank.linVel.x = lin.x;
-    tank.linVel.y = lin.y;
-    tank.linVel.z = lin.z;
-    const ang = entry.body.angvel();
-    tank.angVel.x = ang.x;
-    tank.angVel.y = ang.y;
-    tank.angVel.z = ang.z;
+    tank.bodyRotation = entry.yaw;
+    tank.linVel.x = entry.drivenVel.x + entry.extraVel.x;
+    tank.linVel.y = entry.verticalVel + entry.extraVel.y;
+    tank.linVel.z = entry.drivenVel.z + entry.extraVel.z;
+    tank.angVel.x = 0;
+    tank.angVel.y = entry.turnRate;
+    tank.angVel.z = 0;
   }
 
   dispose(): void {
+    this.world.removeCharacterController(this.charController);
     this.world.free();
   }
 }
