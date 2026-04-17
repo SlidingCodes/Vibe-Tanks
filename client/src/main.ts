@@ -327,6 +327,8 @@ window.addEventListener('keydown', (ev) => {
     surfaceNets?.setVisible(surfaceNetsVisible);
     // eslint-disable-next-line no-console
     console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
+  } else if (k === 'r' && !ev.repeat) {
+    socket.emit('force_reset_match');
   }
 });
 

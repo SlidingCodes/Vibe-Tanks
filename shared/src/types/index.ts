@@ -294,6 +294,7 @@ export interface ClientEvents {
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
+  force_reset_match: () => void;
 }
 
 // ── Match events (server → client feed) ──

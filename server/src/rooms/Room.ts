@@ -435,6 +435,10 @@ export class Room {
       this.respawnTank(socket.id);
     });
 
+    socket.on('force_reset_match', () => {
+      this.resetMatch();
+    });
+
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
