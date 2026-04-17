@@ -227,6 +227,18 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xffb000,
         explosionScale: 0.9,
       };
+    case 'space_invaders_beam':
+      return {
+        projectileRadius: 0.12,
+        projectileColor: 0x39ff14,
+        emissiveColor: 0x00ff00,
+        trailColor: 0x7fff66,
+        trailSize: 0.30,
+        pathColor: 0x39ff14,
+        pathOpacity: 0.95,
+        explosionColor: 0x39ff14,
+        explosionScale: 0.9,
+      };
     case 'standard':
     default:
       return {
@@ -499,6 +511,46 @@ function showDeployFlash(step: ActiveShotStep, scene: THREE.Scene): void {
   animate();
 }
 
+function showLaserImpact(step: ActiveShotStep, scene: THREE.Scene): void {
+  const GREEN = 0x39ff14;
+
+  // Expanding ring on the ground
+  const ringGeo = new THREE.RingGeometry(0.1, 0.5, 28);
+  const ringMat = new THREE.MeshBasicMaterial({ color: GREEN, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(step.endPoint.x, step.endPoint.y + 0.05, step.endPoint.z);
+  scene.add(ring);
+
+  // Vertical beam pillar (tall thin box)
+  const pillarGeo = new THREE.BoxGeometry(0.35, 50, 0.35);
+  const pillarMat = new THREE.MeshBasicMaterial({ color: GREEN, transparent: true, opacity: 0.65 });
+  const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+  pillar.position.set(step.endPoint.x, step.endPoint.y + 25, step.endPoint.z);
+  scene.add(pillar);
+
+  let frame = 0;
+  const animate = () => {
+    frame++;
+    // Ring expands fast
+    ring.scale.setScalar(1 + frame * 0.28);
+    ringMat.opacity = Math.max(0, 0.92 - frame * 0.04);
+    // Pillar fades quickly
+    pillarMat.opacity = Math.max(0, 0.65 - frame * 0.05);
+    if (frame < 20) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(ring);
+      ring.geometry.dispose();
+      ringMat.dispose();
+      scene.remove(pillar);
+      pillar.geometry.dispose();
+      pillarMat.dispose();
+    }
+  };
+  animate();
+}
+
 function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.Scene): ReplicatedProjectileVisual {
   const tm = getAllTankMeshes().get(state.ownerId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
@@ -570,9 +622,12 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
     );
     core.position.y = 0.14;
   } else {
+    // mortar_marker (includes space_invaders warning rings)
+    const isSpaceInvader = hazard.ownerId === 'server';
+    const ringColor = isSpaceInvader ? 0x39ff14 : 0xffe070;
     ring = new THREE.Mesh(
       new THREE.RingGeometry(Math.max(0.8, hazard.radius * 0.72), hazard.radius, 28),
-      new THREE.MeshBasicMaterial({ color: 0xffe070, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: ringColor, transparent: true, opacity: 0.65, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
   }
@@ -685,6 +740,8 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showBounceFlash(step, scene);
       } else if (step.visualStyle === 'mine_deploy' || step.visualStyle === 'drill_entry') {
         showDeployFlash(step, scene);
+      } else if (step.visualStyle === 'space_invaders_beam') {
+        showLaserImpact(step, scene);
       } else {
         showExplosion(step, scene);
       }
