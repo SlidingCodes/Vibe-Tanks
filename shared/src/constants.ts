@@ -16,7 +16,9 @@ export const SIM_DT = 1 / SIM_TICK_RATE;
  *  seeker/bouncer loops from looping forever; at SIM_DT = 1/60 this is
  *  15 seconds of flight. */
 export const SHOT_MAX_SIM_TICKS = 900;
-export const GRAVITY = -9.81;
+export let GRAVITY = -9.81;
+export const DEFAULT_GRAVITY = -9.81;
+export const setGravity = (g: number) => { GRAVITY = g; };
 export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second

@@ -160,6 +160,12 @@ export class RapierVoxelWorld {
     this.rebuildAll();
   }
 
+  /** Update the world's Y gravity at runtime. Used by the special-event
+   *  system (e.g. `low_gravity` halves gravity for one match). */
+  setGravity(y: number): void {
+    this.world.gravity = { x: 0, y, z: 0 };
+  }
+
   private setChunkCollider(cx: number, cy: number, cz: number): boolean {
     const key = chunkKey(cx, cy, cz);
     const prev = this.colliders.get(key);
