@@ -354,14 +354,18 @@ export class RapierVoxelWorld {
         // Align thrust with the terrain tangent plane. Tracks push the
         // tank along the slope surface, not horizontally — without this,
         // a forward impulse against an upslope is mostly absorbed by the
-        // contact normal and the tank stalls even on mild inclines. We
-        // sample the voxel normal at the tank's ground-plane XZ, project
-        // the horizontal direction onto the plane perpendicular to n,
-        // then renormalize so the commanded speed is preserved *along
-        // the slope* (not reduced by cos θ). The y component produced by
-        // this projection is what lets built-up throttle turn into
-        // actual climbing — the old synthetic climb-assist made redundant.
-        const n = this.grid.getSurfaceNormal(pos.x, pos.z);
+        // contact normal and the tank stalls even on mild inclines.
+        //
+        // CRITICAL: sample the normal *in front of* the tank, at the
+        // approximate contact point between the ball and the terrain in
+        // the driving direction (pos + hx/hz · HULL_RADIUS). Sampling at
+        // the tank centre reads the slope under the ball's feet — a tank
+        // sitting on the flat floor of a crater pressed into its rim
+        // would read n≈(0,1,0) and spin its impulse horizontally into
+        // the wall. The front-probe reads the rim's slope, which is
+        // what we're actually pushing into.
+        const probe = HULL_RADIUS;
+        const n = this.grid.getSurfaceNormal(pos.x + hx * probe, pos.z + hz * probe);
         const dot = hx * n.x + hz * n.z; // hy is 0, so no n.y term
         let tx = hx - dot * n.x;
         const ty = -dot * n.y;
