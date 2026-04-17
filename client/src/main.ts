@@ -49,15 +49,31 @@ import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankS
 import { stepTankPhysics } from '@shared/physics';
 import { stepAirborneTank } from '@shared/airborne';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
+import { SIM_DT } from '@shared/constants';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
 const LOCAL_HULL_RADIUS = HULL_RADIUS;
-/** Position drift above which we hard-snap the client Rapier body to the
- *  server-broadcast transform. Below this, the two copies are assumed to be
- *  running the same inputs against the same colliders and small float drift
- *  is absorbed silently. */
-const RECONCILE_SNAP_DISTANCE = 0.8;
+/** Emergency snap threshold. Under normal operation the client Rapier
+ *  mirror stays within a few cm of the server (same inputs, same TriMesh,
+ *  same fixed-dt stepping), so reconciliation does nothing and the local
+ *  tank moves purely via prediction. Only an actual desync — server-side
+ *  teleport, RTT spike that delays inputs by >50 ms, or a bug — trips the
+ *  snap. Below this the server state_update is ignored for position/yaw
+ *  on grounded frames, which avoids the periodic "rubber-band" snap-back
+ *  that made the tank visibly judder every ~20 Hz broadcast.
+ *  Tilt (pitch/roll) IS synced every state_update — it's server-computed
+ *  from the voxel gradient and has no client counterpart. */
+const RECONCILE_SNAP_DISTANCE = 3.0;
+/** Fixed-timestep accumulator for the client Rapier mirror. Matches the
+ *  server's 60 Hz sim tick so both worlds integrate with the exact same
+ *  dt — the main guarantee that kinematic-body + KCC stays deterministic
+ *  across instances. Without this, variable render dt produces per-frame
+ *  float drift that accumulates into visible reconciliation snaps. */
+const CLIENT_PHYSICS_STEP = SIM_DT;
+/** Upper bound on physics steps per render frame — prevents "spiral of
+ *  death" if the tab was hidden for seconds and dt balloons. */
+const MAX_PHYSICS_STEPS_PER_FRAME = 4;
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
 
@@ -247,6 +263,9 @@ let voxelDebris: VoxelDebrisHandle | null = null;
  *  voxel_snapshot once Rapier's WASM has loaded. */
 let clientPhysics: RapierVoxelWorld | null = null;
 let localTankRegistered = false;
+/** Residual time left over from the last render frame, to be consumed by
+ *  the next fixed-dt physics step. */
+let physicsAccumulator = 0;
 let voxelScorch: VoxelScorch | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
@@ -741,24 +760,24 @@ function animate(): void {
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else if (clientPhysics && localTankRegistered) {
-      // Client Rapier mirror: run the exact same KCC pipeline the server
-      // runs, on the exact same TriMesh colliders built from the shared
-      // voxel grid. Predicted position reads back straight from Rapier,
-      // so caves, overhangs, crater floors, and cliff drops behave
-      // identically to the authoritative sim. 20 Hz state_updates only
-      // snap the body when drift exceeds RECONCILE_SNAP_DISTANCE.
+      // Client Rapier mirror: run the same KCC pipeline the server runs,
+      // on the same TriMesh colliders built from the shared voxel grid,
+      // with the same fixed 60 Hz timestep. Same dt is the main thing
+      // keeping the two instances converged — with variable dt per frame
+      // the accumulated KCC response diverges enough per second to trip
+      // reconciliation snaps on a 20 Hz cadence, which the player feels
+      // as periodic stutter.
       clientPhysics.setTankInput(myId, input);
-      clientPhysics.applyTankInputs(dt);
-      clientPhysics.step(dt);
-      clientPhysics.readbackTank(myId, predictedState);
-      if (!clientPhysics.isGrounded(myId)) {
-        // KCC reports no ground contact — the shared airborne integrator
-        // will take over on the next state_update (server broadcasts the
-        // airborne flag), but in the meantime the body keeps falling via
-        // Rapier's own gravity accumulation, which feels right.
+      physicsAccumulator = Math.min(
+        physicsAccumulator + dt,
+        CLIENT_PHYSICS_STEP * MAX_PHYSICS_STEPS_PER_FRAME,
+      );
+      while (physicsAccumulator >= CLIENT_PHYSICS_STEP) {
+        clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+        clientPhysics.step(CLIENT_PHYSICS_STEP);
+        physicsAccumulator -= CLIENT_PHYSICS_STEP;
       }
-      // Legacy velocity hook kept zero so the old preemptive carve path
-      // (if re-enabled) doesn't read stale XZ velocity.
+      clientPhysics.readbackTank(myId, predictedState);
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
