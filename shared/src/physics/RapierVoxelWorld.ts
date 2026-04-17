@@ -39,6 +39,16 @@ const HULL_ANGULAR_DAMPING = 8.0;
  *  stepped voxel terrain stays grounded) while a real cliff drop crosses
  *  the threshold within 1–2 ticks of gravity. */
 const GROUND_CONTACT_EPSILON = 0.5;
+/** Distance ahead of the hull (in world units) we sample the voxel ground
+ *  to detect an uphill slope. 1.5 m is roughly one tank-radius beyond the
+ *  collider so we see the rim before the ball rams into it. */
+const SLOPE_PROBE_DIST = 1.5;
+/** Maximum rise-over-run the drive pipeline will actively climb. 1.0 is
+ *  a 45° slope; above that, the vertical boost saturates and the ball
+ *  stalls against the wall (physically correct for a tracked vehicle).
+ *  Crater rims are typically 0.5–1.0 here, so they're escapable under
+ *  throttle without making the tank fly up vertical faces. */
+const MAX_CLIMB_SLOPE = 1.0;
 
 function quatFromYaw(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
@@ -337,34 +347,68 @@ export class RapierVoxelWorld {
       const fwdZ = Math.cos(currentYaw);
 
       let targetX = 0, targetZ = 0;
+      let driveX = 0, driveZ = 0; // drive direction (unit, for slope probe)
       if (moveDir > 0) {
+        driveX = fwdX; driveZ = fwdZ;
         targetX = fwdX * FORWARD_SPEED;
         targetZ = fwdZ * FORWARD_SPEED;
       } else if (moveDir < 0) {
+        driveX = -fwdX; driveZ = -fwdZ;
         targetX = -fwdX * BACKWARD_SPEED;
         targetZ = -fwdZ * BACKWARD_SPEED;
       }
 
+      // Slope-climb assist: if the ground just ahead of the hull in the
+      // drive direction is higher than the ground under the hull, add a
+      // vertical component to the target velocity so the ball lifts with
+      // the slope instead of ramming its rim. Without this, setLinvel's
+      // hard horizontal force is entirely absorbed by the collision
+      // normal pushing back down the slope, and the tank stalls halfway
+      // up a crater lip or a rocky rise. Downhill is unassisted —
+      // gravity + contact do the right thing naturally.
+      let climbAssistY = 0;
+      if (moveDir !== 0) {
+        const aheadY = this.grid.getGroundBelow(
+          pos.x + driveX * SLOPE_PROBE_DIST,
+          pos.y,
+          pos.z + driveZ * SLOPE_PROBE_DIST,
+        );
+        const rise = aheadY - terrainY;
+        if (rise > 0) {
+          const slope = Math.min(rise / SLOPE_PROBE_DIST, MAX_CLIMB_SLOPE);
+          const horizSpeed = moveDir > 0 ? FORWARD_SPEED : BACKWARD_SPEED;
+          climbAssistY = slope * horizSpeed;
+        }
+      }
+
       // Preserve linvel.y so Rapier's gravity + ground-contact response
-      // continue to drive the vertical axis. A tank that just touched
-      // down with residual downward velocity keeps it for 1 tick until
-      // collision clamps it; a tank resting on the ground keeps linvel.y
-      // ≈ 0 between ticks.
+      // continue to drive the vertical axis when airborne / parked on a
+      // slope. On active uphill drive the climb assist wins via Math.max
+      // — we WANT upward motion to clear the rim; gravity will pull the
+      // body back down the slope next tick if the throttle is released.
       const currentLinvel = body.linvel();
-      body.setLinvel({ x: targetX, y: currentLinvel.y, z: targetZ }, true);
+      const targetY = Math.max(currentLinvel.y, climbAssistY);
+      body.setLinvel({ x: targetX, y: targetY, z: targetZ }, true);
     }
   }
 
-  /** Apply a world-space linear impulse to the tank — blast knockback,
-   *  direct-hit toss, future vehicle ramming. The dynamic body integrates
-   *  it along with gravity and ground contact, which means a strong
-   *  blast naturally lofts the tank, a glancing one just nudges it, and
-   *  either way the tank converges back onto the grounded drive path
-   *  once the body settles. No custom integrator in parallel. */
-  applyTankImpulse(id: PlayerId, impulse: Vec3): void {
+  /** Apply a world-space velocity kick to the tank — blast knockback,
+   *  direct-hit toss, future vehicle ramming. `velocityDelta` is in m/s,
+   *  matching the semantics of the pre-refactor code that just did
+   *  `tank.linVel += imp`. Rapier's applyImpulse takes a real physical
+   *  impulse (kg·m/s), so we multiply by body mass internally — a
+   *  ~10 m/s delta-v on the 3 t hull corresponds to a ~30 kN·s impulse.
+   *  Dynamic-body integration then handles gravity, contact response,
+   *  and settling back onto the drive path. */
+  applyTankImpulse(id: PlayerId, velocityDelta: Vec3): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
-    entry.body.applyImpulse({ x: impulse.x, y: impulse.y, z: impulse.z }, true);
+    const mass = entry.body.mass();
+    entry.body.applyImpulse({
+      x: velocityDelta.x * mass,
+      y: velocityDelta.y * mass,
+      z: velocityDelta.z * mass,
+    }, true);
   }
 
   /** True iff the hull bottom is close to the voxel ground as of the last
