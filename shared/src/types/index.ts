@@ -9,6 +9,9 @@ export enum MatchPhase {
   GameOver = 'game_over',
 }
 
+// ── Special Events ──
+export type SpecialEvent = 'none' | 'double_terrain_damage' | 'low_gravity' | 'dense_fog';
+
 // ── Vectors ──
 export interface Vec3 {
   x: number;
@@ -252,6 +255,8 @@ export interface MatchSnapshot {
   terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  /** The currently active special event for this match. */
+  specialEvent: SpecialEvent;
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
 }

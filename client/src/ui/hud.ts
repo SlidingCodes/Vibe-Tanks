@@ -13,6 +13,7 @@ const deathKiller = document.getElementById('death-killer')!;
 const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonElement;
 const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
 const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
+const specialEventBanner = document.getElementById('special-event-banner') as HTMLDivElement;
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -225,7 +226,27 @@ export function triggerHitFeedback(killed = false): void {
   }
 }
 
-
+/** Triggers the UI banner announcing a new special event. */
+export function triggerSpecialEventBanner(eventName: string): void {
+  if (eventName === 'none' || !specialEventBanner) return;
+  
+  const formattedName = eventName.split('_').map(word => word.toUpperCase()).join(' ');
+  specialEventBanner.textContent = `NEW EVENT: ${formattedName}`;
+  
+  if (eventName === 'low_gravity') {
+    specialEventBanner.style.setProperty('--event-color', '#4af');
+  } else if (eventName === 'dense_fog') {
+    specialEventBanner.style.setProperty('--event-color', '#aaa');
+  } else if (eventName === 'double_terrain_damage') {
+    specialEventBanner.style.setProperty('--event-color', '#fa0');
+  } else {
+    specialEventBanner.style.setProperty('--event-color', '#fff');
+  }
+  
+  specialEventBanner.classList.remove('show');
+  void specialEventBanner.offsetWidth; // Force reflow
+  specialEventBanner.classList.add('show');
+}
 
 
 export function showGameOver(winnerId: string): void {

@@ -176,6 +176,26 @@
       0%   { transform: translateY(0)    scale(1)   rotate(-6deg); opacity: 0.85; }
       100% { transform: translateY(-2px) scale(1.15) rotate(8deg); opacity: 1; }
     }
+    
+    /* Special Event Banner */
+    @keyframes banner-pop {
+      0% { opacity: 0; transform: translate(-50%, -40px) scale(0.9); }
+      10% { opacity: 1; transform: translate(-50%, 0) scale(1.1); filter: brightness(1.5); }
+      20% { opacity: 1; transform: translate(-50%, -5px) scale(1.0); filter: brightness(1); }
+      80% { opacity: 1; transform: translate(-50%, 0) scale(1.0); }
+      100% { opacity: 0; transform: translate(-50%, -20px) scale(0.95); }
+    }
+    #special-event-banner {
+      position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
+      font-family: monospace; font-weight: bold; font-size: 24px; letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #fff; text-shadow: 0 0 8px #000, 0 0 16px var(--event-color, #f44);
+      opacity: 0; pointer-events: none; z-index: 15;
+    }
+    #special-event-banner.show {
+      animation: banner-pop 4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+    }
+
     .tank-name-label {
       font-family: monospace; font-size: 12px; color: #fff;
       text-shadow: 0 0 4px #000, 0 0 4px #000;
@@ -399,6 +419,7 @@
     <div id="weapon-hud"></div>
     <div id="controls-hint">1-9 / 0 switch weapon | WASD move | Mouse aim | Click shoot</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
+    <div id="special-event-banner">NEW EVENT: DOUBLE DAMAGE</div>
   </div>
   <div id="death-overlay">
     <div id="death-top">

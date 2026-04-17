@@ -96,6 +96,11 @@ export class RapierVoxelWorld {
     this.rebuildAll();
   }
 
+  /** Update the gravity dynamically when special events trigger. */
+  setGravity(y: number): void {
+    this.world.gravity = { x: 0, y, z: 0 };
+  }
+
   private setChunkCollider(cx: number, cy: number, cz: number): boolean {
     const key = chunkKey(cx, cy, cz);
     const prev = this.colliders.get(key);

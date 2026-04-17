@@ -10,6 +10,7 @@ import {
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
+  SpecialEvent,
   TankState,
   TerrainPresetId,
   TerrainSettings,
@@ -24,6 +25,9 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
   AIRBORNE_ENTRY_SPEED,
+  DEFAULT_GRAVITY,
+  GRAVITY,
+  setGravity,
 } from '@shared/constants';
 import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
 import {
@@ -174,6 +178,7 @@ export class Room {
   private nextStrikeId = 1;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
   private matchResetAt: number = 0; // epoch seconds
+  specialEvent: SpecialEvent = 'none';
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
@@ -192,7 +197,14 @@ export class Room {
       minYCells: -16,
     });
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
+    
+    // Pick an initial event
+    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog'];
+    this.specialEvent = events[Math.floor(Math.random() * events.length)];
+    setGravity(this.specialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
+
     this.physics = new RapierVoxelWorld(this.voxels);
+    this.physics.setGravity(GRAVITY);
     this.scheduleReset();
   }
 
@@ -216,9 +228,14 @@ export class Room {
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.terrainSeed = createRandomTerrainSeed();
+    const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog'];
+    this.specialEvent = events[Math.floor(Math.random() * events.length)];
+    setGravity(this.specialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
+    
     this.voxels.clear();
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
     this.physics.setGrid(this.voxels);
+    this.physics.setGravity(GRAVITY);
     this.trackHistory.clear();
     for (const player of this.players.values()) player.lastTrackSampleAt = null;
     for (const [pid, tank] of this.tanks) {
@@ -438,8 +455,9 @@ export class Room {
       if (!step.carveTerrain) continue;
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        this.voxels.carveSphere(step.endPoint, step.blastRadius);
-        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+        const radius = step.blastRadius * (this.specialEvent === 'double_terrain_damage' ? 2 : 1);
+        this.voxels.carveSphere(step.endPoint, radius);
+        this.physics.invalidateSphere(step.endPoint, radius);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -460,8 +478,9 @@ export class Room {
     let appliedCarve = false;
     for (const step of result.steps) {
       if (!step.carveTerrain) continue;
-      this.voxels.carveSphere(step.endPoint, step.blastRadius);
-      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+      const radius = step.blastRadius * (this.specialEvent === 'double_terrain_damage' ? 2 : 1);
+      this.voxels.carveSphere(step.endPoint, radius);
+      this.physics.invalidateSphere(step.endPoint, radius);
       appliedCarve = true;
     }
     if (appliedCarve) this.regroundAliveTanks();
@@ -1309,6 +1328,7 @@ export class Room {
       terrainPresetLabel: TERRAIN_PRESETS[this.terrainPresetId].label,
       projectiles: state.projectiles,
       hazards: state.hazards,
+      specialEvent: this.specialEvent,
       resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
     };
   }

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { GRAVITY, TANK_TREAD_HALF_WIDTH } from '@shared/constants';
+import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
@@ -45,7 +45,7 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, SpecialEvent } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
 import { SIM_DT } from '@shared/constants';
@@ -100,6 +100,7 @@ window.addEventListener('resize', () => {
 
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
+let activeSpecialEvent: SpecialEvent = 'none';
 let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
@@ -135,7 +136,11 @@ function endKillcam(): void {
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
-  scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  if (activeSpecialEvent === 'dense_fog') {
+    scene.fog = new THREE.Fog(FOG_COLOR, 10, 45);
+  } else {
+    scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
+  }
   updateCameraScale(terrainWidth, terrainHeight);
   lighting.updateForTerrain(terrainWidth, terrainHeight);
 }
@@ -178,8 +183,19 @@ socket.on('connect', () => {
 });
 
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
+  const previousEvent = activeSpecialEvent;
   snapshot = snap;
+  activeSpecialEvent = snap.specialEvent;
   latestTanks = snap.tanks;
+  setGravity(activeSpecialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
+  
+  if (activeSpecialEvent === 'dense_fog') {
+    scene.fog = new THREE.Fog(FOG_COLOR, 10, 45);
+  }
+
+  if (activeSpecialEvent !== previousEvent && activeSpecialEvent !== 'none') {
+    hud.triggerSpecialEventBanner(activeSpecialEvent);
+  }
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
@@ -450,20 +466,21 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const debris = voxelDebris;
       const scorch = voxelScorch;
       setTimeout(() => {
+        const radius = step.blastRadius * (activeSpecialEvent === 'double_terrain_damage' ? 2 : 1);
         // Sample debris origins BEFORE carving (they must still be solid).
-        debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
-        grid.carveSphere(step.endPoint, step.blastRadius);
+        debris?.spawnFromCarve(grid, step.endPoint, radius);
+        grid.carveSphere(step.endPoint, radius);
         // Scorch extends past the blast radius so the burn ring is visible
         // well outside the crater. Strength=1 + wider radius means even a
         // single hit saturates enough voxels for the 8-corner average at
         // SN vertices to read cleanly.
-        scorch?.addSphere(step.endPoint, step.blastRadius * 1.9, 1.0);
+        scorch?.addSphere(step.endPoint, radius * 1.9, 1.0);
         // Only invalidate cuberille chunks when that view is actually visible.
-        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, step.blastRadius);
+        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, radius);
         // Mark surface-nets chunks dirty — flushDirtyChunks() rebuilds them
         // once per frame before render, even if multiple missiles land this frame.
-        sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
-        onMinimapCarve(grid, step.endPoint, step.blastRadius);
+        sn?.invalidateSphere(step.endPoint, radius * 1.9);
+        onMinimapCarve(grid, step.endPoint, radius);
         // Preemptively flip the local tank to airborne if the carve just
         // opened a crater under it. Without this, stepTankPhysics on the
         // next frame would snap Y to the new voxel surface before the
