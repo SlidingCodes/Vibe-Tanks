@@ -87,11 +87,14 @@ export function stepAirborneTank(
   tank.angVel.y *= angDecay;
   tank.angVel.z *= angDecay;
 
-  // Floor contact: treat the hull as a sphere sitting on the sampled
-  // terrain. "Contact Y" is the terrain + hullRadius (the tank center
-  // should never dip below it).
+  // Floor contact: tank.position.y is the "feet" position (same convention
+  // as the grounded alignTankToVoxelSurface path), so the floor is the raw
+  // sampled terrain height. Using +hullRadius here would leave the tank
+  // position 0.8 m above the terrain after landing, causing the grounded
+  // crater check to read a stale gap and re-trigger airborne every tick —
+  // i.e. the tank bounces forever in a freshly carved crater.
   const terrainH = sampleHeight(tank.position.x, tank.position.z);
-  const floorY = terrainH + hullRadius;
+  const floorY = terrainH;
   let settledOnGround = false;
   if (tank.position.y <= floorY) {
     tank.position.y = floorY;

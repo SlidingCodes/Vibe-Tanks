@@ -42,11 +42,12 @@ describe('stepAirborneTank', () => {
   });
 
   it('snaps onto the floor when it dips below and zeroes downward velocity', () => {
+    // tank.position.y follows the "feet" convention: y=0 = on the ground.
     // Start just above the floor with a nudge downward so the next frame
-    // crosses the floor (hull = 0.8; DT = 1/60; vy = -5 → ~0.083 u per frame).
-    const tank = makeTank({ position: { x: 0, y: HULL + 0.04, z: 0 }, linVel: { x: 0, y: -5, z: 0 } });
+    // crosses it (DT = 1/60; vy = -5 → ~0.083 u per frame).
+    const tank = makeTank({ position: { x: 0, y: 0.04, z: 0 }, linVel: { x: 0, y: -5, z: 0 } });
     stepAirborneTank(tank, DT, flat, HULL);
-    expect(tank.position.y).toBe(HULL); // snapped to floor + hull radius
+    expect(tank.position.y).toBe(0); // snapped to terrain-level feet
     expect(tank.linVel.y).toBeGreaterThanOrEqual(0); // downward momentum cleared
   });
 
@@ -54,7 +55,7 @@ describe('stepAirborneTank', () => {
     const falling = makeTank({ position: { x: 0, y: 5, z: 0 }, linVel: { x: 0, y: -9, z: 0 } });
     expect(stepAirborneTank(falling, DT, flat, HULL).settledOnGround).toBe(false);
 
-    const resting = makeTank({ position: { x: 0, y: HULL, z: 0 }, linVel: { x: 0, y: 0, z: 0 } });
+    const resting = makeTank({ position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 } });
     expect(stepAirborneTank(resting, DT, flat, HULL).settledOnGround).toBe(true);
   });
 
@@ -78,8 +79,8 @@ describe('stepAirborneTank', () => {
   });
 
   it('AIRBORNE_EXIT_TICKS guards against single-frame false settles', () => {
-    // Ten grazing steps all count as settled → caller accumulates > threshold.
-    const tank = makeTank({ position: { x: 0, y: HULL, z: 0 }, linVel: { x: 0, y: 0, z: 0 } });
+    // Twenty grazing steps all count as settled → caller accumulates > threshold.
+    const tank = makeTank({ position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 } });
     let streak = 0;
     for (let i = 0; i < 20; i++) {
       if (stepAirborneTank(tank, DT, flat, HULL).settledOnGround) streak++;
