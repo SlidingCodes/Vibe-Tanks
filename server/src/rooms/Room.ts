@@ -24,10 +24,9 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
   AIRBORNE_ENTRY_SPEED,
-  AIRBORNE_DROP_THRESHOLD,
   AIRBORNE_EXIT_TICKS,
 } from '@shared/constants';
-import { stepAirborneTank } from '@shared/airborne';
+import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -822,7 +821,8 @@ export class Room {
       // the ground fell out from under us — flip airborne before the
       // alignment step would snap Y back down and hide the gap.
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      if (tank.position.y - freshTerrainY > AIRBORNE_DROP_THRESHOLD) {
+      const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
+      if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
         this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
         continue;
       }
@@ -1171,7 +1171,8 @@ export class Room {
       // integrator handle the fall; otherwise snap Y/pitch/roll to the
       // new (small) change as before.
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      if (tank.position.y - freshTerrainY > AIRBORNE_DROP_THRESHOLD) {
+      const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
+      if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
         this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
       } else {
         this.alignTankToVoxelSurface(tank, cellSize);

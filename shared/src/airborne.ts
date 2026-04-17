@@ -6,9 +6,29 @@ import {
   AIRBORNE_CONTACT_DISTANCE,
   AIRBORNE_EXIT_SPEED,
   AIRBORNE_EXIT_VERTICAL,
+  AIRBORNE_DROP_THRESHOLD,
+  AIRBORNE_STEEP_DROP_THRESHOLD,
+  AIRBORNE_CLIFF_SLOPE,
 } from './constants';
 
 export type AirborneHeightSampler = (x: number, z: number) => number;
+
+/** True when a tank currently at `staleY` (Y from before the latest terrain
+ *  change or physics tick) should flip to airborne given `freshTerrainY`
+ *  (newly-sampled voxel surface at the tank's XZ) and `slopeMagnitude`
+ *  (|∇h| there). Combines a flat-ground gap threshold with a smaller
+ *  steep-slope threshold so carves that open a modest hole next to a cliff
+ *  still trigger the ragdoll. */
+export function shouldEnterAirborne(
+  staleY: number,
+  freshTerrainY: number,
+  slopeMagnitude: number,
+): boolean {
+  const gap = staleY - freshTerrainY;
+  if (gap > AIRBORNE_DROP_THRESHOLD) return true;
+  if (gap > AIRBORNE_STEEP_DROP_THRESHOLD && slopeMagnitude > AIRBORNE_CLIFF_SLOPE) return true;
+  return false;
+}
 
 export interface AirborneStepResult {
   /** True when the step ended with the body touching terrain at low speed —

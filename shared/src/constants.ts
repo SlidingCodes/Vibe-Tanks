@@ -44,8 +44,19 @@ export const AIRBORNE_LINEAR_DRAG = 0.35;
 /** Same but on angular velocity — stops the ragdoll eventually. */
 export const AIRBORNE_ANGULAR_DRAG = 0.5;
 /** Vertical drop below the current tank Y that counts as "ground fell out
- *  from under me" and flips to airborne (crater opened below, cliff edge). */
-export const AIRBORNE_DROP_THRESHOLD = 1.5;
+ *  from under me" and flips to airborne on flat-ish ground. On steep terrain
+ *  the smaller AIRBORNE_STEEP_DROP_THRESHOLD applies instead. */
+export const AIRBORNE_DROP_THRESHOLD = 0.8;
+/** When the local slope under a tank exceeds AIRBORNE_CLIFF_SLOPE, any gap
+ *  past this threshold (much smaller than the flat-ground one) triggers a
+ *  ragdoll. Catches cases where a carve exposed a steep wall the tank is
+ *  now perched on the edge of. */
+export const AIRBORNE_STEEP_DROP_THRESHOLD = 0.3;
+/** |∇h| (per unit) above which the terrain under the tank is considered
+ *  a cliff. Reuses the same "tracks lose grip" intuition from the driving
+ *  model (shared/src/physics.ts CLIFF_GRADE = 5.0) but is set a bit lower
+ *  to trigger airborne slightly before the driving model gives up. */
+export const AIRBORNE_CLIFF_SLOPE = 2.5;
 /** Contact-below-body distance that counts as "landed" for airborne exit. */
 export const AIRBORNE_CONTACT_DISTANCE = 0.5;
 /** Linear speed below which a grounded tank is considered settled (exit). */

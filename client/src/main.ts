@@ -47,8 +47,7 @@ import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, pl
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { stepAirborneTank } from '@shared/airborne';
-import { AIRBORNE_DROP_THRESHOLD } from '@shared/constants';
+import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
@@ -472,7 +471,8 @@ socket.on('shot_resolved', (result: ShotResult) => {
         // on the next state_update regardless.
         if (predictedState && predictedState.alive && !predictedState.airborne) {
           const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
-          if (predictedState.position.y - newTerrainY > AIRBORNE_DROP_THRESHOLD) {
+          const slope = grid.getSlopeMagnitude(predictedState.position.x, predictedState.position.z);
+          if (shouldEnterAirborne(predictedState.position.y, newTerrainY, slope)) {
             predictedState.airborne = true;
             predictedState.linVel.x = predictedVel.x;
             predictedState.linVel.y = 0;
