@@ -850,11 +850,14 @@ export class Room {
       const player = this.players.get(pid);
       const last = player?.lastGroundedPos ?? null;
       const vY = last ? (tank.position.y - last.y) / dt : 0;
+      const dxHoriz = last ? tank.position.x - last.x : 0;
+      const dzHoriz = last ? tank.position.z - last.z : 0;
+      const horizSpeed = Math.hypot(dxHoriz, dzHoriz) / dt;
       const inLandingGrace = player ? player.postLandingGraceTicks > 0 : false;
       if (inLandingGrace && player) player.postLandingGraceTicks -= 1;
       const resolved = inLandingGrace
         ? { airborne: false, newY: freshTerrainY, newVy: vY }
-        : resolveGroundedTick(tank.position.y, vY, dt, freshTerrainY);
+        : resolveGroundedTick(tank.position.y, vY, dt, freshTerrainY, horizSpeed);
 
       if (resolved.airborne) {
         // Seed linVel with the horizontal velocity the tank had while
@@ -1232,7 +1235,10 @@ export class Room {
       const last = player?.lastGroundedPos ?? null;
       const vY = last ? (tank.position.y - last.y) / syntheticDt : 0;
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
-      const resolved = resolveGroundedTick(tank.position.y, vY, syntheticDt, freshTerrainY);
+      // regroundAliveTanks runs right after a carve mutates the voxel grid
+      // — we want the force-drop path to catch a crater under a stationary
+      // tank, so pass horizSpeed=0 and lean on AIRBORNE_FORCE_DROP.
+      const resolved = resolveGroundedTick(tank.position.y, vY, syntheticDt, freshTerrainY, 0);
       if (resolved.airborne) {
         tank.position.y = resolved.newY;
         this.enterAirborne(

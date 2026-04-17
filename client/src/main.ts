@@ -476,7 +476,10 @@ socket.on('shot_resolved', (result: ShotResult) => {
           // airborne with the current driving momentum as the initial
           // linVel. Server will reconcile on the next state_update.
           const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
-          const resolved = resolveGroundedTick(predictedState.position.y, 0, SIM_DT, newTerrainY);
+          // Preemptive carve trigger: a carve just landed locally. The
+          // client doesn't track horizSpeed here — use 0 so only the
+          // force-drop path fires (craters under / near the tank).
+          const resolved = resolveGroundedTick(predictedState.position.y, 0, SIM_DT, newTerrainY, 0);
           if (resolved.airborne) {
             predictedState.airborne = true;
             predictedState.position.y = resolved.newY;

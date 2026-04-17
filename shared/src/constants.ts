@@ -64,6 +64,17 @@ export const AIRBORNE_GROUND_RIGHTING_RATE = 6.0;
  *  ground contact (prevents float-precision oscillation between grounded
  *  and airborne at rest). */
 export const AIRBORNE_GROUND_EPSILON = 0.05;
+/** Per-tick vertical drop that forces airborne regardless of the tank's
+ *  horizontal speed — crater opens below, cliff edge, carve directly
+ *  under the hull. Above this threshold there's no way gravity can catch
+ *  the tank in one tick, so a static drop is honoured even at speed 0. */
+export const AIRBORNE_FORCE_DROP = 0.5;
+/** Minimum horizontal tank speed for the small-drop airborne path. A slow
+ *  tank cresting a voxel bump should ride over it (gravity has time to
+ *  pull it back into contact); only above this speed is the kinetic
+ *  energy high enough that the hull physically leaves the ground. Static
+ *  / near-static tanks rely solely on the AIRBORNE_FORCE_DROP path. */
+export const AIRBORNE_MIN_HORIZ_SPEED = 3.0;
 /** Contact-below-body distance that counts as "touching ground" for the
  *  friction / righting / exit checks. */
 export const AIRBORNE_CONTACT_DISTANCE = 0.15;

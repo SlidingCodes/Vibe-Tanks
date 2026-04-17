@@ -11,6 +11,8 @@ import {
   AIRBORNE_UPRIGHT_ANGLE,
   AIRBORNE_SETTLED_ANG_SPEED,
   AIRBORNE_SETTLED_LIN_SPEED,
+  AIRBORNE_FORCE_DROP,
+  AIRBORNE_MIN_HORIZ_SPEED,
 } from './constants';
 
 export type AirborneHeightSampler = (x: number, z: number) => number;
@@ -43,12 +45,24 @@ export function resolveGroundedTick(
   vY: number,
   dt: number,
   newTerrainY: number,
+  horizSpeed: number,
 ): GroundedTickResult {
   const vYWithGravity = vY + GRAVITY * dt;
   const projectedY = oldY + vY * dt + 0.5 * GRAVITY * dt * dt;
-  if (projectedY > newTerrainY + AIRBORNE_GROUND_EPSILON) {
-    // Gravity alone can't keep the tank on the ground — it has physically
-    // lifted off. Hand over to the airborne integrator.
+  const rawDrop = oldY - newTerrainY;
+  const gap = projectedY - newTerrainY;
+  // Path A — large drop: catches craters, carves, cliff edges even for a
+  // stationary tank. Honouring this irrespective of horizSpeed is the
+  // whole point, since a static tank over a hole physically falls.
+  const forceAirborne = rawDrop > AIRBORNE_FORCE_DROP;
+  // Path B — projected Y clears the terrain, but only counts when the
+  // tank has enough horizontal kinetic energy to actually outrun gravity
+  // over a convex crest. Below AIRBORNE_MIN_HORIZ_SPEED the "projected
+  // above terrain" reading on sub-voxel bumps is dominated by
+  // discretisation noise, not real liftoff.
+  const physicsAirborne = gap > AIRBORNE_GROUND_EPSILON
+                       && horizSpeed > AIRBORNE_MIN_HORIZ_SPEED;
+  if (forceAirborne || physicsAirborne) {
     return { airborne: true, newY: projectedY, newVy: vYWithGravity };
   }
   // Terrain supports the tank. Snap Y to the surface and derive vY from

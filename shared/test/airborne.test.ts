@@ -157,42 +157,54 @@ describe('blastImpulse', () => {
 });
 
 describe('resolveGroundedTick', () => {
+  const FAST = 8; // above AIRBORNE_MIN_HORIZ_SPEED
+  const SLOW = 1; // below AIRBORNE_MIN_HORIZ_SPEED
+
   it('keeps a stationary tank grounded on flat terrain', () => {
-    const r = resolveGroundedTick(5, 0, DT, 5);
+    const r = resolveGroundedTick(5, 0, DT, 5, 0);
     expect(r.airborne).toBe(false);
     expect(r.newY).toBe(5);
     expect(r.newVy).toBeCloseTo(0);
   });
 
   it('keeps a tank grounded while driving down a gentle slope', () => {
-    // Last tick terrain = 5, this tick terrain = 4.995 (tiny descent).
-    const r = resolveGroundedTick(5, -0.3, DT, 4.995);
+    const r = resolveGroundedTick(5, -0.3, DT, 4.995, FAST);
     expect(r.airborne).toBe(false);
     expect(r.newY).toBe(4.995);
   });
 
-  it('flips airborne when terrain drops below where gravity could pull the tank', () => {
-    // Static tank at Y=5, terrain suddenly at Y=2 (crater under the tank).
-    const r = resolveGroundedTick(5, 0, DT, 2);
+  it('flips airborne when terrain drops big enough to force it (static crater)', () => {
+    // Static tank, terrain suddenly 3m below — force-drop path fires.
+    const r = resolveGroundedTick(5, 0, DT, 2, 0);
     expect(r.airborne).toBe(true);
-    expect(r.newY).toBeGreaterThan(4.9); // still near top, just barely falling
-    expect(r.newVy).toBeLessThan(0); // one tick of gravity
+    expect(r.newY).toBeGreaterThan(4.9);
+    expect(r.newVy).toBeLessThan(0);
+  });
+
+  it('a SLOW tank does NOT fly off a small terrain bump', () => {
+    // Drop is 0.2m (below AIRBORNE_FORCE_DROP) and horiz speed is low
+    // (below AIRBORNE_MIN_HORIZ_SPEED) — should stay grounded.
+    const r = resolveGroundedTick(5, 0, DT, 4.8, SLOW);
+    expect(r.airborne).toBe(false);
+    expect(r.newY).toBe(4.8);
+  });
+
+  it('a FAST tank DOES launch off a hill crest (same drop, higher speed)', () => {
+    // Same 0.2m drop with high horiz speed passes the physics path.
+    const r = resolveGroundedTick(5, 0, DT, 4.8, FAST);
+    expect(r.airborne).toBe(true);
   });
 
   it('launches over a crest when fast downhill motion plus a sudden drop', () => {
-    // Tank was descending at 6 m/s (fast downhill), now terrain curves away.
-    const r = resolveGroundedTick(5, -6, DT, 4.3);
+    const r = resolveGroundedTick(5, -6, DT, 4.3, FAST);
     expect(r.airborne).toBe(true);
-    // Projected Y is oldY + vY*dt + 0.5*g*dt² ≈ 5 - 0.1 - 0.0014 ≈ 4.899
     expect(r.newY).toBeCloseTo(5 - 6 * DT + 0.5 * GRAVITY * DT * DT, 3);
-    // vY continues accumulating gravity
     expect(r.newVy).toBeCloseTo(-6 + GRAVITY * DT, 3);
   });
 
-  it('cliff drive-off: launches with whatever vY the grounded path had', () => {
-    // Tank was flat on top of cliff (vY = 0), then one tick later terrain is
-    // way below.
-    const r = resolveGroundedTick(8, 0, DT, 2);
+  it('cliff drive-off: large drop forces airborne even from a standstill', () => {
+    // Force-drop path doesn't care about horiz speed.
+    const r = resolveGroundedTick(8, 0, DT, 2, 0);
     expect(r.airborne).toBe(true);
     expect(r.newVy).toBeCloseTo(GRAVITY * DT, 3);
   });
