@@ -144,16 +144,19 @@ export function stepAirborneTank(
     tank.angVel.z *= angDecay;
   }
 
-  // Settled: in contact, upright, slow. Single-tick exit — no artificial
-  // timer. A clean wheels-down landing returns to grounded instantly; a
-  // tumble lingers until friction + righting have done their work.
+  // Settled: in contact, upright, not launching upward. A tank that lands
+  // on its wheels with forward momentum should resume driving immediately
+  // — tracks on ground = grounded — so we deliberately do NOT gate exit
+  // on horizontal speed. Only linVel.y matters: if the body is still
+  // moving upward it's mid-jump, not landed.
   const angMag = Math.hypot(tank.angVel.x, tank.angVel.y, tank.angVel.z);
-  const linHMag = Math.hypot(tank.linVel.x, tank.linVel.z);
   const upright = Math.abs(tank.bodyPitch) < AIRBORNE_UPRIGHT_ANGLE
                && Math.abs(tank.bodyRoll)  < AIRBORNE_UPRIGHT_ANGLE;
   const settledOnGround = inContact && upright
     && angMag < AIRBORNE_SETTLED_ANG_SPEED
-    && linHMag < AIRBORNE_SETTLED_LIN_SPEED;
+    && tank.linVel.y < 0.5;
+  // AIRBORNE_SETTLED_LIN_SPEED intentionally unused here — see comment above.
+  void AIRBORNE_SETTLED_LIN_SPEED;
 
   return { settledOnGround };
 }

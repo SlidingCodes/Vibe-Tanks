@@ -70,6 +70,12 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
+/** Sim ticks after a landing during which the airborne trigger is muted.
+ *  ~0.25 s at 60 Hz — the "suspension" window. Long enough to smooth over
+ *  terrain undulations right after touchdown, short enough that driving
+ *  straight off a real cliff still flips airborne almost immediately. */
+const POST_LANDING_GRACE_TICKS = 15;
+
 /** Reused zero Vec3 for airborne entries that don't want to add linear or
  *  angular delta (e.g. a clean crater fall — no torque, gravity does it
  *  all). Avoids allocating a new {x:0,y:0,z:0} per-call. */
@@ -94,6 +100,12 @@ interface PlayerState {
    *  respawn / match reset / mid-airborne so the first grounded tick
    *  doesn't sample a stale reference. */
   lastGroundedPos: { x: number; y: number; z: number } | null;
+  /** Countdown (in sim ticks) during which the airborne trigger is
+   *  suppressed after a landing. Acts like a suspension absorbing the
+   *  first fraction of a second: prevents the tank from re-entering
+   *  ragdoll on small terrain undulations right after touching down.
+   *  0 = no grace active. */
+  postLandingGraceTicks: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -251,6 +263,7 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       lastGroundedPos: null,
+      postLandingGraceTicks: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -828,11 +841,20 @@ export class Room {
       // new terrain, the tank has physically left the ground — no drop-
       // threshold or slope heuristic needed. Subsumes cliff drives, crater
       // falls, and crest launches in one rule.
+      //
+      // Post-landing grace: for a brief window after exiting airborne we
+      // mute the trigger entirely. Tanks landing with forward momentum on
+      // undulating ground would otherwise flip airborne again on the first
+      // small terrain dip, causing visible bouncing.
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
       const player = this.players.get(pid);
       const last = player?.lastGroundedPos ?? null;
       const vY = last ? (tank.position.y - last.y) / dt : 0;
-      const resolved = resolveGroundedTick(tank.position.y, vY, dt, freshTerrainY);
+      const inLandingGrace = player ? player.postLandingGraceTicks > 0 : false;
+      if (inLandingGrace && player) player.postLandingGraceTicks -= 1;
+      const resolved = inLandingGrace
+        ? { airborne: false, newY: freshTerrainY, newVy: vY }
+        : resolveGroundedTick(tank.position.y, vY, dt, freshTerrainY);
 
       if (resolved.airborne) {
         // Seed linVel with the horizontal velocity the tank had while
@@ -965,11 +987,17 @@ export class Room {
     const player = this.players.get(tank.playerId);
     if (player) {
       player.lastGroundedPos = null;
+      // Airborne cancels any lingering landing-grace — we're truly off
+      // the ground now, not absorbing a prior landing.
+      player.postLandingGraceTicks = 0;
     }
   }
 
   /** Return to grounded mode: zero tossed velocities, re-seed the KCC, and
-   *  snap pitch/roll back to the terrain tilt on the next alignment pass. */
+   *  snap pitch/roll back to the terrain tilt on the next alignment pass.
+   *  Also seeds lastGroundedPos + a short post-landing grace window so the
+   *  airborne trigger can't fire again while the tank is still settling
+   *  onto uneven ground right after landing (the "keeps bouncing" bug). */
   private exitAirborne(pid: PlayerId, tank: TankState): void {
     tank.airborne = false;
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
@@ -977,7 +1005,8 @@ export class Room {
     this.physics.resumeGrounded(pid, tank.bodyRotation);
     const player = this.players.get(pid);
     if (player) {
-      player.lastGroundedPos = null;
+      player.lastGroundedPos = { x: tank.position.x, y: tank.position.y, z: tank.position.z };
+      player.postLandingGraceTicks = POST_LANDING_GRACE_TICKS;
     }
   }
 
