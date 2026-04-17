@@ -261,7 +261,14 @@ export function interpolateRemoteTanks(dt: number, localPlayerId: string): void 
     // Lerp body rotation (handle angle wrapping)
     tm.group.rotation.y = lerpAngle(tm.prevBodyRotation, tm.targetBodyRotation, t);
 
-    smoothTilt(tm.group, tm.state.bodyPitch, tm.state.bodyRoll);
+    if (tm.state.airborne) {
+      // Ragdoll: pitch/roll come from the server's free-rotation integrator
+      // and must track it immediately — smoothing would wash out the tumble.
+      tm.group.rotation.x = tm.state.bodyPitch;
+      tm.group.rotation.z = tm.state.bodyRoll;
+    } else {
+      smoothTilt(tm.group, tm.state.bodyPitch, tm.state.bodyRoll);
+    }
 
     // Turret and barrel apply directly (aim is updated every frame anyway)
     tm.turretGroup.rotation.y = tm.state.turretRotation - tm.group.rotation.y;
@@ -279,7 +286,12 @@ export function updateLocalTankMesh(tank: TankState): void {
   tm.state = tank;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
-  smoothTilt(tm.group, tank.bodyPitch, tank.bodyRoll);
+  if (tank.airborne) {
+    tm.group.rotation.x = tank.bodyPitch;
+    tm.group.rotation.z = tank.bodyRoll;
+  } else {
+    smoothTilt(tm.group, tank.bodyPitch, tank.bodyRoll);
+  }
   tm.turretGroup.rotation.y = tank.turretRotation - tank.bodyRotation;
   tm.barrel.rotation.x = -tank.barrelPitch;
   tm.group.visible = tank.alive;

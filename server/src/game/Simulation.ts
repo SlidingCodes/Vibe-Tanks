@@ -1,4 +1,5 @@
 import {
+  PlayerId,
   ShotResult,
   ShotStep,
   ShotVisualStyle,
@@ -6,9 +7,29 @@ import {
   Vec3,
   WeaponDefinition,
 } from '@shared/types/index';
-import { GRAVITY, SIM_DT, SHOT_MAX_SIM_TICKS } from '@shared/constants';
+import { BLAST_UPWARD_BIAS, GRAVITY, SIM_DT, SHOT_MAX_SIM_TICKS } from '@shared/constants';
+import { blastImpulse } from '@shared/airborne';
 import { computeMuzzle } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
+
+/** Sphere radius used for direct-hit intersection against a flying shell —
+ *  slightly larger than the 0.8 Rapier hull so visually-plausible shots
+ *  register even with a shell tick granularity of 1/60 s. */
+const DIRECT_HIT_RADIUS = 1.1;
+/** Vertical offset from the tank's ground position to its body centre —
+ *  matches BODY_Y_OFFSET on the Rapier side. Shots should hit the body,
+ *  not the feet. */
+const TANK_BODY_CENTRE_OFFSET_Y = 0.8;
+/** Damage multiplier applied to a direct-hit tank on top of the normal
+ *  blast-radius falloff. Adds teeth to actually landing a cannon shot. */
+const DIRECT_HIT_DAMAGE_MULTIPLIER = 1.6;
+/** Impulse magnitude per point of weapon damage. With default weapons
+ *  (damage 20–40) this gives ~6–12 m/s delta-v at the blast centre — well
+ *  above the AIRBORNE_ENTRY_SPEED threshold. */
+const IMPULSE_PER_DAMAGE = 0.35;
+/** Extra impulse multiplier on direct hits. Same logic as the damage
+ *  multiplier but tuned so a clean shot always launches. */
+const DIRECT_HIT_IMPULSE_BONUS = 2.2;
 
 /**
  * Terrain surface Simulation queries for shell collisions. Satisfied directly
@@ -30,6 +51,10 @@ export const SECONDS_PER_SAMPLE = SAMPLE_EVERY_TICKS * SIM_DT;
 interface SegmentOptions {
   splitTime?: number;
   airburstHeight?: number;
+  /** Tanks to test the shell path against. A per-tick sphere intersection
+   *  on any tank in this list detonates the shell at that point. Caller is
+   *  responsible for excluding the shooter's own tank. */
+  hitCandidates?: TankState[];
 }
 
 export interface SegmentResult {
@@ -37,7 +62,10 @@ export interface SegmentResult {
   endPoint: Vec3;
   endVelocity: Vec3;
   elapsed: number;
-  reason: 'impact' | 'airburst' | 'split' | 'bounds';
+  reason: 'impact' | 'airburst' | 'split' | 'bounds' | 'direct_hit';
+  /** Present when `reason === 'direct_hit'` — the tank the shell collided
+   *  with mid-flight. */
+  directHitTankId?: PlayerId;
 }
 
 interface ImpactSpec {
@@ -45,9 +73,17 @@ interface ImpactSpec {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
+  /** When the shell made a direct hit on a tank mid-flight, pass its id
+   *  here. That tank receives bonus damage and a guaranteed-airborne
+   *  impulse regardless of distance. */
+  directHitTankId?: PlayerId | null;
 }
 
-export type DamageTotals = Map<string, { damage: number; killed: boolean }>;
+export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3 }>;
+
+function makeDamageEntry(): { damage: number; killed: boolean; impulse: Vec3 } {
+  return { damage: 0, killed: false, impulse: { x: 0, y: 0, z: 0 } };
+}
 
 export interface DrillPlan {
   entryResult: ShotResult;
@@ -131,16 +167,16 @@ export function createShotResult(
   steps: ShotStep[],
   damageTotals: DamageTotals = new Map(),
 ): ShotResult {
-  return {
-    shooterId,
-    weaponId,
-    steps,
-    damageDealt: Array.from(damageTotals.entries()).map(([playerId, value]) => ({
-      playerId,
-      damage: value.damage,
-      killed: value.killed,
-    })),
-  };
+  const impulses: ShotResult['impulses'] = [];
+  const damageDealt: ShotResult['damageDealt'] = [];
+  for (const [playerId, value] of damageTotals) {
+    damageDealt.push({ playerId, damage: value.damage, killed: value.killed });
+    const impLenSq = value.impulse.x ** 2 + value.impulse.y ** 2 + value.impulse.z ** 2;
+    if (impLenSq > 1e-4) impulses.push({ playerId, impulse: value.impulse });
+  }
+  return impulses.length > 0
+    ? { shooterId, weaponId, steps, damageDealt, impulses }
+    : { shooterId, weaponId, steps, damageDealt };
 }
 
 function finalizeDamageTotals(allTanks: TankState[], damageTotals: DamageTotals): void {
@@ -208,6 +244,10 @@ export function simulateSegment(
   let reason: SegmentResult['reason'] = 'bounds';
   let elapsed = 0;
 
+  const hitCandidates = options.hitCandidates;
+  const directHitRadiusSq = DIRECT_HIT_RADIUS * DIRECT_HIT_RADIUS;
+  let directHitTankId: PlayerId | undefined;
+
   for (let tick = 0; tick < SHOT_MAX_SIM_TICKS; tick++) {
     vel.y += GRAVITY * SIM_DT;
     pos.x += vel.x * SIM_DT;
@@ -219,6 +259,22 @@ export function simulateSegment(
 
     if (tick % SAMPLE_EVERY_TICKS === 0) {
       trajectory.push(cloneVec3(pos));
+    }
+
+    if (hitCandidates && hitCandidates.length > 0) {
+      for (const candidate of hitCandidates) {
+        if (!candidate.alive) continue;
+        const dx = pos.x - candidate.position.x;
+        const dy = pos.y - (candidate.position.y + TANK_BODY_CENTRE_OFFSET_Y);
+        const dz = pos.z - candidate.position.z;
+        if (dx * dx + dy * dy + dz * dz <= directHitRadiusSq) {
+          endPoint = cloneVec3(pos);
+          reason = 'direct_hit';
+          directHitTankId = candidate.playerId;
+          break;
+        }
+      }
+      if (directHitTankId) break;
     }
 
     if (pos.y <= terrainH) {
@@ -258,13 +314,22 @@ export function simulateSegment(
     trajectory.push(cloneVec3(endPoint));
   }
 
-  return {
-    trajectory,
-    endPoint,
-    endVelocity: cloneVec3(vel),
-    elapsed,
-    reason,
-  };
+  return directHitTankId
+    ? {
+        trajectory,
+        endPoint,
+        endVelocity: cloneVec3(vel),
+        elapsed,
+        reason,
+        directHitTankId,
+      }
+    : {
+        trajectory,
+        endPoint,
+        endVelocity: cloneVec3(vel),
+        elapsed,
+        reason,
+      };
 }
 
 /**
@@ -278,6 +343,7 @@ export function applyImpact(
   allTanks: TankState[],
   damageTotals: DamageTotals,
 ): boolean {
+  const impulseMagnitude = impact.damage * IMPULSE_PER_DAMAGE;
   if (impact.damage > 0) {
     for (const tank of allTanks) {
       if (!tank.alive) continue;
@@ -287,15 +353,40 @@ export function applyImpact(
       const dz = tank.position.z - impact.point.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      if (dist < impact.blastRadius) {
+      const isDirect = impact.directHitTankId === tank.playerId;
+      if (isDirect || dist < impact.blastRadius) {
+        const entry = damageTotals.get(tank.playerId) ?? makeDamageEntry();
+
         const t = dist / Math.max(impact.blastRadius, 0.001);
-        const falloff = 1 - t * t;
-        const dmg = Math.round(impact.damage * falloff);
-        if (dmg > 0) {
-          const current = damageTotals.get(tank.playerId) ?? { damage: 0, killed: false };
-          current.damage += dmg;
-          damageTotals.set(tank.playerId, current);
+        const falloff = isDirect ? 1 : 1 - t * t;
+        const dmgScalar = isDirect ? DIRECT_HIT_DAMAGE_MULTIPLIER : 1;
+        const dmg = Math.round(impact.damage * falloff * dmgScalar);
+        if (dmg > 0) entry.damage += dmg;
+
+        const baseImpulse = blastImpulse(
+          impact.point,
+          impact.blastRadius,
+          impulseMagnitude,
+          tank.position,
+          BLAST_UPWARD_BIAS,
+        );
+        if (isDirect) {
+          // Direct hits get a guaranteed-airborne impulse along the shell's
+          // line of flight; blastImpulse alone (dist ≈ 0) gives a degenerate
+          // direction so we synthesize one from the impact offset with a
+          // hard upward kick.
+          const len = Math.hypot(dx, dz) || 1;
+          const push = impulseMagnitude * DIRECT_HIT_IMPULSE_BONUS;
+          entry.impulse.x += (dx / len) * push;
+          entry.impulse.y += push * BLAST_UPWARD_BIAS * 2;
+          entry.impulse.z += (dz / len) * push;
+        } else {
+          entry.impulse.x += baseImpulse.x;
+          entry.impulse.y += baseImpulse.y;
+          entry.impulse.z += baseImpulse.z;
         }
+
+        damageTotals.set(tank.playerId, entry);
       }
     }
   }
@@ -330,9 +421,47 @@ function reflectVelocity(velocity: Vec3, normal: Vec3, damping: number): Vec3 {
 function applyDirectHit(tank: TankState, damage: number, damageTotals: DamageTotals): void {
   if (!tank.alive || damage <= 0) return;
 
-  const current = damageTotals.get(tank.playerId) ?? { damage: 0, killed: false };
+  const current = damageTotals.get(tank.playerId) ?? makeDamageEntry();
   current.damage += damage;
   damageTotals.set(tank.playerId, current);
+}
+
+/** Alive-and-not-shooter slice of the tank list, used as `hitCandidates`
+ *  for simulateSegment so a shell can detect body intersections mid-flight. */
+function hitCandidatesFor(shooter: TankState, allTanks: TankState[]): TankState[] {
+  return allTanks.filter((t) => t.alive && t.playerId !== shooter.playerId);
+}
+
+/** Resolve an impact step from a segment. Handles both terrain `'impact'`
+ *  and `'direct_hit'` (shell collided with a tank mid-flight) uniformly.
+ *  Returns whether the caller should carve terrain at this step. */
+function applySegmentImpact(
+  segment: SegmentResult,
+  blastRadius: number,
+  damage: number,
+  terrainDamage: number,
+  allTanks: TankState[],
+  damageTotals: DamageTotals,
+): boolean {
+  if (segment.reason === 'impact') {
+    return applyImpact({
+      point: segment.endPoint,
+      blastRadius,
+      damage,
+      terrainDamage,
+    }, allTanks, damageTotals);
+  }
+  if (segment.reason === 'direct_hit') {
+    applyImpact({
+      point: segment.endPoint,
+      blastRadius,
+      damage,
+      terrainDamage: 0, // mid-air on a tank — don't carve the ground
+      directHitTankId: segment.directHitTankId,
+    }, allTanks, damageTotals);
+    return false;
+  }
+  return false;
 }
 
 function simulateStandardShot(
@@ -344,15 +473,12 @@ function simulateStandardShot(
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, terrain);
-  const carveTerrain = segment.reason === 'impact'
-    ? applyImpact({
-        point: segment.endPoint,
-        blastRadius: weapon.blastRadius,
-        damage: weapon.damage,
-        terrainDamage: weapon.terrainDamage,
-      }, allTanks, damageTotals)
-    : false;
+  const segment = simulateSegment(startPos, startVel, terrain, {
+    hitCandidates: hitCandidatesFor(shooter, allTanks),
+  });
+  const carveTerrain = applySegmentImpact(
+    segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
+  );
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
     makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'standard'),
@@ -370,14 +496,26 @@ function simulateAirburstShot(
   const damageTotals: DamageTotals = new Map();
   const segment = simulateSegment(startPos, startVel, terrain, {
     airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
+    hitCandidates: hitCandidatesFor(shooter, allTanks),
   });
 
-  const carveTerrain = applyImpact({
-    point: segment.endPoint,
-    blastRadius: weapon.blastRadius,
-    damage: weapon.damage,
-    terrainDamage: segment.reason === 'impact' ? weapon.terrainDamage : 0,
-  }, allTanks, damageTotals);
+  // Airburst detonates mid-air on its own, but a tank body in the way
+  // triggers the same explosion slightly earlier. Route through the
+  // shared resolver so impulses/direct-hit bonuses land consistently.
+  const terrainDamage = segment.reason === 'impact' ? weapon.terrainDamage : 0;
+  let carveTerrain: boolean;
+  if (segment.reason === 'direct_hit' || segment.reason === 'impact') {
+    carveTerrain = applySegmentImpact(
+      segment, weapon.blastRadius, weapon.damage, terrainDamage, allTanks, damageTotals,
+    );
+  } else {
+    carveTerrain = applyImpact({
+      point: segment.endPoint,
+      blastRadius: weapon.blastRadius,
+      damage: weapon.damage,
+      terrainDamage: 0,
+    }, allTanks, damageTotals);
+  }
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
     makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'big_blast'),
@@ -394,17 +532,13 @@ function simulateSplitShot(
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
   const splitTime = weapon.behaviorConfig?.splitTime ?? 0.7;
-  const segment = simulateSegment(startPos, startVel, terrain, { splitTime });
+  const candidates = hitCandidatesFor(shooter, allTanks);
+  const segment = simulateSegment(startPos, startVel, terrain, { splitTime, hitCandidates: candidates });
 
   if (segment.reason !== 'split') {
-    const carveTerrain = segment.reason === 'impact'
-      ? applyImpact({
-          point: segment.endPoint,
-          blastRadius: weapon.blastRadius,
-          damage: weapon.damage,
-          terrainDamage: weapon.terrainDamage,
-        }, allTanks, damageTotals)
-      : false;
+    const carveTerrain = applySegmentImpact(
+      segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
+    );
 
     return createPredictedShotResult(shooter.playerId, weapon.id, [
       makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'splitter_parent'),
@@ -426,15 +560,12 @@ function simulateSplitShot(
   for (let i = 0; i < fragmentCount; i++) {
     const yawOffset = (i - half) * fragmentSpread;
     const fragmentVelocity = makeFragmentVelocity(segment.endVelocity, yawOffset, fragmentSpeedScale);
-    const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, terrain);
-    const carveTerrain = fragmentSegment.reason === 'impact'
-      ? applyImpact({
-          point: fragmentSegment.endPoint,
-          blastRadius: fragmentBlastRadius,
-          damage: fragmentDamage,
-          terrainDamage: fragmentTerrainDamage,
-        }, allTanks, damageTotals)
-      : false;
+    const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, terrain, {
+      hitCandidates: candidates,
+    });
+    const carveTerrain = applySegmentImpact(
+      fragmentSegment, fragmentBlastRadius, fragmentDamage, fragmentTerrainDamage, allTanks, damageTotals,
+    );
 
     steps.push(makeStep(
       segment.elapsed,
@@ -459,17 +590,14 @@ function simulateBounceShot(
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
   const damageTotals: DamageTotals = new Map();
-  const firstSegment = simulateSegment(startPos, startVel, terrain);
+  const candidates = hitCandidatesFor(shooter, allTanks);
+  const firstSegment = simulateSegment(startPos, startVel, terrain, { hitCandidates: candidates });
 
   if (firstSegment.reason !== 'impact' || (weapon.behaviorConfig?.bounceCount ?? 1) <= 0) {
-    const carveTerrain = firstSegment.reason === 'impact'
-      ? applyImpact({
-          point: firstSegment.endPoint,
-          blastRadius: weapon.blastRadius,
-          damage: weapon.damage,
-          terrainDamage: weapon.terrainDamage,
-        }, allTanks, damageTotals)
-      : false;
+    // Either no bounces configured, direct_hit, or bounds exit.
+    const carveTerrain = applySegmentImpact(
+      firstSegment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
+    );
 
     return createPredictedShotResult(shooter.playerId, weapon.id, [
       makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'bouncer_parent'),
@@ -480,15 +608,10 @@ function simulateBounceShot(
   const damping = weapon.behaviorConfig?.bounceDamping ?? 0.72;
   const bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
   const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
-  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain);
-  const carveTerrain = secondSegment.reason === 'impact'
-    ? applyImpact({
-        point: secondSegment.endPoint,
-        blastRadius: weapon.blastRadius,
-        damage: weapon.damage,
-        terrainDamage: weapon.terrainDamage,
-      }, allTanks, damageTotals)
-    : false;
+  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain, { hitCandidates: candidates });
+  const carveTerrain = applySegmentImpact(
+    secondSegment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
+  );
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
     makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', false, 0, 'bouncer_parent'),

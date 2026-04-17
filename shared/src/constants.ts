@@ -28,3 +28,60 @@ export const MIN_PLAYERS_TO_START = 1;
 export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
 export const SERVER_PORT = 3001;
+
+// ── Airborne / ragdoll tuning ─────────────────────────────────────────────
+/** Delta-v magnitude at which a blast impulse flips the tank from grounded
+ *  to airborne. Below the threshold the impulse is absorbed by the tracks
+ *  (applied as transient grounded velocity) without leaving the ground. */
+export const AIRBORNE_ENTRY_SPEED = 4.0;
+/** Upward bias added to every blast impulse so close blasts send tanks up
+ *  and out, not just skittering along the ground. Fraction of the horizontal
+ *  impulse magnitude. */
+export const BLAST_UPWARD_BIAS = 0.45;
+/** Aerodynamic drag coefficient applied to linear velocity during FREE
+ *  FLIGHT (no ground contact). Very light — a tank isn't a feather; we
+ *  want blast arcs and jumps to carry their momentum visibly. Just
+ *  enough to prevent pathological accumulation over long flights. */
+export const AIRBORNE_LINEAR_DRAG = 0.1;
+/** Same but on angular velocity during free flight. Light so a blast-
+ *  tumbled tank keeps spinning visibly until it hits the ground. */
+export const AIRBORNE_ANGULAR_DRAG = 0.15;
+/** Strong friction coefficient (per second) applied to horizontal linear
+ *  velocity while the hull is in ground contact. This replaces the old
+ *  "settled-for-N-ticks" timer-driven exit with real scrubbing: a tank
+ *  that lands wheels-down sheds momentum fast via tread friction, a
+ *  tank that lands on its side skids to a stop just as fast. */
+export const AIRBORNE_GROUND_LINEAR_FRICTION = 8.0;
+/** Same, for angular velocity — kills ragdoll spin on ground contact. */
+export const AIRBORNE_GROUND_ANGULAR_FRICTION = 12.0;
+/** Per-second exponential rate at which pitch/roll decay toward 0 while
+ *  the body is in ground contact. Gives a visible "tank rights itself"
+ *  recovery motion before the grounded-exit snap picks up the terrain
+ *  tilt. */
+export const AIRBORNE_GROUND_RIGHTING_RATE = 6.0;
+/** Tolerance when asking "is the tank above the terrain?". A projected
+ *  free-flight Y within this distance of the sampled terrain counts as
+ *  ground contact (prevents float-precision oscillation between grounded
+ *  and airborne at rest). */
+export const AIRBORNE_GROUND_EPSILON = 0.05;
+/** Per-tick vertical drop that forces airborne regardless of the tank's
+ *  horizontal speed — crater opens below, cliff edge, carve directly
+ *  under the hull. Above this threshold there's no way gravity can catch
+ *  the tank in one tick, so a static drop is honoured even at speed 0. */
+export const AIRBORNE_FORCE_DROP = 0.5;
+/** Minimum horizontal tank speed for the small-drop airborne path. A slow
+ *  tank cresting a voxel bump should ride over it (gravity has time to
+ *  pull it back into contact); only above this speed is the kinetic
+ *  energy high enough that the hull physically leaves the ground. Static
+ *  / near-static tanks rely solely on the AIRBORNE_FORCE_DROP path. */
+export const AIRBORNE_MIN_HORIZ_SPEED = 3.0;
+/** Contact-below-body distance that counts as "touching ground" for the
+ *  friction / righting / exit checks. */
+export const AIRBORNE_CONTACT_DISTANCE = 0.15;
+/** |pitch| and |roll| below which the tank is considered upright enough
+ *  to resume grounded driving. ~17°: treads rolling on ground, not side. */
+export const AIRBORNE_UPRIGHT_ANGLE = 0.3;
+/** Angular speed magnitude below which rotation is considered settled. */
+export const AIRBORNE_SETTLED_ANG_SPEED = 0.5;
+/** Horizontal linear speed below which skidding is considered settled. */
+export const AIRBORNE_SETTLED_LIN_SPEED = 2.0;
