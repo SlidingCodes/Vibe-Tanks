@@ -48,6 +48,7 @@ import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
+import { AIRBORNE_CARVE_LIFT, AIRBORNE_CARVE_WOBBLE, AIRBORNE_CARVE_SPIN } from '@shared/constants';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
@@ -474,12 +475,16 @@ socket.on('shot_resolved', (result: ShotResult) => {
           const slope = grid.getSlopeMagnitude(predictedState.position.x, predictedState.position.z);
           if (shouldEnterAirborne(predictedState.position.y, newTerrainY, slope)) {
             predictedState.airborne = true;
-            predictedState.linVel.x = predictedVel.x;
-            predictedState.linVel.y = 0;
-            predictedState.linVel.z = predictedVel.z;
-            predictedState.angVel.x = 0;
-            predictedState.angVel.y = 0;
-            predictedState.angVel.z = 0;
+            // Mirror the server's carveLiftSeed: small upward pop + a
+            // little wobble + spin, so the local tank visibly detaches
+            // from the collapsing rock. Server's next state_update will
+            // overwrite with the authoritative values.
+            predictedState.linVel.x = predictedVel.x + (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
+            predictedState.linVel.y = AIRBORNE_CARVE_LIFT;
+            predictedState.linVel.z = predictedVel.z + (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
+            predictedState.angVel.x = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+            predictedState.angVel.y = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+            predictedState.angVel.z = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
           }
         }
       }, carveDelay * 1000);

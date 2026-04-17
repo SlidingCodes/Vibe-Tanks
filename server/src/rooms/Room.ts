@@ -25,8 +25,27 @@ import {
   SIM_TICK_RATE,
   AIRBORNE_ENTRY_SPEED,
   AIRBORNE_EXIT_TICKS,
+  AIRBORNE_CARVE_LIFT,
+  AIRBORNE_CARVE_WOBBLE,
+  AIRBORNE_CARVE_SPIN,
 } from '@shared/constants';
 import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
+
+/** Seed a small liftoff + wobble + spin on a carve-triggered ragdoll so the
+ *  tank visibly detaches from the collapsing rock instead of starting a
+ *  clean vertical fall (which reads as a snap). Written as a helper to keep
+ *  the two enterAirborne call sites consistent. */
+function carveLiftSeed(): { lin: Vec3; ang: Vec3 } {
+  const wobbleX = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
+  const wobbleZ = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_WOBBLE;
+  const spinX = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+  const spinY = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+  const spinZ = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+  return {
+    lin: { x: wobbleX, y: AIRBORNE_CARVE_LIFT, z: wobbleZ },
+    ang: { x: spinX, y: spinY, z: spinZ },
+  };
+}
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -823,7 +842,8 @@ export class Room {
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
       const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
       if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
-        this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+        const seed = carveLiftSeed();
+        this.enterAirborne(tank, seed.lin, seed.ang);
         continue;
       }
 
@@ -1173,7 +1193,8 @@ export class Room {
       const freshTerrainY = this.voxels.getHeight(tank.position.x, tank.position.z);
       const slope = this.voxels.getSlopeMagnitude(tank.position.x, tank.position.z);
       if (shouldEnterAirborne(tank.position.y, freshTerrainY, slope)) {
-        this.enterAirborne(tank, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+        const seed = carveLiftSeed();
+        this.enterAirborne(tank, seed.lin, seed.ang);
       } else {
         this.alignTankToVoxelSurface(tank, cellSize);
       }
