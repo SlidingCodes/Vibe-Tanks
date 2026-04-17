@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
-import { getTerrainHeight, setTerrainSource } from './scene/terrain';
+import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
@@ -45,14 +45,34 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
+import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
-const LOCAL_HULL_RADIUS = 0.8;
+const LOCAL_HULL_RADIUS = HULL_RADIUS;
+/** Emergency snap threshold. Under normal operation the client Rapier
+ *  mirror stays within a few cm of the server (same inputs, same TriMesh,
+ *  same fixed-dt stepping), so reconciliation does nothing and the local
+ *  tank moves purely via prediction. Only an actual desync — server-side
+ *  teleport, RTT spike that delays inputs by >50 ms, or a bug — trips the
+ *  snap. Below this the server state_update is ignored for position/yaw
+ *  on grounded frames, which avoids the periodic "rubber-band" snap-back
+ *  that made the tank visibly judder every ~20 Hz broadcast.
+ *  Tilt (pitch/roll) IS synced every state_update — it's server-computed
+ *  from the voxel gradient and has no client counterpart. */
+const RECONCILE_SNAP_DISTANCE = 3.0;
+/** Fixed-timestep accumulator for the client Rapier mirror. Matches the
+ *  server's 60 Hz sim tick so both worlds integrate with the exact same
+ *  dt — the main guarantee that kinematic-body + KCC stays deterministic
+ *  across instances. Without this, variable render dt produces per-frame
+ *  float drift that accumulates into visible reconciliation snaps. */
+const CLIENT_PHYSICS_STEP = SIM_DT;
+/** Upper bound on physics steps per render frame — prevents "spiral of
+ *  death" if the tab was hidden for seconds and dt balloons. */
+const MAX_PHYSICS_STEPS_PER_FRAME = 4;
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
 
@@ -199,6 +219,13 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
         linVel: { ...tankState.linVel },
         angVel: { ...tankState.angVel },
       };
+      // If the Rapier world is already up (room_snapshot re-broadcasts after
+      // the voxel_snapshot built it), register or re-register the tank so
+      // predictions run against a body anchored at the server's spawn.
+      if (clientPhysics && predictedState.alive) {
+        clientPhysics.addTank(predictedState);
+        localTankRegistered = true;
+      }
     }
   }
   for (const id of existingIds) {
@@ -227,6 +254,48 @@ let voxelGrid: VoxelGrid | null = null;
 let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
+/** Client-side Rapier mirror. Only the LOCAL player is registered here;
+ *  remote tanks stay cosmetic (server-broadcast state + interpolation). The
+ *  terrain collider mirrors the server's exactly via the same surface-nets
+ *  mesher, so the local prediction and the authoritative sim see the same
+ *  3D geometry — caves and overhangs included. Lazy: built on the first
+ *  voxel_snapshot once Rapier's WASM has loaded. */
+let clientPhysics: RapierVoxelWorld | null = null;
+let localTankRegistered = false;
+/** Residual time left over from the last render frame, to be consumed by
+ *  the next fixed-dt physics step. */
+let physicsAccumulator = 0;
+/** Monotonic client tick counter. Incremented once per fixed-dt Rapier
+ *  step. Stamped on every emitted MovementInput so the server can ack
+ *  the latest seq it applied, which in turn drives the client's
+ *  rewind-and-replay reconciliation. */
+let clientSeq = 0;
+/** Highest seq whose ACK from the server we've already reconciled
+ *  against. Prevents redundant replay work when the same state_update
+ *  is processed twice (shouldn't happen under TCP but is cheap to
+ *  guard). */
+let lastReconciledSeq = 0;
+/** 2-second circular buffer of per-tick inputs, indexed by seq % N. The
+ *  replay step in reconciliation reads inputs[seq+1..clientSeq] forward
+ *  from the server-anchored state to the current present. */
+const INPUT_BUFFER_SIZE = 128;
+const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(null);
+/** Render-side error smoother state. `renderedPos` / `renderedYaw` are
+ *  what the mesh, camera, aim raycast, and tread decal actually follow
+ *  each frame; `predictedState` remains the exact Rapier readback so the
+ *  rewind-and-replay math is unaffected. Every frame we exponentially
+ *  lerp renderedPos toward predictedState.position — small reconciliation
+ *  corrections (server state anchoring + input replay) manifest as a
+ *  gentle catch-up rather than a tick-boundary pop. */
+const RENDER_SMOOTH_RATE_PER_SIM_TICK = 0.25;
+const RENDER_SMOOTH_SNAP_DISTANCE = 3.0;
+let renderedPosX = 0, renderedPosY = 0, renderedPosZ = 0;
+let renderedYaw = 0;
+let renderSmootherPrimed = false;
+/** Scratch TankState passed to the mesh / aim pipeline each frame — same
+ *  object as `predictedState` but with position + bodyRotation overridden
+ *  by the smoothed render values. Avoids a per-frame allocation. */
+let viewState: TankState | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
@@ -252,7 +321,7 @@ const TRACK_MAX_JUMP = 4.0;
 const _scratchLocalPos = new THREE.Vector3();
 
 
-socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
+socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
   setTerrainSource(voxelGrid);
   if (!voxelTerrain) {
@@ -296,6 +365,32 @@ socket.on('voxel_snapshot', (snap: VoxelSnapshot) => {
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
   );
+
+  // Build / rebuild the client Rapier world against the fresh voxel grid.
+  // WASM init is idempotent; the first call pays the ~50 ms load cost, later
+  // snapshots (match reset) are instant. voxelGrid is captured before the
+  // await so a later snapshot can't race past us.
+  const gridAtSnapshot = voxelGrid;
+  await initRapier();
+  if (voxelGrid !== gridAtSnapshot) return; // newer snapshot already ran — bail.
+  if (!clientPhysics) {
+    clientPhysics = new RapierVoxelWorld(gridAtSnapshot);
+    localTankRegistered = false;
+  } else {
+    clientPhysics.setGrid(gridAtSnapshot);
+  }
+  // Match reset re-baselines the reconciliation clocks — server's per-tank
+  // lastAppliedSeq also resets to 0 in resetMatch(). Buffer entries from
+  // before the reset are harmless thanks to the seq check in the replay
+  // loop, but we zero clientSeq so the first new inputs start at seq=1.
+  clientSeq = 0;
+  lastReconciledSeq = 0;
+  // Re-register the local tank against the fresh world. addTank removes any
+  // existing entry first, so this doubles as match-reset respawn.
+  if (predictedState && predictedState.alive) {
+    clientPhysics.addTank(predictedState);
+    localTankRegistered = true;
+  }
 });
 
 
@@ -362,29 +457,70 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
+          // Re-baseline the reconciliation clocks to match the server's
+          // post-respawn ACK (also 0). Buffer entries from the previous
+          // life are harmless because the circular index's seq check in
+          // the replay loop skips any whose stored seq != requested seq.
+          clientSeq = 0;
+          lastReconciledSeq = 0;
           triggerRespawnAnim(myId);
-        } else if (tankState.airborne) {
-          // Airborne is fully server-authoritative: no client prediction
-          // can model gravity + angVel + terrain contact accurately, so
-          // we snap to the broadcast transform. The mesh still interpolates
-          // between state_updates via updateLocalTankMesh each frame.
-          predictedState.position.x = tankState.position.x;
-          predictedState.position.y = tankState.position.y;
-          predictedState.position.z = tankState.position.z;
-          predictedState.bodyRotation = tankState.bodyRotation;
-          predictedState.bodyPitch = tankState.bodyPitch;
-          predictedState.bodyRoll = tankState.bodyRoll;
+          if (clientPhysics) {
+            clientPhysics.addTank(predictedState);
+            localTankRegistered = true;
+          }
         } else {
+          // Unified grounded + airborne reconciliation via rewind-and-
+          // replay. Tilt comes straight from the server (voxel-gradient
+          // sample; the Rapier body's X/Z rotations are locked). Airborne
+          // tanks replay with drive suppressed in applyTankInputs, so
+          // gravity and contact carry the body through the arc just like
+          // on the server.
           predictedState.bodyPitch = tankState.bodyPitch;
           predictedState.bodyRoll = tankState.bodyRoll;
-          const RECONCILE_RATE = 0.15;
-          predictedState.position.x += (tankState.position.x - predictedState.position.x) * RECONCILE_RATE;
-          predictedState.position.z += (tankState.position.z - predictedState.position.z) * RECONCILE_RATE;
-          predictedState.position.y = getTerrainHeight(predictedState.position.x, predictedState.position.z);
-          let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
-          while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-          while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-          predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+          const serverSeq = tankState.lastAppliedSeq;
+          if (
+            clientPhysics &&
+            localTankRegistered &&
+            serverSeq > lastReconciledSeq &&
+            serverSeq <= clientSeq
+          ) {
+            // Anchor the Rapier body onto the server-authoritative state
+            // at the tick the server reports as last-applied, then step
+            // forward through the buffered inputs we predicted with since
+            // that tick. After the loop the body is at "now" in terms of
+            // inputs the player has already issued — no rubber-band, no
+            // soft lerp, and correct under caves / overhangs because the
+            // replay runs the real KCC against the real TriMesh.
+            clientPhysics.restoreTankState(
+              myId,
+              tankState.position,
+              tankState.bodyRotation,
+              tankState.linVel,
+              tankState.angVel,
+            );
+            for (let s = serverSeq + 1; s <= clientSeq; s++) {
+              const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
+              if (!replayInput || replayInput.seq !== s) break;
+              clientPhysics.setTankInput(myId, replayInput);
+              clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+              clientPhysics.step(CLIENT_PHYSICS_STEP);
+            }
+            clientPhysics.readbackTank(myId, predictedState);
+            lastReconciledSeq = serverSeq;
+          } else if (!clientPhysics) {
+            // Fallback while Rapier WASM is still loading — soft lerp.
+            const dx = tankState.position.x - predictedState.position.x;
+            const dy = tankState.position.y - predictedState.position.y;
+            const dz = tankState.position.z - predictedState.position.z;
+            const RECONCILE_RATE = 0.15;
+            predictedState.position.x += dx * RECONCILE_RATE;
+            predictedState.position.y += dy * RECONCILE_RATE;
+            predictedState.position.z += dz * RECONCILE_RATE;
+            let rotDiff = tankState.bodyRotation - predictedState.bodyRotation;
+            while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+            while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+            predictedState.bodyRotation += rotDiff * RECONCILE_RATE;
+          }
         }
       }
     } else {
@@ -453,6 +589,10 @@ socket.on('shot_resolved', (result: ShotResult) => {
         // Sample debris origins BEFORE carving (they must still be solid).
         debris?.spawnFromCarve(grid, step.endPoint, step.blastRadius);
         grid.carveSphere(step.endPoint, step.blastRadius);
+        // Mirror the carve into the client Rapier world so the local KCC
+        // collider matches the server and the freshly opened crater is
+        // present under the tank on the very next prediction tick.
+        clientPhysics?.invalidateSphere(step.endPoint, step.blastRadius);
         // Scorch extends past the blast radius so the burn ring is visible
         // well outside the crater. Strength=1 + wider radius means even a
         // single hit saturates enough voxels for the 8-corner average at
@@ -464,36 +604,11 @@ socket.on('shot_resolved', (result: ShotResult) => {
         // once per frame before render, even if multiple missiles land this frame.
         sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
         onMinimapCarve(grid, step.endPoint, step.blastRadius);
-        // Preemptively flip the local tank to airborne if the carve just
-        // opened a crater under it. Without this, stepTankPhysics on the
-        // next frame would snap Y to the new voxel surface before the
-        // server's airborne state_update arrives (~50ms later), producing
-        // a visible "teleport into crater" glitch. Server will reconcile
-        // on the next state_update regardless.
-        if (predictedState && predictedState.alive && !predictedState.airborne) {
-          // Physics check: if the carve dropped the terrain below the tank
-          // far enough that it's physically above the ground now, flip
-          // airborne with the current driving momentum as the initial
-          // linVel. Server will reconcile on the next state_update.
-          const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
-          // Preemptive carve trigger: a carve just landed locally. The
-          // client doesn't track horizSpeed here — use 0 so only the
-          // force-drop path fires (craters under / near the tank).
-          const resolved = resolveGroundedTick(predictedState.position.y, 0, SIM_DT, newTerrainY, 0);
-          if (resolved.airborne) {
-            predictedState.airborne = true;
-            predictedState.position.y = resolved.newY;
-            predictedState.linVel.x = predictedVel.x;
-            predictedState.linVel.y = resolved.newVy;
-            predictedState.linVel.z = predictedVel.z;
-            // No artificial angVel — clean fall keeps the body upright.
-            // Server's next state_update will reconcile if a blast also
-            // applied a real torque (via applyResolvedDamage).
-            predictedState.angVel.x = 0;
-            predictedState.angVel.y = 0;
-            predictedState.angVel.z = 0;
-          }
-        }
+        // No preemptive airborne flip: the client Rapier KCC runs every
+        // animate frame against the just-invalidated colliders, so a
+        // crater opening under the tank shows up as "not grounded" on
+        // the very next prediction tick (~16 ms). Server reconciles via
+        // the standard state_update path.
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
@@ -591,7 +706,6 @@ socket.on('game_over', ({ winnerId }) => {
 });
 
 const clock = new THREE.Clock();
-let prevInput = { forward: false, backward: false, left: false, right: false };
 
 function getMapBounds(): { w: number; h: number } {
   if (!voxelGrid) return { w: 64, h: 64 };
@@ -666,36 +780,105 @@ function animate(): void {
   if (myTankMesh && predictedState && predictedState.alive) {
     const selectedWeapon = getSelectedWeapon();
 
-    const input = getMovementInput();
-    if (
-      input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
-      input.left !== prevInput.left || input.right !== prevInput.right
-    ) {
-      socket.emit('movement_input', input);
-      prevInput = { ...input };
-    }
-
+    const rawInput = getMovementInput();
     const { w: mapW, h: mapH } = getMapBounds();
-    if (predictedState.airborne) {
-      // Locally predict the ragdoll with the same integrator the server
-      // runs, so the fall is smooth between 20 Hz state_updates instead
-      // of snapping every broadcast. State_update snaps position + vel
-      // back onto the authoritative path, so any drift is corrected
-      // within 50 ms.
-      stepAirborneTank(predictedState, dt, getTerrainHeight, LOCAL_HULL_RADIUS);
+    const localState = predictedState;
+    // Y-aware sampler used only by the fallback path (while Rapier WASM
+    // is still loading) and by the airborne ragdoll integrator.
+    const sampleGround = (x: number, z: number): number =>
+      getGroundBelow(x, localState.position.y + LOCAL_HULL_RADIUS, z);
+
+    if (clientPhysics && localTankRegistered) {
+      // Unified Rapier prediction: same fixed dt, same dynamic body,
+      // same drive pipeline as the server. Drive is gated on grounded
+      // inside applyTankInputs, so mid-air (cliff drive, blast toss)
+      // integrates gravity + residual momentum without a separate
+      // ragdoll code path. Each step advances clientSeq, buffers its
+      // input for replay, and ships the input with seq to the server.
+      physicsAccumulator = Math.min(
+        physicsAccumulator + dt,
+        CLIENT_PHYSICS_STEP * MAX_PHYSICS_STEPS_PER_FRAME,
+      );
+      while (physicsAccumulator >= CLIENT_PHYSICS_STEP) {
+        clientSeq += 1;
+        const tickInput: MovementInput = { ...rawInput, seq: clientSeq };
+        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickInput;
+        socket.emit('movement_input', tickInput);
+        clientPhysics.setTankInput(myId, tickInput);
+        clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+        clientPhysics.step(CLIENT_PHYSICS_STEP);
+        physicsAccumulator -= CLIENT_PHYSICS_STEP;
+      }
+      clientPhysics.readbackTank(myId, predictedState);
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
-      stepTankPhysics(predictedState, input, predictedVel, dt, getTerrainHeight, mapW, mapH, voxelGrid?.cellSize ?? 1);
+      // Fallback: shared pure-function physics while Rapier WASM is still
+      // loading. A few hundred ms of degraded prediction at match start.
+      // seq: 0 here is fine — no reconciliation happens in this window.
+      const fallbackInput: MovementInput = { ...rawInput, seq: 0 };
+      stepTankPhysics(predictedState, fallbackInput, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
+      socket.emit('movement_input', fallbackInput);
     }
 
-    updateLocalTankMesh(predictedState);
+    // Render-side error smoother: `predictedState` is the authoritative
+    // Rapier readback used for server rewind-and-replay; the mesh /
+    // camera / aim / tread follow a separate smoothed copy so that the
+    // tiny per-tick corrections from reconciliation are absorbed over
+    // a few frames instead of showing up as a one-frame jump. Prime on
+    // first frame or after a large teleport (respawn, map reset).
+    const predX = predictedState.position.x;
+    const predY = predictedState.position.y;
+    const predZ = predictedState.position.z;
+    const predYaw = predictedState.bodyRotation;
+    const renderDx = predX - renderedPosX;
+    const renderDy = predY - renderedPosY;
+    const renderDz = predZ - renderedPosZ;
+    const renderDist = Math.sqrt(renderDx * renderDx + renderDy * renderDy + renderDz * renderDz);
+    if (!renderSmootherPrimed || renderDist > RENDER_SMOOTH_SNAP_DISTANCE) {
+      renderedPosX = predX;
+      renderedPosY = predY;
+      renderedPosZ = predZ;
+      renderedYaw = predYaw;
+      renderSmootherPrimed = true;
+    } else {
+      // Exponential lerp at a per-60Hz-tick rate; scale by current dt so
+      // the decay speed is frame-rate independent on high-refresh
+      // displays and slow frames alike.
+      const alpha = Math.min(1, RENDER_SMOOTH_RATE_PER_SIM_TICK * 60 * dt);
+      renderedPosX += renderDx * alpha;
+      renderedPosY += renderDy * alpha;
+      renderedPosZ += renderDz * alpha;
+      let yawDiff = predYaw - renderedYaw;
+      while (yawDiff > Math.PI) yawDiff -= 2 * Math.PI;
+      while (yawDiff < -Math.PI) yawDiff += 2 * Math.PI;
+      renderedYaw += yawDiff * alpha;
+    }
+    // Share one object across frames; mutate in place (mesh / aim read
+    // it synchronously, so aliasing with predictedState is safe).
+    if (!viewState) {
+      viewState = { ...predictedState, position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 }, angVel: { x: 0, y: 0, z: 0 } };
+    }
+    viewState.hp = predictedState.hp;
+    viewState.maxHp = predictedState.maxHp;
+    viewState.alive = predictedState.alive;
+    viewState.airborne = predictedState.airborne;
+    viewState.bodyPitch = predictedState.bodyPitch;
+    viewState.bodyRoll = predictedState.bodyRoll;
+    viewState.turretRotation = predictedState.turretRotation;
+    viewState.barrelPitch = predictedState.barrelPitch;
+    viewState.position.x = renderedPosX;
+    viewState.position.y = renderedPosY;
+    viewState.position.z = renderedPosZ;
+    viewState.bodyRotation = renderedYaw;
+
+    updateLocalTankMesh(viewState);
 
     setAimContext(
-      predictedState.position.x,
-      predictedState.position.y,
-      predictedState.position.z,
-      predictedState.bodyRotation,
+      renderedPosX,
+      renderedPosY,
+      renderedPosZ,
+      renderedYaw,
     );
     {
       const enemies: { x: number; z: number }[] = [];

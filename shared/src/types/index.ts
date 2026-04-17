@@ -22,6 +22,12 @@ export interface MovementInput {
   backward: boolean;
   left: boolean;
   right: boolean;
+  /** Monotonic client-side tick counter stamped when the input was applied
+   *  locally. The server echoes the highest seq it has applied back to the
+   *  client via `TankState.lastAppliedSeq`, letting the client rewind to
+   *  that tick and replay its own buffered inputs forward (Gambetta-style
+   *  client-side prediction with server reconciliation). */
+  seq: number;
 }
 
 // ── Tank ──
@@ -44,11 +50,20 @@ export interface TankState {
    *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
    *  yaw reflect the body's actual rotation rather than the terrain tilt. */
   airborne: boolean;
-  /** Linear velocity (world units / second). Only meaningful when `airborne`. */
+  /** Linear velocity (world units / second). Populated every tick from the
+   *  Rapier body so the client can reconstruct the full physics state when
+   *  rewinding + replaying on a state_update. */
   linVel: Vec3;
-  /** Angular velocity around X/Y/Z axes (radians / second). Only meaningful
-   *  when `airborne`. */
+  /** Angular velocity around X/Y/Z axes (radians / second). Only Y is
+   *  non-zero in normal operation (X/Z rotations locked on the body); the
+   *  full triple is still broadcast to future-proof the ragdoll path (C5). */
   angVel: Vec3;
+  /** Highest MovementInput.seq from this player that the server has
+   *  applied. Clients compare against their buffered states at this seq
+   *  to decide whether rewind-and-replay is needed, and use their
+   *  inputBuffer to replay from (lastAppliedSeq + 1) forward to the
+   *  current client seq. */
+  lastAppliedSeq: number;
 }
 
 // ── Weapons ──
