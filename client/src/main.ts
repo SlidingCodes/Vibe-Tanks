@@ -280,6 +280,22 @@ let lastReconciledSeq = 0;
  *  from the server-anchored state to the current present. */
 const INPUT_BUFFER_SIZE = 128;
 const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(null);
+/** Render-side error smoother state. `renderedPos` / `renderedYaw` are
+ *  what the mesh, camera, aim raycast, and tread decal actually follow
+ *  each frame; `predictedState` remains the exact Rapier readback so the
+ *  rewind-and-replay math is unaffected. Every frame we exponentially
+ *  lerp renderedPos toward predictedState.position — small reconciliation
+ *  corrections (server state anchoring + input replay) manifest as a
+ *  gentle catch-up rather than a tick-boundary pop. */
+const RENDER_SMOOTH_RATE_PER_SIM_TICK = 0.25;
+const RENDER_SMOOTH_SNAP_DISTANCE = 3.0;
+let renderedPosX = 0, renderedPosY = 0, renderedPosZ = 0;
+let renderedYaw = 0;
+let renderSmootherPrimed = false;
+/** Scratch TankState passed to the mesh / aim pipeline each frame — same
+ *  object as `predictedState` but with position + bodyRotation overridden
+ *  by the smoothed render values. Avoids a per-frame allocation. */
+let viewState: TankState | null = null;
 let voxelScorch: VoxelScorch | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
@@ -805,13 +821,64 @@ function animate(): void {
       socket.emit('movement_input', fallbackInput);
     }
 
-    updateLocalTankMesh(predictedState);
+    // Render-side error smoother: `predictedState` is the authoritative
+    // Rapier readback used for server rewind-and-replay; the mesh /
+    // camera / aim / tread follow a separate smoothed copy so that the
+    // tiny per-tick corrections from reconciliation are absorbed over
+    // a few frames instead of showing up as a one-frame jump. Prime on
+    // first frame or after a large teleport (respawn, map reset).
+    const predX = predictedState.position.x;
+    const predY = predictedState.position.y;
+    const predZ = predictedState.position.z;
+    const predYaw = predictedState.bodyRotation;
+    const renderDx = predX - renderedPosX;
+    const renderDy = predY - renderedPosY;
+    const renderDz = predZ - renderedPosZ;
+    const renderDist = Math.sqrt(renderDx * renderDx + renderDy * renderDy + renderDz * renderDz);
+    if (!renderSmootherPrimed || renderDist > RENDER_SMOOTH_SNAP_DISTANCE) {
+      renderedPosX = predX;
+      renderedPosY = predY;
+      renderedPosZ = predZ;
+      renderedYaw = predYaw;
+      renderSmootherPrimed = true;
+    } else {
+      // Exponential lerp at a per-60Hz-tick rate; scale by current dt so
+      // the decay speed is frame-rate independent on high-refresh
+      // displays and slow frames alike.
+      const alpha = Math.min(1, RENDER_SMOOTH_RATE_PER_SIM_TICK * 60 * dt);
+      renderedPosX += renderDx * alpha;
+      renderedPosY += renderDy * alpha;
+      renderedPosZ += renderDz * alpha;
+      let yawDiff = predYaw - renderedYaw;
+      while (yawDiff > Math.PI) yawDiff -= 2 * Math.PI;
+      while (yawDiff < -Math.PI) yawDiff += 2 * Math.PI;
+      renderedYaw += yawDiff * alpha;
+    }
+    // Share one object across frames; mutate in place (mesh / aim read
+    // it synchronously, so aliasing with predictedState is safe).
+    if (!viewState) {
+      viewState = { ...predictedState, position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 }, angVel: { x: 0, y: 0, z: 0 } };
+    }
+    viewState.hp = predictedState.hp;
+    viewState.maxHp = predictedState.maxHp;
+    viewState.alive = predictedState.alive;
+    viewState.airborne = predictedState.airborne;
+    viewState.bodyPitch = predictedState.bodyPitch;
+    viewState.bodyRoll = predictedState.bodyRoll;
+    viewState.turretRotation = predictedState.turretRotation;
+    viewState.barrelPitch = predictedState.barrelPitch;
+    viewState.position.x = renderedPosX;
+    viewState.position.y = renderedPosY;
+    viewState.position.z = renderedPosZ;
+    viewState.bodyRotation = renderedYaw;
+
+    updateLocalTankMesh(viewState);
 
     setAimContext(
-      predictedState.position.x,
-      predictedState.position.y,
-      predictedState.position.z,
-      predictedState.bodyRotation,
+      renderedPosX,
+      renderedPosY,
+      renderedPosZ,
+      renderedYaw,
     );
     {
       const enemies: { x: number; z: number }[] = [];
