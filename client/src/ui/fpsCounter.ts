@@ -58,13 +58,24 @@ export function tickFpsCounter(dt: number): void {
   }
 }
 
-/** Feed per-frame horizontal velocity (XZ) of the local tank so the HUD can
- *  show instantaneous speed + a smoothed horizontal acceleration. Accel is
- *  a low-pass of d(speed)/dt to keep the readout from flickering at 60 Hz.
+export interface TankTelemetry {
+  vx: number;
+  vz: number;
+  /** Commanded throttle in [-1, +1]. Positive = forward, negative = reverse. */
+  throttle: number;
+  /** Signed terrain grade along the tank's forward direction, in degrees.
+   *  Positive = pointing uphill (climbing), negative = pointing downhill. */
+  climbDeg: number;
+}
+
+/** Feed per-frame state of the local tank so the HUD can show instantaneous
+ *  speed, a smoothed horizontal acceleration, the commanded throttle, and
+ *  the climb grade along forward. Accel is a low-pass of d(speed)/dt with
+ *  a ~0.1 s time constant to keep the readout from flickering at 60 Hz.
  *  Pass null to clear (e.g. while dead, before prediction is primed). */
-export function reportTankTelemetry(vx: number | null, vz: number | null, dt: number): void {
+export function reportTankTelemetry(telemetry: TankTelemetry | null, dt: number): void {
   if (!el) return;
-  if (vx === null || vz === null || dt <= 0) {
+  if (!telemetry || dt <= 0) {
     lastSpeed = null;
     smoothedAccel = 0;
     if (telemetryLine !== '') {
@@ -73,14 +84,17 @@ export function reportTankTelemetry(vx: number | null, vz: number | null, dt: nu
     }
     return;
   }
-  const speed = Math.hypot(vx, vz);
+  const speed = Math.hypot(telemetry.vx, telemetry.vz);
   if (lastSpeed !== null) {
     const instAccel = (speed - lastSpeed) / dt;
-    // EMA ~0.1 s time constant at 60 Hz keeps the number legible.
     const alpha = Math.min(1, dt / 0.1);
     smoothedAccel += (instAccel - smoothedAccel) * alpha;
   }
   lastSpeed = speed;
-  telemetryLine = `v ${speed.toFixed(2)} m/s  a ${smoothedAccel >= 0 ? '+' : ''}${smoothedAccel.toFixed(2)} m/s²`;
+  const sign = (n: number): string => (n >= 0 ? '+' : '');
+  telemetryLine =
+    `v ${speed.toFixed(2)} m/s  a ${sign(smoothedAccel)}${smoothedAccel.toFixed(2)} m/s²` +
+    `  thr ${sign(telemetry.throttle)}${telemetry.throttle.toFixed(1)}` +
+    `  climb ${sign(telemetry.climbDeg)}${telemetry.climbDeg.toFixed(0)}°`;
   render();
 }

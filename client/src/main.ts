@@ -765,9 +765,29 @@ function animate(): void {
   const now = clock.getElapsedTime();
   tickFpsCounter(dt);
   if (predictedState && predictedState.alive) {
-    reportTankTelemetry(predictedState.linVel.x, predictedState.linVel.z, dt);
+    const mv = getMovementInput();
+    const throttle = (mv.forward ? 1 : 0) - (mv.backward ? 1 : 0);
+    // Signed climb grade: sample terrain height in front of and behind the
+    // tank along its forward axis, then atan2 the difference. Positive =
+    // nose pointing uphill. Stencil ~2 m so small voxel stair-steps don't
+    // dominate the reading.
+    const climbEps = 2.0;
+    const yaw = predictedState.bodyRotation;
+    const fwdX = Math.sin(yaw);
+    const fwdZ = Math.cos(yaw);
+    const px = predictedState.position.x;
+    const pz = predictedState.position.z;
+    const hF = getTerrainHeight(px + fwdX * climbEps, pz + fwdZ * climbEps);
+    const hB = getTerrainHeight(px - fwdX * climbEps, pz - fwdZ * climbEps);
+    const climbDeg = (Math.atan2(hF - hB, 2 * climbEps) * 180) / Math.PI;
+    reportTankTelemetry({
+      vx: predictedState.linVel.x,
+      vz: predictedState.linVel.z,
+      throttle,
+      climbDeg,
+    }, dt);
   } else {
-    reportTankTelemetry(null, null, dt);
+    reportTankTelemetry(null, dt);
   }
 
   const requestedWeaponSlot = consumeWeaponSlot();
