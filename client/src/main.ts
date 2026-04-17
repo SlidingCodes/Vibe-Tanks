@@ -266,6 +266,21 @@ let localTankRegistered = false;
 /** Residual time left over from the last render frame, to be consumed by
  *  the next fixed-dt physics step. */
 let physicsAccumulator = 0;
+/** Monotonic client tick counter. Incremented once per fixed-dt Rapier
+ *  step. Stamped on every emitted MovementInput so the server can ack
+ *  the latest seq it applied, which in turn drives the client's
+ *  rewind-and-replay reconciliation. */
+let clientSeq = 0;
+/** Highest seq whose ACK from the server we've already reconciled
+ *  against. Prevents redundant replay work when the same state_update
+ *  is processed twice (shouldn't happen under TCP but is cheap to
+ *  guard). */
+let lastReconciledSeq = 0;
+/** 2-second circular buffer of per-tick inputs, indexed by seq % N. The
+ *  replay step in reconciliation reads inputs[seq+1..clientSeq] forward
+ *  from the server-anchored state to the current present. */
+const INPUT_BUFFER_SIZE = 128;
+const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(null);
 let voxelScorch: VoxelScorch | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
@@ -349,6 +364,12 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   } else {
     clientPhysics.setGrid(gridAtSnapshot);
   }
+  // Match reset re-baselines the reconciliation clocks — server's per-tank
+  // lastAppliedSeq also resets to 0 in resetMatch(). Buffer entries from
+  // before the reset are harmless thanks to the seq check in the replay
+  // loop, but we zero clientSeq so the first new inputs start at seq=1.
+  clientSeq = 0;
+  lastReconciledSeq = 0;
   // Re-register the local tank against the fresh world. addTank removes any
   // existing entry first, so this doubles as match-reset respawn.
   if (predictedState && predictedState.alive) {
@@ -421,6 +442,12 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
+          // Re-baseline the reconciliation clocks to match the server's
+          // post-respawn ACK (also 0). Buffer entries from the previous
+          // life are harmless because the circular index's seq check in
+          // the replay loop skips any whose stored seq != requested seq.
+          clientSeq = 0;
+          lastReconciledSeq = 0;
           triggerRespawnAnim(myId);
           if (clientPhysics) {
             clientPhysics.addTank(predictedState);
@@ -443,25 +470,45 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             clientPhysics.setTankPosition(myId, tankState.position);
           }
         } else {
-          // Grounded reconciliation. Tilt comes straight from the server
-          // (voxel-gradient sample; cheap and matches remote tanks). For
-          // position/rotation: if the Rapier mirror has drifted beyond the
-          // snap threshold, teleport the body to the server transform —
-          // otherwise let the next prediction tick converge on its own.
+          // Grounded: rewind-and-replay reconciliation. Tilt comes straight
+          // from the server (voxel-gradient sample; matches remote tanks).
           predictedState.bodyPitch = tankState.bodyPitch;
           predictedState.bodyRoll = tankState.bodyRoll;
-          const dx = tankState.position.x - predictedState.position.x;
-          const dy = tankState.position.y - predictedState.position.y;
-          const dz = tankState.position.z - predictedState.position.z;
-          const drift = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (clientPhysics && localTankRegistered && drift > RECONCILE_SNAP_DISTANCE) {
-            clientPhysics.resetTank(myId, tankState.position, tankState.bodyRotation);
-            predictedState.position.x = tankState.position.x;
-            predictedState.position.y = tankState.position.y;
-            predictedState.position.z = tankState.position.z;
-            predictedState.bodyRotation = tankState.bodyRotation;
+          const serverSeq = tankState.lastAppliedSeq;
+          if (
+            clientPhysics &&
+            localTankRegistered &&
+            serverSeq > lastReconciledSeq &&
+            serverSeq <= clientSeq
+          ) {
+            // Anchor the Rapier body onto the server-authoritative state
+            // at the tick the server reports as last-applied, then step
+            // forward through the buffered inputs we predicted with since
+            // that tick. After the loop the body is at "now" in terms of
+            // inputs the player has already issued — no rubber-band, no
+            // soft lerp, and correct under caves / overhangs because the
+            // replay runs the real KCC against the real TriMesh.
+            clientPhysics.restoreTankState(
+              myId,
+              tankState.position,
+              tankState.bodyRotation,
+              tankState.linVel,
+              tankState.angVel,
+            );
+            for (let s = serverSeq + 1; s <= clientSeq; s++) {
+              const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
+              if (!replayInput || replayInput.seq !== s) break;
+              clientPhysics.setTankInput(myId, replayInput);
+              clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+              clientPhysics.step(CLIENT_PHYSICS_STEP);
+            }
+            clientPhysics.readbackTank(myId, predictedState);
+            lastReconciledSeq = serverSeq;
           } else if (!clientPhysics) {
             // Fallback while Rapier WASM is still loading — soft lerp.
+            const dx = tankState.position.x - predictedState.position.x;
+            const dy = tankState.position.y - predictedState.position.y;
+            const dz = tankState.position.z - predictedState.position.z;
             const RECONCILE_RATE = 0.15;
             predictedState.position.x += dx * RECONCILE_RATE;
             predictedState.position.y += dy * RECONCILE_RATE;
@@ -656,7 +703,6 @@ socket.on('game_over', ({ winnerId }) => {
 });
 
 const clock = new THREE.Clock();
-let prevInput = { forward: false, backward: false, left: false, right: false };
 
 function getMapBounds(): { w: number; h: number } {
   if (!voxelGrid) return { w: 64, h: 64 };
@@ -731,15 +777,7 @@ function animate(): void {
   if (myTankMesh && predictedState && predictedState.alive) {
     const selectedWeapon = getSelectedWeapon();
 
-    const input = getMovementInput();
-    if (
-      input.forward !== prevInput.forward || input.backward !== prevInput.backward ||
-      input.left !== prevInput.left || input.right !== prevInput.right
-    ) {
-      socket.emit('movement_input', input);
-      prevInput = { ...input };
-    }
-
+    const rawInput = getMovementInput();
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -752,27 +790,35 @@ function animate(): void {
       // runs, so the fall is smooth between 20 Hz state_updates instead
       // of snapping every broadcast. State_update snaps position + vel
       // back onto the authoritative path, so any drift is corrected
-      // within 50 ms.
+      // within 50 ms. Inputs are still emitted (tick-stamped) so the
+      // server's input seq stays monotonic across the airborne window.
       stepAirborneTank(predictedState, dt, sampleGround, LOCAL_HULL_RADIUS);
       if (clientPhysics && localTankRegistered) {
         clientPhysics.setTankPosition(myId, predictedState.position);
       }
+      // Emit input once per render frame while airborne; no physics tick
+      // advances locally (server integrator is authoritative), so we
+      // just keep the server aware that we're still here.
+      socket.emit('movement_input', { ...rawInput, seq: clientSeq });
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else if (clientPhysics && localTankRegistered) {
-      // Client Rapier mirror: run the same KCC pipeline the server runs,
-      // on the same TriMesh colliders built from the shared voxel grid,
-      // with the same fixed 60 Hz timestep. Same dt is the main thing
-      // keeping the two instances converged — with variable dt per frame
-      // the accumulated KCC response diverges enough per second to trip
-      // reconciliation snaps on a 20 Hz cadence, which the player feels
-      // as periodic stutter.
-      clientPhysics.setTankInput(myId, input);
+      // Grounded prediction: step the client Rapier mirror with the same
+      // fixed dt as the server. Each step advances clientSeq, buffers
+      // its input for replay, and ships the input with seq to the server
+      // so the ACK path can line up. Rewind-and-replay reconciliation
+      // happens in the state_update handler, anchored on the highest
+      // seq the server reports as applied.
       physicsAccumulator = Math.min(
         physicsAccumulator + dt,
         CLIENT_PHYSICS_STEP * MAX_PHYSICS_STEPS_PER_FRAME,
       );
       while (physicsAccumulator >= CLIENT_PHYSICS_STEP) {
+        clientSeq += 1;
+        const tickInput: MovementInput = { ...rawInput, seq: clientSeq };
+        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickInput;
+        socket.emit('movement_input', tickInput);
+        clientPhysics.setTankInput(myId, tickInput);
         clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
         clientPhysics.step(CLIENT_PHYSICS_STEP);
         physicsAccumulator -= CLIENT_PHYSICS_STEP;
@@ -783,7 +829,10 @@ function animate(): void {
     } else {
       // Fallback: shared pure-function physics while Rapier WASM is still
       // loading. A few hundred ms of degraded prediction at match start.
-      stepTankPhysics(predictedState, input, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
+      // seq: 0 here is fine — no reconciliation happens in this window.
+      const fallbackInput: MovementInput = { ...rawInput, seq: 0 };
+      stepTankPhysics(predictedState, fallbackInput, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
+      socket.emit('movement_input', fallbackInput);
     }
 
     updateLocalTankMesh(predictedState);

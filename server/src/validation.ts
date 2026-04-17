@@ -26,6 +26,9 @@ export const MovementInputSchema = z.object({
   backward: z.boolean(),
   left: z.boolean(),
   right: z.boolean(),
+  // Monotonic client tick; used by the server to ack the latest applied
+  // input so the client can rewind-and-replay reconciliation. Finite + >=0.
+  seq: finiteNumber.nonnegative(),
 });
 
 export const AimUpdateSchema = z.object({

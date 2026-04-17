@@ -55,7 +55,7 @@ interface TankEntry {
   grounded: boolean;
 }
 
-const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false };
+const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
 
 let rapierReady: Promise<void> | null = null;
 
@@ -249,6 +249,21 @@ export class RapierVoxelWorld {
     entry.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
+  /** Restore the full physics state for a tank in one shot: pos, yaw,
+   *  linvel, angvel. Used by the client's rewind-and-replay reconciliation
+   *  to anchor the dynamic body onto the server-broadcast truth at tick
+   *  `lastAppliedSeq` before replaying buffered post-ack inputs forward.
+   *  Does NOT touch the stored input — the caller replays per-tick with
+   *  its own input buffer. */
+  restoreTankState(id: PlayerId, pos: Vec3, yaw: number, linVel: Vec3, angVel: Vec3): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.body.setTranslation({ x: pos.x, y: pos.y + HULL_RADIUS, z: pos.z }, true);
+    entry.body.setRotation(quatFromYaw(yaw), true);
+    entry.body.setLinvel({ x: linVel.x, y: linVel.y, z: linVel.z }, true);
+    entry.body.setAngvel({ x: angVel.x, y: angVel.y, z: angVel.z }, true);
+  }
+
   /** Called when the shared airborne integrator hands the tank back to
    *  the grounded driving pipeline. Yaw on dynamic bodies is owned by
    *  Rapier; re-apply the caller's authoritative yaw and zero angvel so
@@ -329,12 +344,17 @@ export class RapierVoxelWorld {
     return this.tanks.get(id)?.grounded ?? false;
   }
 
-  /** Copy Rapier position (X, Y, Z) + yaw back onto the TankState. Y is
-   *  the tank's "feet" Y — ball bottom = body centre minus the hull
-   *  radius — matching the TankState convention used for tread painting,
-   *  track history, and the voxel-sampled tilt stencil. Tilt is NOT set
-   *  here — Room fills pitch/roll from the voxel gradient after readback
-   *  (the Rapier body's X/Z rotations are locked at zero). */
+  /** Copy Rapier position (X, Y, Z) + yaw + velocities back onto the
+   *  TankState. Y is the tank's "feet" Y — ball bottom = body centre
+   *  minus the hull radius — matching the TankState convention used for
+   *  tread painting, track history, and the voxel-sampled tilt stencil.
+   *  Tilt is NOT set here — Room fills pitch/roll from the voxel gradient
+   *  after readback (the Rapier body's X/Z rotations are locked at zero).
+   *
+   *  linVel/angVel carry the full physics velocity every tick (not just
+   *  airborne). The client uses them to restore the Rapier body to the
+   *  server-authoritative state before replaying buffered inputs during
+   *  rewind-and-replay reconciliation. */
   readbackTank(id: PlayerId, tank: TankState): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
@@ -343,6 +363,14 @@ export class RapierVoxelWorld {
     tank.position.y = pos.y - HULL_RADIUS;
     tank.position.z = pos.z;
     tank.bodyRotation = yawFromQuat(entry.body.rotation());
+    const lin = entry.body.linvel();
+    tank.linVel.x = lin.x;
+    tank.linVel.y = lin.y;
+    tank.linVel.z = lin.z;
+    const ang = entry.body.angvel();
+    tank.angVel.x = ang.x;
+    tank.angVel.y = ang.y;
+    tank.angVel.z = ang.z;
   }
 
   dispose(): void {

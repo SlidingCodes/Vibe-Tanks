@@ -235,12 +235,14 @@ export class Room {
       tank.airborne = false;
       tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
+      tank.lastAppliedSeq = 0;
       const player = this.players.get(pid);
       if (player) {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.lastGroundedPos = null;
+        player.input.seq = 0;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -257,7 +259,7 @@ export class Room {
 
     this.players.set(playerId, {
       socket,
-      input: { forward: false, backward: false, left: false, right: false },
+      input: { forward: false, backward: false, left: false, right: false, seq: 0 },
       lastFireTime: 0,
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
@@ -344,6 +346,7 @@ export class Room {
       linVel: { x: 0, y: 0, z: 0 },
       angVel: { x: 0, y: 0, z: 0 },
       color: safeColor,
+      lastAppliedSeq: 0,
     };
     this.tanks.set(playerId, tank);
     this.physics.addTank(tank);
@@ -761,6 +764,11 @@ export class Room {
     tank.airborne = false;
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
+    // Reset the ack so the client re-baselines its rewind-and-replay
+    // anchor to the respawn transform. Input seq also resets on the
+    // client side when the justRespawned branch fires.
+    tank.lastAppliedSeq = 0;
+    player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     player.lastGroundedPos = null;
     this.physics.resetTank(playerId, tank.position, 0);
@@ -805,7 +813,7 @@ export class Room {
     const cellSize = this.voxels.cellSize;
     const mapW = this.voxels.sizeX * cellSize;
     const mapH = this.voxels.sizeZ * cellSize;
-    const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false };
+    const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
@@ -826,6 +834,13 @@ export class Room {
       }
 
       this.physics.readbackTank(pid, tank);
+      // Stamp the applied input seq so clients can do rewind-and-replay
+      // reconciliation. The input we just applied was set in the
+      // `setTankInput` loop above; for grounded alive tanks we use the
+      // player's most recent input, so its seq is the one the physics
+      // tick consumed.
+      const playerForSeq = this.players.get(pid);
+      if (playerForSeq) tank.lastAppliedSeq = playerForSeq.input.seq;
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
       const borderPadding = 12.0;
