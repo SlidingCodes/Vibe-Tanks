@@ -606,6 +606,14 @@ function paintLiveTreadTracks(): void {
   if (!trackDecal) return;
   for (const [pid, tm] of getAllTankMeshes()) {
     if (!tm.state.alive) continue;
+    // Airborne tanks aren't touching the ground — no tread print. Also
+    // drop the baseline so the first post-landing paint doesn't draw a
+    // long straight line connecting the pre-takeoff position to the
+    // landing spot.
+    if (tm.state.airborne) {
+      lastTreadPosByPlayer.delete(pid);
+      continue;
+    }
     const px = tm.group.position.x;
     const pz = tm.group.position.z;
     const yaw = tm.group.rotation.y;
