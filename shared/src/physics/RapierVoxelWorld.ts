@@ -351,21 +351,21 @@ export class RapierVoxelWorld {
         // Horizontal commanded direction from yaw + move sign.
         const hx = fwdX * moveDir;
         const hz = fwdZ * moveDir;
-        // Align thrust with the terrain tangent plane. Tracks push the
-        // tank along the slope surface, not horizontally — without this,
-        // a forward impulse against an upslope is mostly absorbed by the
-        // contact normal and the tank stalls even on mild inclines.
+        // Align thrust with the terrain tangent plane sampled at the
+        // tank centre. Tracks push along the slope surface, not
+        // horizontally — this projection is what lets built-up throttle
+        // turn into real climbing motion on slopes. On flat ground the
+        // normal is (0,1,0) and the math reduces to the old horizontal
+        // drive.
         //
-        // CRITICAL: sample the normal *in front of* the tank, at the
-        // approximate contact point between the ball and the terrain in
-        // the driving direction (pos + hx/hz · HULL_RADIUS). Sampling at
-        // the tank centre reads the slope under the ball's feet — a tank
-        // sitting on the flat floor of a crater pressed into its rim
-        // would read n≈(0,1,0) and spin its impulse horizontally into
-        // the wall. The front-probe reads the rim's slope, which is
-        // what we're actually pushing into.
-        const probe = HULL_RADIUS;
-        const n = this.grid.getSurfaceNormal(pos.x + hx * probe, pos.z + hz * probe);
+        // Why centre-probe and not front-probe: sampling ahead of the
+        // tank reads the terrain on the far side of a ridge when cresting
+        // a hill, which tilts the projected thrust downward into the
+        // descending face and pins the hull to the ground. Centre-probe
+        // is less aggressive at climbing deep crater rims but doesn't
+        // regress on ridge crossings — a full fix needs Rapier's real
+        // contact manifold normal, not a heightmap approximation.
+        const n = this.grid.getSurfaceNormal(pos.x, pos.z);
         const dot = hx * n.x + hz * n.z; // hy is 0, so no n.y term
         let tx = hx - dot * n.x;
         const ty = -dot * n.y;
