@@ -4,9 +4,13 @@ import {
   AIRBORNE_LINEAR_DRAG,
   AIRBORNE_ANGULAR_DRAG,
   AIRBORNE_CONTACT_DISTANCE,
-  AIRBORNE_EXIT_SPEED,
-  AIRBORNE_EXIT_VERTICAL,
   AIRBORNE_GROUND_EPSILON,
+  AIRBORNE_GROUND_LINEAR_FRICTION,
+  AIRBORNE_GROUND_ANGULAR_FRICTION,
+  AIRBORNE_GROUND_RIGHTING_RATE,
+  AIRBORNE_UPRIGHT_ANGLE,
+  AIRBORNE_SETTLED_ANG_SPEED,
+  AIRBORNE_SETTLED_LIN_SPEED,
 } from './constants';
 
 export type AirborneHeightSampler = (x: number, z: number) => number;
@@ -57,8 +61,9 @@ export function resolveGroundedTick(
 }
 
 export interface AirborneStepResult {
-  /** True when the step ended with the body touching terrain at low speed —
-   *  the caller should count it toward the exit streak (AIRBORNE_EXIT_TICKS). */
+  /** True when the body has reached a physical rest condition — touching
+   *  terrain, upright, and moving slowly. The caller exits airborne mode
+   *  immediately on this signal (no multi-tick timer). */
   settledOnGround: boolean;
 }
 
@@ -67,22 +72,24 @@ export interface AirborneStepResult {
  * `tank.linVel`, `tank.angVel`, and the free Euler rotation components
  * (`bodyRotation`, `bodyPitch`, `bodyRoll`) directly.
  *
- * The integration is deliberately simple (semi-implicit Euler + exponential
- * drag) so it stays stable at any dt, matches between client prediction and
- * server authority, and stays free of external dependencies (pure function
- * over TankState + a height sampler).
+ * Two regimes:
+ *   - free flight (no ground contact): gravity + very light aerodynamic
+ *     drag. The tank carries its jump / blast momentum visibly.
+ *   - ground contact (feet at or very close to terrain): strong friction
+ *     on linVel.xz and angVel, plus a pitch/roll righting torque toward
+ *     upright. This is the physical-feeling recovery — a tank that lands
+ *     on its wheels stops quickly; a tank that lands on its side skids
+ *     briefly, rolls upright, then rests.
  *
- * Terrain interaction: a single downward probe tests whether the hull is
- * below the sampled voxel surface at (x, z). If so we snap Y back up and
- * zero the downward component of linVel — a crude floor contact that keeps
- * the tank from tunneling through terrain on a single long timestep without
- * any restitution.
+ * settledOnGround fires when the body is in contact, upright, and slow
+ * enough that resuming grounded driving is the natural next state. No
+ * arbitrary "settled for N ticks" timer.
  */
 export function stepAirborneTank(
   tank: TankState,
   dt: number,
   sampleHeight: AirborneHeightSampler,
-  hullRadius: number,
+  _hullRadius: number,
 ): AirborneStepResult {
   if (dt <= 0) return { settledOnGround: false };
 
@@ -92,52 +99,61 @@ export function stepAirborneTank(
   tank.position.y += tank.linVel.y * dt;
   tank.position.z += tank.linVel.z * dt;
 
-  // Exponential drag avoids the "if (v > tiny) v -= drag*dt else v = 0"
-  // deadband and stays stable for large dt.
-  const linDecay = Math.exp(-AIRBORNE_LINEAR_DRAG * dt);
-  tank.linVel.x *= linDecay;
-  // Gravity fights drag on Y — still multiply so terminal velocity is
-  // bounded.
-  tank.linVel.y *= linDecay;
-  tank.linVel.z *= linDecay;
-
-  // Free-axis rotation: treat angVel components as per-axis world-space
-  // rates. Pure YXZ Euler integration like the mesh rotation order, so
-  // visuals stay consistent with grounded pitch/roll derivation.
+  // Integrate rotation. Pure YXZ Euler order matching the mesh so visuals
+  // stay consistent with the grounded pitch/roll.
   tank.bodyRotation += tank.angVel.y * dt;
   tank.bodyPitch    += tank.angVel.x * dt;
   tank.bodyRoll     += tank.angVel.z * dt;
 
-  const angDecay = Math.exp(-AIRBORNE_ANGULAR_DRAG * dt);
-  tank.angVel.x *= angDecay;
-  tank.angVel.y *= angDecay;
-  tank.angVel.z *= angDecay;
-
   // Floor contact: tank.position.y is the "feet" position (same convention
-  // as the grounded alignTankToVoxelSurface path), so the floor is the raw
-  // sampled terrain height. Using +hullRadius here would leave the tank
-  // position 0.8 m above the terrain after landing, causing the grounded
-  // crater check to read a stale gap and re-trigger airborne every tick —
-  // i.e. the tank bounces forever in a freshly carved crater.
+  // as grounded align), so the floor is the raw sampled terrain height.
   const terrainH = sampleHeight(tank.position.x, tank.position.z);
   const floorY = terrainH;
-  let settledOnGround = false;
-  if (tank.position.y <= floorY) {
+  if (tank.position.y < floorY) {
     tank.position.y = floorY;
-    // Kill downward momentum; horizontal component keeps scrubbing via
-    // drag (we deliberately do not add friction here — it happens
-    // implicitly through the linear drag above).
     if (tank.linVel.y < 0) tank.linVel.y = 0;
-    const hspeed = Math.hypot(tank.linVel.x, tank.linVel.z);
-    if (hspeed < AIRBORNE_EXIT_SPEED && Math.abs(tank.linVel.y) < AIRBORNE_EXIT_VERTICAL) {
-      settledOnGround = true;
-    }
-  } else if (tank.position.y - floorY < AIRBORNE_CONTACT_DISTANCE
-    && tank.linVel.y <= 0
-    && Math.hypot(tank.linVel.x, tank.linVel.z) < AIRBORNE_EXIT_SPEED) {
-    // Just above the floor, drifting down slowly — also counts as settled.
-    settledOnGround = true;
   }
+  const inContact = tank.position.y - floorY < AIRBORNE_CONTACT_DISTANCE;
+
+  if (inContact) {
+    // Ground friction — decays horizontal linear velocity and ALL angular
+    // velocity. Replaces the old air-drag-only model that let tanks keep
+    // spinning and sliding on the ground.
+    const linFric = Math.exp(-AIRBORNE_GROUND_LINEAR_FRICTION * dt);
+    tank.linVel.x *= linFric;
+    tank.linVel.z *= linFric;
+    const angFric = Math.exp(-AIRBORNE_GROUND_ANGULAR_FRICTION * dt);
+    tank.angVel.x *= angFric;
+    tank.angVel.y *= angFric;
+    tank.angVel.z *= angFric;
+    // Righting: pitch/roll decay toward 0 so a sideways landing recovers
+    // to upright before the grounded snap takes over the terrain tilt.
+    const rightingAlpha = 1 - Math.exp(-AIRBORNE_GROUND_RIGHTING_RATE * dt);
+    tank.bodyPitch -= tank.bodyPitch * rightingAlpha;
+    tank.bodyRoll  -= tank.bodyRoll  * rightingAlpha;
+  } else {
+    // Free flight — very light aerodynamic drag, keeps orbits stable
+    // without eating into the visible momentum.
+    const linDecay = Math.exp(-AIRBORNE_LINEAR_DRAG * dt);
+    tank.linVel.x *= linDecay;
+    tank.linVel.y *= linDecay;
+    tank.linVel.z *= linDecay;
+    const angDecay = Math.exp(-AIRBORNE_ANGULAR_DRAG * dt);
+    tank.angVel.x *= angDecay;
+    tank.angVel.y *= angDecay;
+    tank.angVel.z *= angDecay;
+  }
+
+  // Settled: in contact, upright, slow. Single-tick exit — no artificial
+  // timer. A clean wheels-down landing returns to grounded instantly; a
+  // tumble lingers until friction + righting have done their work.
+  const angMag = Math.hypot(tank.angVel.x, tank.angVel.y, tank.angVel.z);
+  const linHMag = Math.hypot(tank.linVel.x, tank.linVel.z);
+  const upright = Math.abs(tank.bodyPitch) < AIRBORNE_UPRIGHT_ANGLE
+               && Math.abs(tank.bodyRoll)  < AIRBORNE_UPRIGHT_ANGLE;
+  const settledOnGround = inContact && upright
+    && angMag < AIRBORNE_SETTLED_ANG_SPEED
+    && linHMag < AIRBORNE_SETTLED_LIN_SPEED;
 
   return { settledOnGround };
 }

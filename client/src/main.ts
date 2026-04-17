@@ -48,7 +48,6 @@ import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
-import { AIRBORNE_CARVE_SPIN } from '@shared/constants';
 import { SIM_DT } from '@shared/constants';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
@@ -484,9 +483,12 @@ socket.on('shot_resolved', (result: ShotResult) => {
             predictedState.linVel.x = predictedVel.x;
             predictedState.linVel.y = resolved.newVy;
             predictedState.linVel.z = predictedVel.z;
-            predictedState.angVel.x = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
-            predictedState.angVel.y = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
-            predictedState.angVel.z = (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN;
+            // No artificial angVel — clean fall keeps the body upright.
+            // Server's next state_update will reconcile if a blast also
+            // applied a real torque (via applyResolvedDamage).
+            predictedState.angVel.x = 0;
+            predictedState.angVel.y = 0;
+            predictedState.angVel.z = 0;
           }
         }
       }, carveDelay * 1000);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { stepAirborneTank, blastImpulse, resolveGroundedTick } from '../src/airborne';
 import { TankState, Vec3 } from '../src/types/index';
-import { GRAVITY, AIRBORNE_EXIT_TICKS } from '../src/constants';
+import { GRAVITY } from '../src/constants';
 
 function makeTank(overrides: Partial<TankState> = {}): TankState {
   return {
@@ -59,33 +59,69 @@ describe('stepAirborneTank', () => {
     expect(stepAirborneTank(resting, DT, flat, HULL).settledOnGround).toBe(true);
   });
 
-  it('decays horizontal velocity via linear drag over time', () => {
-    const tank = makeTank({ position: { x: 0, y: 10, z: 0 }, linVel: { x: 5, y: 0, z: 0 } });
+  it('preserves most horizontal velocity in free flight (light air drag)', () => {
+    // Start well above the ground so the tank stays in free flight for the
+    // whole second. AIRBORNE_LINEAR_DRAG is 0.1 → ~9.5% decay in 1 s.
+    const tank = makeTank({ position: { x: 0, y: 50, z: 0 }, linVel: { x: 5, y: 0, z: 0 } });
     const initial = tank.linVel.x;
     for (let i = 0; i < 60; i++) stepAirborneTank(tank, DT, flat, HULL);
-    expect(tank.linVel.x).toBeLessThan(initial * 0.9);
-    expect(tank.linVel.x).toBeGreaterThan(0); // not overshot to negative
+    expect(tank.linVel.x).toBeGreaterThan(initial * 0.85); // only light drag
+    expect(tank.linVel.x).toBeLessThan(initial);           // but not zero drag
   });
 
-  it('spins body rotations by angVel and decays them', () => {
-    const tank = makeTank({ position: { x: 0, y: 10, z: 0 }, angVel: { x: 2, y: 1, z: -1 } });
+  it('spins body rotations by angVel and decays them in free flight', () => {
+    const tank = makeTank({ position: { x: 0, y: 50, z: 0 }, angVel: { x: 2, y: 1, z: -1 } });
     for (let i = 0; i < 30; i++) stepAirborneTank(tank, DT, flat, HULL);
     expect(tank.bodyPitch).not.toBe(0);
     expect(tank.bodyRotation).not.toBe(0);
     expect(tank.bodyRoll).not.toBe(0);
-    // Drag eats into every component.
+    // Light air drag still eats into every component, just slowly.
     expect(Math.abs(tank.angVel.x)).toBeLessThan(2);
     expect(Math.abs(tank.angVel.z)).toBeLessThan(1);
   });
 
-  it('AIRBORNE_EXIT_TICKS guards against single-frame false settles', () => {
-    // Twenty grazing steps all count as settled → caller accumulates > threshold.
-    const tank = makeTank({ position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 } });
-    let streak = 0;
-    for (let i = 0; i < 20; i++) {
-      if (stepAirborneTank(tank, DT, flat, HULL).settledOnGround) streak++;
-    }
-    expect(streak).toBeGreaterThanOrEqual(AIRBORNE_EXIT_TICKS);
+  it('ground friction rapidly stops a landed, wheels-down tank', () => {
+    // Tank lands upright with residual horizontal motion + small spin.
+    // Friction should flush the velocities within a few ticks.
+    const tank = makeTank({
+      position: { x: 0, y: 0, z: 0 },
+      linVel: { x: 3, y: 0, z: 0 },
+      angVel: { x: 0.3, y: 0.4, z: 0.2 },
+    });
+    for (let i = 0; i < 30; i++) stepAirborneTank(tank, DT, flat, HULL);
+    // ~0.5 s of strong contact friction (coef 8.0 → exp(-4)=1.8%) → near-zero.
+    expect(Math.abs(tank.linVel.x)).toBeLessThan(0.2);
+    expect(Math.abs(tank.angVel.x)).toBeLessThan(0.02);
+    expect(Math.abs(tank.angVel.y)).toBeLessThan(0.02);
+  });
+
+  it('rights the body toward upright while in ground contact', () => {
+    const tank = makeTank({
+      position: { x: 0, y: 0, z: 0 },
+      bodyPitch: 0.8,
+      bodyRoll: -0.6,
+    });
+    for (let i = 0; i < 60; i++) stepAirborneTank(tank, DT, flat, HULL);
+    // After ~1 s at rate 6 → exp(-6)=0.25% of original tilt remains.
+    expect(Math.abs(tank.bodyPitch)).toBeLessThan(0.05);
+    expect(Math.abs(tank.bodyRoll)).toBeLessThan(0.05);
+  });
+
+  it('reports settled immediately when on-ground + upright + slow', () => {
+    const tank = makeTank({
+      position: { x: 0, y: 0, z: 0 },
+      linVel: { x: 0, y: 0, z: 0 },
+      angVel: { x: 0, y: 0, z: 0 },
+    });
+    expect(stepAirborneTank(tank, DT, flat, HULL).settledOnGround).toBe(true);
+  });
+
+  it('does NOT report settled while tilted on the ground', () => {
+    const tank = makeTank({
+      position: { x: 0, y: 0, z: 0 },
+      bodyPitch: 1.0, // > AIRBORNE_UPRIGHT_ANGLE
+    });
+    expect(stepAirborneTank(tank, DT, flat, HULL).settledOnGround).toBe(false);
   });
 });
 

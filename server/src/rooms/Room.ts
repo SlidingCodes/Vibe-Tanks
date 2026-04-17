@@ -24,21 +24,8 @@ import {
   TICK_RATE,
   SIM_TICK_RATE,
   AIRBORNE_ENTRY_SPEED,
-  AIRBORNE_EXIT_TICKS,
-  AIRBORNE_CARVE_SPIN,
 } from '@shared/constants';
 import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
-
-/** Random angular velocity seed so the tank ragdolls visually instead of
- *  staying bolt-upright while airborne (the physics trigger itself doesn't
- *  generate spin — it only computes linear velocities). */
-function carveSpinSeed(): Vec3 {
-  return {
-    x: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
-    y: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
-    z: (Math.random() - 0.5) * 2 * AIRBORNE_CARVE_SPIN,
-  };
-}
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -83,6 +70,11 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
+/** Reused zero Vec3 for airborne entries that don't want to add linear or
+ *  angular delta (e.g. a clean crater fall — no torque, gravity does it
+ *  all). Avoids allocating a new {x:0,y:0,z:0} per-call. */
+const ZERO_VEC3: Vec3 = { x: 0, y: 0, z: 0 };
+
 interface PlayerState {
   socket: Socket;
   input: MovementInput;
@@ -94,11 +86,6 @@ interface PlayerState {
   /** Last tank XZ at which a track history sample was appended. null before
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
-  /** Number of consecutive airborne ticks where the tank has been settled
-   *  on the ground (low vertical velocity + contact). Reset to 0 on trigger
-   *  or any non-settled step. Once it crosses AIRBORNE_EXIT_TICKS the tank
-   *  returns to grounded mode. */
-  airborneSettledTicks: number;
   /** Full tank position at the end of last grounded tick. Used to derive
    *  an instantaneous vertical velocity (from Y delta) for the implicit
    *  airborne check, and an instantaneous horizontal velocity (from XZ
@@ -241,7 +228,6 @@ export class Room {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
-        player.airborneSettledTicks = 0;
         player.lastGroundedPos = null;
       }
       this.physics.resetTank(pid, tank.position, 0);
@@ -264,7 +250,6 @@ export class Room {
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
-      airborneSettledTicks: 0,
       lastGroundedPos: null,
     });
 
@@ -764,7 +749,6 @@ export class Room {
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
-    player.airborneSettledTicks = 0;
     player.lastGroundedPos = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
@@ -855,14 +839,17 @@ export class Room {
         // driving into this condition, plus the implicit-vertical vY that
         // brought us here (so a fast downhill launches forward + down, a
         // static-tank crater drops straight down). Random angular velocity
-        // makes the ragdoll tumble rather than stand rigid.
+        // No artificial angVel seed — a clean jump or clean crater drop
+        // should leave the body upright. Only real blast impulses (handled
+        // in applyResolvedDamage) generate torque, and they derive it from
+        // the impact direction rather than random noise.
         const horizVx = last ? (tank.position.x - last.x) / dt : 0;
         const horizVz = last ? (tank.position.z - last.z) / dt : 0;
         tank.position.y = resolved.newY;
         this.enterAirborne(
           tank,
           { x: horizVx, y: resolved.newVy, z: horizVz },
-          carveSpinSeed(),
+          ZERO_VEC3,
         );
         continue;
       }
@@ -939,7 +926,6 @@ export class Room {
       tank.airborne = false;
       if (player) {
         player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
-        player.airborneSettledTicks = 0;
       }
       this.io.to(this.id).emit('match_event', {
         kind: 'suicide',
@@ -951,15 +937,11 @@ export class Room {
       return;
     }
 
-    if (player) {
-      if (stepResult.settledOnGround) {
-        player.airborneSettledTicks += 1;
-        if (player.airborneSettledTicks >= AIRBORNE_EXIT_TICKS) {
-          this.exitAirborne(pid, tank);
-        }
-      } else {
-        player.airborneSettledTicks = 0;
-      }
+    // Single-tick exit: stepAirborneTank now reports "settled" only when
+    // the body is physically at rest (in contact, upright, slow), so as
+    // soon as that's true we can resume grounded driving. No timer.
+    if (stepResult.settledOnGround) {
+      this.exitAirborne(pid, tank);
     }
   }
 
@@ -982,7 +964,6 @@ export class Room {
     if (wasGrounded) tank.position.y += 0.05;
     const player = this.players.get(tank.playerId);
     if (player) {
-      player.airborneSettledTicks = 0;
       player.lastGroundedPos = null;
     }
   }
@@ -996,7 +977,6 @@ export class Room {
     this.physics.resumeGrounded(pid, tank.bodyRotation);
     const player = this.players.get(pid);
     if (player) {
-      player.airborneSettledTicks = 0;
       player.lastGroundedPos = null;
     }
   }
@@ -1229,7 +1209,7 @@ export class Room {
         this.enterAirborne(
           tank,
           { x: 0, y: resolved.newVy, z: 0 },
-          carveSpinSeed(),
+          ZERO_VEC3,
         );
       } else {
         this.alignTankToVoxelSurface(tank, cellSize);
