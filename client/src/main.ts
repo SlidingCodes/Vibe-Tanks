@@ -47,7 +47,8 @@ import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, pl
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
-import { shouldEnterAirborne, stepAirborneTank } from '@shared/airborne';
+import { resolveGroundedTick, stepAirborneTank } from '@shared/airborne';
+import { SIM_DT } from '@shared/constants';
 
 // Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
@@ -470,13 +471,24 @@ socket.on('shot_resolved', (result: ShotResult) => {
         // a visible "teleport into crater" glitch. Server will reconcile
         // on the next state_update regardless.
         if (predictedState && predictedState.alive && !predictedState.airborne) {
+          // Physics check: if the carve dropped the terrain below the tank
+          // far enough that it's physically above the ground now, flip
+          // airborne with the current driving momentum as the initial
+          // linVel. Server will reconcile on the next state_update.
           const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
-          const slope = grid.getSlopeMagnitude(predictedState.position.x, predictedState.position.z);
-          if (shouldEnterAirborne(predictedState.position.y, newTerrainY, slope)) {
+          // Preemptive carve trigger: a carve just landed locally. The
+          // client doesn't track horizSpeed here — use 0 so only the
+          // force-drop path fires (craters under / near the tank).
+          const resolved = resolveGroundedTick(predictedState.position.y, 0, SIM_DT, newTerrainY, 0);
+          if (resolved.airborne) {
             predictedState.airborne = true;
+            predictedState.position.y = resolved.newY;
             predictedState.linVel.x = predictedVel.x;
-            predictedState.linVel.y = 0;
+            predictedState.linVel.y = resolved.newVy;
             predictedState.linVel.z = predictedVel.z;
+            // No artificial angVel — clean fall keeps the body upright.
+            // Server's next state_update will reconcile if a blast also
+            // applied a real torque (via applyResolvedDamage).
             predictedState.angVel.x = 0;
             predictedState.angVel.y = 0;
             predictedState.angVel.z = 0;
@@ -597,6 +609,14 @@ function paintLiveTreadTracks(): void {
   if (!trackDecal) return;
   for (const [pid, tm] of getAllTankMeshes()) {
     if (!tm.state.alive) continue;
+    // Airborne tanks aren't touching the ground — no tread print. Also
+    // drop the baseline so the first post-landing paint doesn't draw a
+    // long straight line connecting the pre-takeoff position to the
+    // landing spot.
+    if (tm.state.airborne) {
+      lastTreadPosByPlayer.delete(pid);
+      continue;
+    }
     const px = tm.group.position.x;
     const pz = tm.group.position.z;
     const yaw = tm.group.rotation.y;

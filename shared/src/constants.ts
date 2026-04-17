@@ -38,30 +38,50 @@ export const AIRBORNE_ENTRY_SPEED = 4.0;
  *  and out, not just skittering along the ground. Fraction of the horizontal
  *  impulse magnitude. */
 export const BLAST_UPWARD_BIAS = 0.45;
-/** Aerodynamic drag coefficient applied to linear velocity during airborne
- *  integration (vel *= exp(-DRAG * dt)). Keeps tanks from gliding forever. */
-export const AIRBORNE_LINEAR_DRAG = 0.35;
-/** Same but on angular velocity — stops the ragdoll eventually. */
-export const AIRBORNE_ANGULAR_DRAG = 0.5;
-/** Vertical drop below the current tank Y that counts as "ground fell out
- *  from under me" and flips to airborne on flat-ish ground. On steep terrain
- *  the smaller AIRBORNE_STEEP_DROP_THRESHOLD applies instead. */
-export const AIRBORNE_DROP_THRESHOLD = 0.8;
-/** When the local slope under a tank exceeds AIRBORNE_CLIFF_SLOPE, any gap
- *  past this threshold (much smaller than the flat-ground one) triggers a
- *  ragdoll. Catches cases where a carve exposed a steep wall the tank is
- *  now perched on the edge of. */
-export const AIRBORNE_STEEP_DROP_THRESHOLD = 0.3;
-/** |∇h| (per unit) above which the terrain under the tank is considered
- *  a cliff. Reuses the same "tracks lose grip" intuition from the driving
- *  model (shared/src/physics.ts CLIFF_GRADE = 5.0) but is set a bit lower
- *  to trigger airborne slightly before the driving model gives up. */
-export const AIRBORNE_CLIFF_SLOPE = 2.5;
-/** Contact-below-body distance that counts as "landed" for airborne exit. */
-export const AIRBORNE_CONTACT_DISTANCE = 0.5;
-/** Linear speed below which a grounded tank is considered settled (exit). */
-export const AIRBORNE_EXIT_SPEED = 2.5;
-/** Vertical speed absolute below which landing is "soft" (no bounce). */
-export const AIRBORNE_EXIT_VERTICAL = 2.5;
-/** Consecutive ticks of settled contact required to return to grounded. */
-export const AIRBORNE_EXIT_TICKS = 8;
+/** Aerodynamic drag coefficient applied to linear velocity during FREE
+ *  FLIGHT (no ground contact). Very light — a tank isn't a feather; we
+ *  want blast arcs and jumps to carry their momentum visibly. Just
+ *  enough to prevent pathological accumulation over long flights. */
+export const AIRBORNE_LINEAR_DRAG = 0.1;
+/** Same but on angular velocity during free flight. Light so a blast-
+ *  tumbled tank keeps spinning visibly until it hits the ground. */
+export const AIRBORNE_ANGULAR_DRAG = 0.15;
+/** Strong friction coefficient (per second) applied to horizontal linear
+ *  velocity while the hull is in ground contact. This replaces the old
+ *  "settled-for-N-ticks" timer-driven exit with real scrubbing: a tank
+ *  that lands wheels-down sheds momentum fast via tread friction, a
+ *  tank that lands on its side skids to a stop just as fast. */
+export const AIRBORNE_GROUND_LINEAR_FRICTION = 8.0;
+/** Same, for angular velocity — kills ragdoll spin on ground contact. */
+export const AIRBORNE_GROUND_ANGULAR_FRICTION = 12.0;
+/** Per-second exponential rate at which pitch/roll decay toward 0 while
+ *  the body is in ground contact. Gives a visible "tank rights itself"
+ *  recovery motion before the grounded-exit snap picks up the terrain
+ *  tilt. */
+export const AIRBORNE_GROUND_RIGHTING_RATE = 6.0;
+/** Tolerance when asking "is the tank above the terrain?". A projected
+ *  free-flight Y within this distance of the sampled terrain counts as
+ *  ground contact (prevents float-precision oscillation between grounded
+ *  and airborne at rest). */
+export const AIRBORNE_GROUND_EPSILON = 0.05;
+/** Per-tick vertical drop that forces airborne regardless of the tank's
+ *  horizontal speed — crater opens below, cliff edge, carve directly
+ *  under the hull. Above this threshold there's no way gravity can catch
+ *  the tank in one tick, so a static drop is honoured even at speed 0. */
+export const AIRBORNE_FORCE_DROP = 0.5;
+/** Minimum horizontal tank speed for the small-drop airborne path. A slow
+ *  tank cresting a voxel bump should ride over it (gravity has time to
+ *  pull it back into contact); only above this speed is the kinetic
+ *  energy high enough that the hull physically leaves the ground. Static
+ *  / near-static tanks rely solely on the AIRBORNE_FORCE_DROP path. */
+export const AIRBORNE_MIN_HORIZ_SPEED = 3.0;
+/** Contact-below-body distance that counts as "touching ground" for the
+ *  friction / righting / exit checks. */
+export const AIRBORNE_CONTACT_DISTANCE = 0.15;
+/** |pitch| and |roll| below which the tank is considered upright enough
+ *  to resume grounded driving. ~17°: treads rolling on ground, not side. */
+export const AIRBORNE_UPRIGHT_ANGLE = 0.3;
+/** Angular speed magnitude below which rotation is considered settled. */
+export const AIRBORNE_SETTLED_ANG_SPEED = 0.5;
+/** Horizontal linear speed below which skidding is considered settled. */
+export const AIRBORNE_SETTLED_LIN_SPEED = 2.0;
