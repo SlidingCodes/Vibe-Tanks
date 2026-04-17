@@ -47,6 +47,12 @@ import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, pl
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
+import { stepAirborneTank } from '@shared/airborne';
+import { AIRBORNE_DROP_THRESHOLD } from '@shared/constants';
+
+// Matches HULL_RADIUS on the server — shared between Rapier collider sizing
+// and client-side airborne integration so ground contact lines up.
+const LOCAL_HULL_RADIUS = 0.8;
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
 
@@ -458,6 +464,24 @@ socket.on('shot_resolved', (result: ShotResult) => {
         // once per frame before render, even if multiple missiles land this frame.
         sn?.invalidateSphere(step.endPoint, step.blastRadius * 1.9);
         onMinimapCarve(grid, step.endPoint, step.blastRadius);
+        // Preemptively flip the local tank to airborne if the carve just
+        // opened a crater under it. Without this, stepTankPhysics on the
+        // next frame would snap Y to the new voxel surface before the
+        // server's airborne state_update arrives (~50ms later), producing
+        // a visible "teleport into crater" glitch. Server will reconcile
+        // on the next state_update regardless.
+        if (predictedState && predictedState.alive && !predictedState.airborne) {
+          const newTerrainY = grid.getHeight(predictedState.position.x, predictedState.position.z);
+          if (predictedState.position.y - newTerrainY > AIRBORNE_DROP_THRESHOLD) {
+            predictedState.airborne = true;
+            predictedState.linVel.x = predictedVel.x;
+            predictedState.linVel.y = 0;
+            predictedState.linVel.z = predictedVel.z;
+            predictedState.angVel.x = 0;
+            predictedState.angVel.y = 0;
+            predictedState.angVel.z = 0;
+          }
+        }
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
@@ -633,9 +657,12 @@ function animate(): void {
 
     const { w: mapW, h: mapH } = getMapBounds();
     if (predictedState.airborne) {
-      // Airborne: server owns the trajectory. We still pump predictedVel to
-      // zero so the moment the server returns the tank to grounded the
-      // local integrator doesn't inherit stale driving momentum.
+      // Locally predict the ragdoll with the same integrator the server
+      // runs, so the fall is smooth between 20 Hz state_updates instead
+      // of snapping every broadcast. State_update snaps position + vel
+      // back onto the authoritative path, so any drift is corrected
+      // within 50 ms.
+      stepAirborneTank(predictedState, dt, getTerrainHeight, LOCAL_HULL_RADIUS);
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
