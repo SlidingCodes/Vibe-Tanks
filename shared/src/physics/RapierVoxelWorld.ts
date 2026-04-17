@@ -345,31 +345,60 @@ export class RapierVoxelWorld {
       const fwdX = Math.sin(currentYaw);
       const fwdZ = Math.cos(currentYaw);
 
-      let targetX = 0, targetZ = 0;
-      if (moveDir > 0) {
-        targetX = fwdX * FORWARD_SPEED;
-        targetZ = fwdZ * FORWARD_SPEED;
-      } else if (moveDir < 0) {
-        targetX = -fwdX * BACKWARD_SPEED;
-        targetZ = -fwdZ * BACKWARD_SPEED;
+      let targetX = 0, targetY = 0, targetZ = 0;
+      if (moveDir !== 0) {
+        const speed = moveDir > 0 ? FORWARD_SPEED : BACKWARD_SPEED;
+        // Horizontal commanded direction from yaw + move sign.
+        const hx = fwdX * moveDir;
+        const hz = fwdZ * moveDir;
+        // Align thrust with the terrain tangent plane. Tracks push the
+        // tank along the slope surface, not horizontally — without this,
+        // a forward impulse against an upslope is mostly absorbed by the
+        // contact normal and the tank stalls even on mild inclines. We
+        // sample the voxel normal at the tank's ground-plane XZ, project
+        // the horizontal direction onto the plane perpendicular to n,
+        // then renormalize so the commanded speed is preserved *along
+        // the slope* (not reduced by cos θ). The y component produced by
+        // this projection is what lets built-up throttle turn into
+        // actual climbing — the old synthetic climb-assist made redundant.
+        const n = this.grid.getSurfaceNormal(pos.x, pos.z);
+        const dot = hx * n.x + hz * n.z; // hy is 0, so no n.y term
+        let tx = hx - dot * n.x;
+        const ty = -dot * n.y;
+        let tz = hz - dot * n.z;
+        const tMag = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        // Fallback: thrust exactly into a vertical wall (n horizontal,
+        // tangent magnitude ~ 0). Keep the raw horizontal direction so
+        // the contact solver can absorb it — a vertical wall is not
+        // climbable and the tank should stall, which is correct.
+        if (tMag > 1e-4) {
+          const s = speed / tMag;
+          targetX = tx * s;
+          targetY = ty * s;
+          targetZ = tz * s;
+        } else {
+          targetX = hx * speed;
+          targetZ = hz * speed;
+        }
       }
 
-      // Acceleration-based drive: nudge horizontal linvel toward the
-      // commanded target by at most (rate·dt) per tick. Y is untouched
-      // so gravity and ground-contact response own the vertical axis
-      // exactly as before. Impulses compose with collision response, so
-      // built-up horizontal momentum that meets a slope gets partially
-      // redirected upward by the contact solver — that's the mechanism
-      // that replaces the old synthetic climb-assist.
+      // Acceleration-based drive: nudge linvel toward the commanded target
+      // by at most (rate·dt) per tick. Target is now 3D (has a Y component
+      // when on a slope) so the impulse lifts the ball along the surface
+      // rather than pushing it into the wall. Gravity still integrates
+      // normally — the Y target is the quasi-steady speed along the slope,
+      // not an extra jump. On flat ground n=(0,1,0) → targetY=0 and the
+      // drive reduces exactly to the old horizontal behaviour.
       const currentLinvel = body.linvel();
       const dvx = targetX - currentLinvel.x;
+      const dvy = targetY - currentLinvel.y;
       const dvz = targetZ - currentLinvel.z;
-      const dvMag = Math.hypot(dvx, dvz);
+      const dvMag = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
       if (dvMag > 1e-6) {
         const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
         const scale = Math.min(1, (rate * dt) / dvMag);
         const mass = body.mass();
-        body.applyImpulse({ x: dvx * scale * mass, y: 0, z: dvz * scale * mass }, true);
+        body.applyImpulse({ x: dvx * scale * mass, y: dvy * scale * mass, z: dvz * scale * mass }, true);
       }
     }
   }
