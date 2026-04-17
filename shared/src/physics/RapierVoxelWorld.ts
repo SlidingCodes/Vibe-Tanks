@@ -351,39 +351,31 @@ export class RapierVoxelWorld {
         // Horizontal commanded direction from yaw + move sign.
         const hx = fwdX * moveDir;
         const hz = fwdZ * moveDir;
-        // Align thrust with the terrain tangent plane sampled at the
-        // tank centre. Tracks push along the slope surface, not
-        // horizontally — this projection is what lets built-up throttle
-        // turn into real climbing motion on slopes. On flat ground the
-        // normal is (0,1,0) and the math reduces to the old horizontal
-        // drive.
-        //
-        // Why centre-probe and not front-probe: sampling ahead of the
-        // tank reads the terrain on the far side of a ridge when cresting
-        // a hill, which tilts the projected thrust downward into the
-        // descending face and pins the hull to the ground. Centre-probe
-        // is less aggressive at climbing deep crater rims but doesn't
-        // regress on ridge crossings — a full fix needs Rapier's real
-        // contact manifold normal, not a heightmap approximation.
-        const n = this.grid.getSurfaceNormal(pos.x, pos.z);
-        const dot = hx * n.x + hz * n.z; // hy is 0, so no n.y term
-        let tx = hx - dot * n.x;
-        const ty = -dot * n.y;
-        let tz = hz - dot * n.z;
-        const tMag = Math.sqrt(tx * tx + ty * ty + tz * tz);
-        // Fallback: thrust exactly into a vertical wall (n horizontal,
-        // tangent magnitude ~ 0). Keep the raw horizontal direction so
-        // the contact solver can absorb it — a vertical wall is not
-        // climbable and the tank should stall, which is correct.
-        if (tMag > 1e-4) {
-          const s = speed / tMag;
-          targetX = tx * s;
-          targetY = ty * s;
-          targetZ = tz * s;
-        } else {
-          targetX = hx * speed;
-          targetZ = hz * speed;
-        }
+        // "Uphill-assisted" thrust: measure the terrain rise strictly in
+        // front of the tank (baseline = ground height under the tank
+        // centre, forward sample 1.5 m ahead along the driving direction)
+        // and tilt the thrust vector UP by that angle if positive. The
+        // asymmetry is deliberate:
+        //   - Climbing into a crater rim or hill: forward height rises
+        //     steeply, thrust tilts up to 45–70°, most of the commanded
+        //     speed becomes vertical, contact solver accepts it because
+        //     it's roughly parallel to the slope → tank climbs out.
+        //   - Cresting a ridge: forward sample falls below the tank
+        //     baseline → climb angle is negative → clamp to zero →
+        //     horizontal thrust, gravity handles the descent naturally.
+        // This is cleaner than trying to reconstruct a contact normal
+        // from a heightmap, and unlike the surface-normal projection it
+        // never tilts the thrust downward.
+        const probeAhead = 1.5;
+        const hCenter = this.grid.getHeight(pos.x, pos.z);
+        const hAhead = this.grid.getHeight(pos.x + hx * probeAhead, pos.z + hz * probeAhead);
+        const climbRad = Math.atan2(hAhead - hCenter, probeAhead);
+        const climb = climbRad > 0 ? climbRad : 0;
+        const cc = Math.cos(climb);
+        const ss = Math.sin(climb);
+        targetX = hx * cc * speed;
+        targetY = ss * speed;
+        targetZ = hz * cc * speed;
       }
 
       // Acceleration-based drive: nudge linvel toward the commanded target

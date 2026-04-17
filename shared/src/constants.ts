@@ -20,14 +20,14 @@ export const GRAVITY = -9.81;
 export const TANK_MAX_HP = 100;
 export const TANK_SPEED = 8;             // units per second
 export const TANK_TURN_SPEED = 2.5;      // radians per second
-/** Horizontal acceleration toward commanded target velocity (m/s²).
- *  With TANK_SPEED = 8 this reaches top speed in ~0.67 s from rest — tanks
- *  feel weighty, not teleport-fast. Applied as an impulse each tick so
- *  the acceleration behaves like a real engine force: contact with a slope
- *  or wall redirects the built-up momentum through Rapier's solver, which
- *  is what lets the tank climb inclines by pushing into them over time
- *  instead of needing a synthetic climb-assist. */
-export const TANK_ACCEL = 12;
+/** Acceleration toward commanded target velocity (m/s²). With TANK_SPEED
+ *  = 8 the tank reaches top speed in ~0.33 s from rest — snappy arcade
+ *  feel. Set high so that even on steep slopes, where the contact solver
+ *  absorbs a chunk of each tick's impulse, enough force gets through to
+ *  maintain forward motion. Lower values led to "tank stuck on 37° rim"
+ *  because the per-tick impulse budget was eaten by contact and velocity
+ *  never built up. */
+export const TANK_ACCEL = 24;
 /** Deceleration toward zero when no throttle is held (m/s²). Acts as
  *  rolling resistance — the tank coasts briefly after releasing the stick
  *  instead of stopping instantly, but slows to idle in well under a
