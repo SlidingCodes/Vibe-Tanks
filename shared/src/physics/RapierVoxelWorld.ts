@@ -36,6 +36,9 @@ interface TankEntry {
   input: MovementInput;
   yaw: number;
   verticalVel: number;
+  /** Cached `kcc.computedGrounded()` from the last applyTankInputs pass.
+   *  Read once per sim tick by the caller to decide airborne transitions. */
+  grounded: boolean;
 }
 
 const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false };
@@ -184,6 +187,7 @@ export class RapierVoxelWorld {
       input: { ...ZERO_INPUT },
       yaw: tank.bodyRotation,
       verticalVel: 0,
+      grounded: true,
     });
   }
 
@@ -293,22 +297,39 @@ export class RapierVoxelWorld {
       });
       body.setNextKinematicRotation(quatFromYaw(entry.yaw));
 
-      // Gravity was clamped by terrain → grounded → stop accumulating.
-      if (moveY < 0 && corrected.y > moveY + 1e-4) {
+      // Grounded iff the KCC reports ground contact this tick. The old
+      // "moveY was clamped" heuristic misreads overhangs as ground — the
+      // ceiling pushes down on the hull, corrected.y exceeds moveY, and
+      // the tank thinks it's on the floor inside a cave. computedGrounded
+      // queries Rapier's actual contact manifold and handles 3D correctly.
+      entry.grounded = this.kcc.computedGrounded();
+      if (entry.grounded && entry.verticalVel < 0) {
         entry.verticalVel = 0;
       }
     }
   }
 
-  /** Copy Rapier position + yaw back onto the TankState. The Y and tilt are
-   *  intentionally NOT set here — Room re-derives them from the voxel surface
-   *  so the authoritative tank transform uses the exact same ground reference
-   *  as the client mesh (which samples voxel.getHeight for its Y). */
+  /** True iff the KCC reported ground contact on the last applyTankInputs
+   *  step for this tank. Room reads this each tick to drive the airborne
+   *  transition. */
+  isGrounded(id: PlayerId): boolean {
+    return this.tanks.get(id)?.grounded ?? false;
+  }
+
+  /** Copy Rapier position (X, Y, Z) + yaw back onto the TankState. Y is the
+   *  tank's "feet" Y — ball bottom = body centre minus the hull radius —
+   *  so it matches the TankState convention used for tread painting, track
+   *  history, and the voxel-sampled tilt stencil. The extra 0.3 m spawn
+   *  lift in addTank is absorbed by the first KCC tick (ball drops onto
+   *  the terrain), so steady-state body Y is exactly feet Y + HULL_RADIUS.
+   *  Tilt is NOT set here — Room fills pitch/roll from the voxel gradient
+   *  after readback. */
   readbackTank(id: PlayerId, tank: TankState): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
     const pos = entry.body.translation();
     tank.position.x = pos.x;
+    tank.position.y = pos.y - HULL_RADIUS;
     tank.position.z = pos.z;
     tank.bodyRotation = entry.yaw;
   }
