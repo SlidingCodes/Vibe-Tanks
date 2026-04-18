@@ -29,6 +29,7 @@ import {
   GRAVITY,
   setGravity,
 } from '@shared/constants';
+import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -72,6 +73,8 @@ const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#a
 const SPAWN_PROTECTION_SECONDS = 3;
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
+const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 
 interface PlayerState {
   socket?: Socket;
@@ -1268,15 +1271,25 @@ export class Room {
         const dz = targetTank.position.z - tank.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         const targetRotation = Math.atan2(dx, dz);
-
-        // Turret follows target
-        tank.turretRotation = targetRotation;
-
         const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
 
-        // More aggressive steering
+        // Steering follows actual target
         if (angleDiff < -0.05) player.input.right = true;
         else if (angleDiff > 0.05) player.input.left = true;
+
+        // --- BRAIN: Accuracy Logic ---
+        // Roll to see if the bot aims accurately or intentionally misses.
+        const isHitAttempt = Math.random() < BOT_HIT_RATE;
+        const currentJitter = isHitAttempt ? 0.4 : BOT_MISS_JITTER;
+        const jitteredPos = {
+          x: targetTank.position.x + (Math.random() - 0.5) * currentJitter,
+          y: targetTank.position.y + (Math.random() - 0.5) * currentJitter * 0.5,
+          z: targetTank.position.z + (Math.random() - 0.5) * currentJitter,
+        };
+
+        const solution = solveAimAnglesForTarget(tank, jitteredPos);
+        tank.turretRotation = solution.turretRotation;
+        tank.barrelPitch = solution.barrelPitch;
 
         // Stop only when very close to target
         if (dist < 3) player.input.forward = false;
@@ -1298,19 +1311,12 @@ export class Room {
         
         // Only run simulation if cooldown is ready to save performance
         if (now - player.lastFireTime >= weapon.cooldown) {
-          // Dry-run simulation using the current aim
+          // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
           
-          // Check if any enemy is damaged by this shot (direct or splash)
-          const hitsEnemy = result.damageDealt.some(d => d.playerId !== pid && d.damage > 0);
-          
-          if (hitsEnemy) {
-            // Use the target position as aimPoint for weapons that need it
-            this.performFire(tank, player, weapon, targetTank.position, result);
-
-            // Switch to a random weapon for the next shot to increase variety
-            player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
-          }
+          // Fire! The jitter ensures they only hit 40-60% of the time.
+          this.performFire(tank, player, weapon, targetTank.position, result);
+          player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
         }
       } else {
         // No target? Roam the map.
