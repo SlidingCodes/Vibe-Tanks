@@ -326,8 +326,15 @@ export class Room {
 
   private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
     const pos = this.findSpawnPosition();
-    const fallback = TANK_COLORS[this.tanks.size % TANK_COLORS.length];
-    const safeColor = isValidHex(color) ? color! : fallback;
+    let safeColor: string;
+    if (isValidHex(color)) {
+      safeColor = color!;
+    } else {
+      // Pick first unused color from TANK_COLORS to ensure variety
+      const usedColors = Array.from(this.tanks.values()).map(t => t.color.toLowerCase());
+      const unusedColor = TANK_COLORS.find(c => !usedColors.includes(c.toLowerCase()));
+      safeColor = unusedColor || TANK_COLORS[this.tanks.size % TANK_COLORS.length];
+    }
     const safeName = sanitizeName(playerName);
     const tank: TankState = {
       playerId,
