@@ -332,18 +332,20 @@ export function playWeaponSwitch(): void {
 // ── Announcer — Metal-Slug-style "VIBE TANKS!" on game start ──
 // Uses SpeechSynthesis with low pitch + a reverb-like echo effect.
 
-export function playAnnouncer(): void {
+/**
+ * Reusable speech synth with the arcade announcer profile (slow, deep, dramatic).
+ */
+export function playSpeech(text: string): void {
   if (!('speechSynthesis' in window)) return;
 
-  // Cancel any pending speech first.
+  // Cancel any pending speech first so we don't queue up multiple announcements.
   speechSynthesis.cancel();
 
-  const utter = new SpeechSynthesisUtterance('VIBE TANKS!');
+  const utter = new SpeechSynthesisUtterance(text);
   utter.rate = 0.6;   // slow and dramatic
   utter.pitch = 0.4;  // deep, commanding voice
-  utter.volume = Math.min(1, sfxVolume * 1.5); // a bit louder than SFX
+  utter.volume = Math.min(1, sfxVolume * 1.5);
 
-  // Try to pick a male English voice for the best effect.
   const voices = speechSynthesis.getVoices();
   const preferred = voices.find(
     (v) => /male/i.test(v.name) && /en/i.test(v.lang),
@@ -352,7 +354,6 @@ export function playAnnouncer(): void {
   );
   if (preferred) utter.voice = preferred;
 
-  // Voices may load async — retry once if the list was empty.
   if (voices.length === 0) {
     speechSynthesis.addEventListener('voiceschanged', () => {
       const v = speechSynthesis.getVoices();
@@ -364,6 +365,13 @@ export function playAnnouncer(): void {
   } else {
     speechSynthesis.speak(utter);
   }
+}
+
+/**
+ * Metal-Slug-style arcade intro — plays the speech + the epic brass swell.
+ */
+export function playAnnouncer(text: string = 'VIBE TANKS!'): void {
+  playSpeech(text);
 
   // Accompany with an epic brass-like swell for the arcade feel.
   const ac = getCtx();

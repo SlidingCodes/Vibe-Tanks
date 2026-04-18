@@ -43,7 +43,7 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -127,8 +127,17 @@ let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
+
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+const SPECIAL_EVENT_NAMES: Record<SpecialEvent, string> = {
+  none: '',
+  double_terrain_damage: 'Double Terrain Damage',
+  low_gravity: 'Low Gravity',
+  dense_fog: 'Dense Fog',
+  space_invaders: 'Space Invaders',
+};
 
 // ── Killcam ─────────────────────────────────────────────────────────
 // When I die to another player, the camera spectates the killer (with a
@@ -192,8 +201,8 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
-playAnnouncer();
-// Start music after the announcer voice has time to land.
+// playAnnouncer is now handled in the first room_snapshot to include the event name
+// Start music after a short delay
 setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
@@ -216,6 +225,17 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (!hasReceivedInitialEvent || activeSpecialEvent !== previousEvent) {
     hud.triggerSpecialEventBanner(activeSpecialEvent);
+    
+    const eventName = SPECIAL_EVENT_NAMES[activeSpecialEvent];
+    if (!hasReceivedInitialEvent) {
+      // First announcement: "Vibe Tanks! [Event Name]"
+      const welcome = eventName ? `VIBE TANKS! ${eventName}` : 'VIBE TANKS!';
+      playAnnouncer(welcome);
+    } else if (activeSpecialEvent !== 'none' && eventName) {
+      // Mid-game event change: "[Event Name]!"
+      playSpeech(eventName);
+    }
+    
     hasReceivedInitialEvent = true;
   }
 
