@@ -387,6 +387,64 @@
       100% { transform: translate(var(--tx), var(--ty)) scale(0); opacity: 0; }
     }
 
+    /* ── Left-side stat bars (shield above boost) ── */
+    #left-bars {
+      position: absolute; bottom: 74px; left: 12px;
+      display: flex; flex-direction: column; gap: 7px;
+      pointer-events: none;
+    }
+    #shield-wrap, #turbo-wrap {
+      display: flex; flex-direction: row; align-items: center; gap: 8px;
+    }
+    #shield-label, #turbo-label {
+      font-family: monospace; font-size: 9px; letter-spacing: 2px;
+      color: rgba(255,255,255,0.7); text-shadow: 0 0 6px #000, 0 1px 2px #000;
+      width: 38px; text-align: right; flex-shrink: 0;
+    }
+    #shield-track, #turbo-track {
+      width: 148px; height: 9px; border-radius: 5px;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: inset 0 1px 4px rgba(0,0,0,0.7);
+      overflow: hidden; flex-shrink: 0;
+    }
+    #shield-bar {
+      height: 100%; border-radius: 5px;
+      transform-origin: left center;
+      transform: scaleX(var(--sh-scale, 1));
+      background: linear-gradient(to right, #1a5fff, #00d4ff);
+      box-shadow: 0 0 8px rgba(40,160,255,0.7);
+      transition: transform 0.12s linear, box-shadow 0.15s linear;
+    }
+    #shield-bar.active {
+      box-shadow: 0 0 16px rgba(80,210,255,1), 0 0 5px #aef;
+      animation: shield-active-pulse 1.2s ease-in-out infinite alternate;
+    }
+    @keyframes shield-active-pulse {
+      from { opacity: 0.82; }
+      to   { opacity: 1; }
+    }
+    #turbo-bar {
+      height: 100%; border-radius: 5px;
+      transform-origin: left center;
+      transform: scaleX(var(--tb-scale, 0));
+      background: linear-gradient(to right, #e09000, #ff3300);
+      box-shadow: 0 0 8px rgba(255,130,0,0.6);
+      transition: transform 0.1s linear, box-shadow 0.15s linear;
+    }
+    #turbo-bar.active {
+      box-shadow: 0 0 16px rgba(255,180,0,0.95), 0 0 5px #ffe;
+    }
+    #turbo-bar.ready-ping {
+      animation: turbo-ready-ping 0.55s ease-out forwards;
+    }
+    @keyframes turbo-ready-ping {
+      0%   { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
+      25%  { box-shadow: 0 0 26px rgba(255,220,0,1), 0 0 8px #fff; }
+      60%  { box-shadow: 0 0 14px rgba(255,150,0,0.9); }
+      100% { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
+    }
+
     /* ── Turbo boost screen VFX ── */
     #turbo-vfx {
       position: fixed; inset: 0; pointer-events: none; z-index: 5;
@@ -401,42 +459,6 @@
       to   { box-shadow: inset 0 0 100px rgba(255,180,0,0.45), inset 0 0 40px rgba(255,100,0,0.25); }
     }
 
-    /* ── Turbo boost bar ── */
-    #turbo-wrap {
-      position: absolute; bottom: 74px; left: 12px;
-      display: flex; flex-direction: column; gap: 3px;
-      pointer-events: none;
-    }
-    #turbo-label {
-      font-family: monospace; font-size: 9px; letter-spacing: 2px;
-      color: rgba(255,255,255,0.55); text-shadow: 0 0 4px #000;
-    }
-    #turbo-track {
-      width: 120px; height: 6px; border-radius: 2px;
-      background: rgba(0,0,0,0.45);
-      border: 1px solid rgba(255,255,255,0.18);
-      overflow: hidden;
-    }
-    #turbo-bar {
-      height: 100%; border-radius: 2px;
-      transform-origin: left center;
-      transform: scaleX(var(--tb-scale, 0));
-      background: linear-gradient(to right, #ffd700, #ff2200);
-      box-shadow: 0 0 6px rgba(255,160,0,0.5);
-      transition: transform 0.1s linear, box-shadow 0.15s linear;
-    }
-    #turbo-bar.active {
-      box-shadow: 0 0 14px rgba(255,180,0,0.95), 0 0 4px #fff;
-    }
-    #turbo-bar.ready-ping {
-      animation: turbo-ready-ping 0.55s ease-out forwards;
-    }
-    @keyframes turbo-ready-ping {
-      0%   { box-shadow: 0 0 6px rgba(255,160,0,0.5); }
-      25%  { box-shadow: 0 0 24px rgba(255,220,0,1), 0 0 8px #fff; }
-      60%  { box-shadow: 0 0 12px rgba(255,160,0,0.9); }
-      100% { box-shadow: 0 0 8px rgba(255,140,0,0.55); }
-    }
 
   </style>
 </head>
@@ -464,15 +486,21 @@
   <div id="hud">
     <div id="cooldown-ring"></div>
 
-    <div id="turbo-wrap">
-      <div id="turbo-label">BOOST</div>
-      <div id="turbo-track"><div id="turbo-bar"></div></div>
+    <div id="left-bars">
+      <div id="shield-wrap" style="display:none">
+        <div id="shield-label">SHIELD</div>
+        <div id="shield-track"><div id="shield-bar"></div></div>
+      </div>
+      <div id="turbo-wrap">
+        <div id="turbo-label">BOOST</div>
+        <div id="turbo-track"><div id="turbo-bar"></div></div>
+      </div>
     </div>
 
     <div id="health-bar"><div id="health-fill"></div><div id="health-label"></div></div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
-    <div id="controls-hint">1-9 / 0 switch weapon | WASD move | Shift boost | Mouse aim | Click shoot</div>
+    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch weapon</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
     <div id="special-event-banner">NEW EVENT: DOUBLE DAMAGE</div>
   </div>

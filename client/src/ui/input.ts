@@ -52,6 +52,7 @@ export function isShiftHeld(): boolean {
 
 const mouse = new THREE.Vector2();
 let mouseDown = false;
+let rightMousePressed = false;
 
 window.addEventListener('mousemove', (e) => {
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -64,6 +65,10 @@ window.addEventListener('mousedown', (e) => {
 
 window.addEventListener('mouseup', (e) => {
   if (e.button === 0) mouseDown = false;
+});
+
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 2) rightMousePressed = true;
 });
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -79,6 +84,14 @@ export function isMouseDown(): boolean {
 export function consumeClick(): boolean {
   if (mouseDown) {
     mouseDown = false;
+    return true;
+  }
+  return false;
+}
+
+export function consumeRightClick(): boolean {
+  if (rightMousePressed) {
+    rightMousePressed = false;
     return true;
   }
   return false;

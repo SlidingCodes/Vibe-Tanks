@@ -34,7 +34,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld,
+  isShiftHeld, consumeRightClick,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -44,7 +44,7 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -128,6 +128,9 @@ let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
+
+// ── Shield client state ───────────────────────────────────────────────────
+let shieldWasPreviouslyActive = false;
 
 // ── Turbo boost client state ──────────────────────────────────────────────
 let turboActiveUntil = 0;
@@ -281,6 +284,12 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
+  if (myTank) {
+    const shFraction = myTank.shieldActive
+      ? (myTank.shieldTimeRemaining ?? 0) / 5
+      : myTank.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shFraction, myTank.shieldActive ?? false);
+  }
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
@@ -581,6 +590,26 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
 
+  if (myTank) {
+    const shFraction = myTank.shieldActive
+      ? (myTank.shieldTimeRemaining ?? 0) / 5
+      : myTank.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shFraction, myTank.shieldActive ?? false);
+
+    // Sound: shield was active last frame but isn't now → absorbed or expired.
+    if (shieldWasPreviouslyActive && !myTank.shieldActive) {
+      playShieldBreak();
+    }
+    shieldWasPreviouslyActive = myTank.shieldActive ?? false;
+
+    // Sync optimistic predicted state with server-authoritative shield fields.
+    if (predictedState) {
+      predictedState.shieldActive = myTank.shieldActive ?? false;
+      predictedState.shieldAvailable = myTank.shieldAvailable ?? true;
+      predictedState.shieldTimeRemaining = myTank.shieldTimeRemaining ?? 0;
+    }
+  }
+
   // Toggle the Dark-Souls-style death screen based on the alive flag edge.
   if (myTank) {
     if (!myTank.alive && !wasDead) {
@@ -871,6 +900,26 @@ function animate(): void {
     } else {
       turboFraction = 1;
     }
+
+    // Shield: right-click activates once per life (server-authoritative).
+    if (consumeRightClick() && predictedState.shieldAvailable && !predictedState.shieldActive) {
+      socket.emit('shield_activate');
+      predictedState.shieldActive = true;
+      predictedState.shieldAvailable = false;
+      predictedState.shieldTimeRemaining = 5;
+      shieldWasPreviouslyActive = true;
+      playShieldActivate();
+      hud.setShieldBar(1, true);
+    }
+
+    // Shield bar: drain locally each frame for smooth animation; server confirms.
+    if (predictedState.shieldActive && predictedState.shieldTimeRemaining > 0) {
+      predictedState.shieldTimeRemaining = Math.max(0, predictedState.shieldTimeRemaining - dt);
+    }
+    const shieldFraction = predictedState.shieldActive
+      ? predictedState.shieldTimeRemaining / 5
+      : predictedState.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shieldFraction, predictedState.shieldActive);
 
     const justActivated = turboActive && !turboPreviouslyActive;
     if (justActivated) playTurbo();

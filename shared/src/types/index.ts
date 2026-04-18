@@ -69,6 +69,12 @@ export interface TankState {
    *  inputBuffer to replay from (lastAppliedSeq + 1) forward to the
    *  current client seq. */
   lastAppliedSeq: number;
+  /** True while the shield bubble is active. */
+  shieldActive: boolean;
+  /** True if the shield has not yet been used this life. Resets on respawn. */
+  shieldAvailable: boolean;
+  /** Seconds of shield time remaining (counts down from 5 while active, 0 otherwise). */
+  shieldTimeRemaining: number;
 }
 
 // ── Weapons ──
@@ -313,6 +319,7 @@ export interface ClientEvents {
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   force_reset_match: () => void;
+  shield_activate: () => void;
 }
 
 // ── Match events (server → client feed) ──

@@ -72,6 +72,7 @@ import {
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
+const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
@@ -92,6 +93,8 @@ interface PlayerState {
   turboActiveUntil: number;
   /** Epoch seconds before which turbo cannot be re-activated (recharge). */
   turboCooldownUntil: number;
+  /** Epoch seconds at which the shield auto-expires (0 = not active). */
+  shieldExpiresAt: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -270,6 +273,7 @@ export class Room {
       isBot: false,
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
+      shieldExpiresAt: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -362,6 +366,9 @@ export class Room {
       angVel: { x: 0, y: 0, z: 0 },
       color: safeColor,
       lastAppliedSeq: 0,
+      shieldActive: false,
+      shieldAvailable: true,
+      shieldTimeRemaining: 0,
     };
     this.tanks.set(playerId, tank);
     this.physics.addTank(tank);
@@ -408,6 +415,17 @@ export class Room {
       if (tank.alive) return; // already alive
       if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
       this.respawnTank(socket.id);
+    });
+
+    socket.on('shield_activate', () => {
+      const tank = this.tanks.get(socket.id);
+      const player = this.players.get(socket.id);
+      if (!tank || !player || !tank.alive || !tank.shieldAvailable || tank.shieldActive) return;
+      const nowSec = Date.now() / 1000;
+      tank.shieldActive = true;
+      tank.shieldAvailable = false;
+      tank.shieldTimeRemaining = SHIELD_DURATION;
+      player.shieldExpiresAt = nowSec + SHIELD_DURATION;
     });
 
     socket.on('force_reset_match', () => {
@@ -483,6 +501,7 @@ export class Room {
       isBot: true,
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
+      shieldExpiresAt: 0,
     });
 
     this.spawnTank(botId, playerName);
@@ -563,11 +582,24 @@ export class Room {
     const owner = this.tanks.get(ownerId);
     const nowSec = Date.now() / 1000;
 
+    // Collect which players have their shield absorb this shot, so we can
+    // skip their impulse too.
+    const shieldAbsorbed = new Set<PlayerId>();
+
     for (const dmg of damageDealt) {
       const victim = this.tanks.get(dmg.playerId);
       const victimPlayer = this.players.get(dmg.playerId);
       if (!victim || !victim.alive) continue;
       if (victimPlayer && nowSec < victimPlayer.spawnProtectionUntil) continue;
+
+      if (victim.shieldActive) {
+        victim.shieldActive = false;
+        victim.shieldTimeRemaining = 0;
+        const vPlayer = this.players.get(dmg.playerId);
+        if (vPlayer) vPlayer.shieldExpiresAt = 0;
+        shieldAbsorbed.add(dmg.playerId);
+        continue;
+      }
 
       victim.hp = Math.max(0, victim.hp - dmg.damage);
       const killed = victim.hp <= 0;
@@ -609,6 +641,7 @@ export class Room {
 
     if (impulses && impulses.length > 0) {
       for (const entry of impulses) {
+        if (shieldAbsorbed.has(entry.playerId)) continue;
         const victim = this.tanks.get(entry.playerId);
         const victimPlayer = this.players.get(entry.playerId);
         if (!victim || !victim.alive) continue;
@@ -833,6 +866,10 @@ export class Room {
     // anchor to the respawn transform. Input seq also resets on the
     // client side when the justRespawned branch fires.
     tank.lastAppliedSeq = 0;
+    tank.shieldActive = false;
+    tank.shieldAvailable = true;
+    tank.shieldTimeRemaining = 0;
+    player.shieldExpiresAt = 0;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     this.physics.resetTank(playerId, tank.position, 0);
@@ -888,6 +925,18 @@ export class Room {
       if (!tank) continue;
 
       if (tank.alive) {
+        // Shield auto-expiry after SHIELD_DURATION seconds.
+        if (tank.shieldActive && player.shieldExpiresAt > 0) {
+          const remaining = player.shieldExpiresAt - nowSec;
+          if (remaining <= 0) {
+            tank.shieldActive = false;
+            tank.shieldTimeRemaining = 0;
+            player.shieldExpiresAt = 0;
+          } else {
+            tank.shieldTimeRemaining = remaining;
+          }
+        }
+
         // Server-authoritative turbo: activate only when not on cooldown.
         if (player.input.turbo) {
           if (nowSec < player.turboActiveUntil) {

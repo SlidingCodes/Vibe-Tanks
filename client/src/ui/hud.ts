@@ -16,6 +16,8 @@ const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
 const specialEventBanner = document.getElementById('special-event-banner') as HTMLDivElement;
 const turboBar = document.getElementById('turbo-bar') as HTMLDivElement;
 const turboVfx = document.getElementById('turbo-vfx') as HTMLDivElement;
+const shieldBar = document.getElementById('shield-bar') as HTMLDivElement;
+const shieldWrap = document.getElementById('shield-wrap') as HTMLDivElement;
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -136,6 +138,19 @@ export function setTurboBar(fraction: number, active: boolean, justReady: boolea
   } else if (!active && f < 1) {
     turboBar.classList.remove('ready-ping');
   }
+}
+
+const SHIELD_DURATION = 5;
+
+/**
+ * @param fraction 0–1 fill level (1 = full/ready, drains while active, 0 = used)
+ * @param active   true while the shield bubble is burning down
+ */
+export function setShieldBar(fraction: number, active: boolean): void {
+  if (shieldWrap.style.display === 'none') shieldWrap.style.display = '';
+  const f = Math.min(1, Math.max(0, fraction));
+  shieldBar.style.setProperty('--sh-scale', f.toFixed(3));
+  shieldBar.classList.toggle('active', active);
 }
 
 export function setTurboVfx(active: boolean): void {

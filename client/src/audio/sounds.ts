@@ -449,6 +449,80 @@ export function playAnnouncer(text: string = 'VIBE TANKS!'): void {
   noise.stop(now + 0.16);
 }
 
+// ── Shield activate ──
+// Rising energy hum: sine sweep up + harmonic shimmer.
+export function playShieldActivate(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(320, now);
+  osc.frequency.exponentialRampToValueAtTime(1100, now + 0.35);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(0.35, now + 0.05);
+  g.gain.linearRampToValueAtTime(0.15, now + 0.35);
+  g.gain.linearRampToValueAtTime(0, now + 0.55);
+  osc.connect(g).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.56);
+
+  const osc2 = ac.createOscillator();
+  osc2.type = 'triangle';
+  osc2.frequency.setValueAtTime(640, now + 0.05);
+  osc2.frequency.exponentialRampToValueAtTime(2200, now + 0.4);
+  const g2 = ac.createGain();
+  g2.gain.setValueAtTime(0.18, now + 0.05);
+  g2.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+  osc2.connect(g2).connect(out);
+  osc2.start(now + 0.05);
+  osc2.stop(now + 0.51);
+}
+
+// ── Shield break ──
+// Shattering descending crack + low thud.
+export function playShieldBreak(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(1800, now);
+  osc.frequency.exponentialRampToValueAtTime(180, now + 0.2);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.4, now);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+  osc.connect(g).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.23);
+
+  const noise = createNoise(ac, 0.25);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.frequency.value = 2400;
+  nf.Q.value = 0.8;
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0.5, now);
+  ng.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.26);
+
+  const sub = ac.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.setValueAtTime(90, now + 0.05);
+  sub.frequency.exponentialRampToValueAtTime(30, now + 0.25);
+  const sg = ac.createGain();
+  sg.gain.setValueAtTime(0.45, now + 0.05);
+  sg.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+  sub.connect(sg).connect(out);
+  sub.start(now + 0.05);
+  sub.stop(now + 0.31);
+}
+
 // ── Hit marker (your shot hit someone) ──
 // Quick metallic "ting".
 
