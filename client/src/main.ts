@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY } from '@shared/constants';
+import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
@@ -34,6 +34,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
+  isShiftHeld,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -43,7 +44,7 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -127,6 +128,12 @@ let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
+
+// ── Turbo boost client state ──────────────────────────────────────────────
+let turboActiveUntil = 0;
+let turboCooldownUntil = 0;
+let turboPreviouslyReady = true;   // tracks charging→ready edge for ping animation
+let turboPreviouslyActive = false; // tracks inactive→active edge for sound + vfx
 
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
@@ -845,10 +852,41 @@ function animate(): void {
 
   const myTankMesh = getAllTankMeshes().get(myId);
 
+  // ── Turbo state + HUD ────────────────────────────────────────────────────
+  if (predictedState && predictedState.alive) {
+    const shiftDown = isShiftHeld();
+    if (shiftDown && now >= turboCooldownUntil && now >= turboActiveUntil) {
+      turboActiveUntil = now + TURBO_DURATION;
+      turboCooldownUntil = turboActiveUntil + TURBO_COOLDOWN;
+    }
+    const turboActive = now < turboActiveUntil;
+    const turboCharging = !turboActive && now < turboCooldownUntil;
+    const turboReady = !turboActive && !turboCharging;
+
+    let turboFraction: number;
+    if (turboActive) {
+      turboFraction = 1 - (turboActiveUntil - now) / TURBO_DURATION;
+    } else if (turboCharging) {
+      turboFraction = 1 - (turboCooldownUntil - now) / TURBO_COOLDOWN;
+    } else {
+      turboFraction = 1;
+    }
+
+    const justActivated = turboActive && !turboPreviouslyActive;
+    if (justActivated) playTurbo();
+    hud.setTurboVfx(turboActive);
+
+    const justReady = turboReady && !turboPreviouslyReady;
+    hud.setTurboBar(turboFraction, turboActive, justReady);
+    turboPreviouslyReady = turboReady;
+    turboPreviouslyActive = turboActive;
+  }
+
   if (myTankMesh && predictedState && predictedState.alive) {
     const selectedWeapon = getSelectedWeapon();
+    const turboActive = now < turboActiveUntil;
 
-    const rawInput = getMovementInput();
+    const rawInput = { ...getMovementInput(), turbo: turboActive };
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1126,6 +1164,11 @@ function animate(): void {
           accelerating = speed > 2.0;
         }
         atmosphere.spawnExhaustSmoke(tm.group.position, tm.group.rotation.y, accelerating);
+      }
+
+      // Turbo flame — only for local player while turbo is active
+      if (pid === myId && now < turboActiveUntil && tm.state.alive) {
+        atmosphere.spawnTurboFlame(tm.group.position, tm.group.rotation.y);
       }
     }
   }

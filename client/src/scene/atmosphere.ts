@@ -35,6 +35,9 @@ const MAX_SPARKS = 200;
 const SPARK_LIFETIME = 0.5;
 const SPARK_SIZE = 0.08;
 
+const MAX_TURBO_FLAME = 120;
+const TURBO_FLAME_LIFETIME = 0.35;
+
 
 
 
@@ -60,6 +63,7 @@ export interface AtmosphereHandle {
   spawnMuzzleFX(pos: THREE.Vector3, direction: THREE.Vector3): void;
   spawnShellCasing(pos: THREE.Vector3, bodyRotation: number, turretRotation: number): void;
   spawnImpactSparks(pos: THREE.Vector3): void;
+  spawnTurboFlame(pos: THREE.Vector3, bodyRotation: number): void;
   dispose(): void;
 
 
@@ -234,6 +238,23 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
 
 
+  // ── Turbo Flame ──
+  const flameGeom = new THREE.SphereGeometry(1, 6, 6);
+  const flameMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true });
+  const flameMesh = new THREE.InstancedMesh(flameGeom, flameMat, MAX_TURBO_FLAME);
+  flameMesh.frustumCulled = false;
+  flameMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
+  scene.add(flameMesh);
+
+  const flameStates: ParticleState[] = Array.from({ length: MAX_TURBO_FLAME }, () => ({
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    rx: 0, ry: 0, rz: 0,
+    size: 0, life: 0, active: false,
+  }));
+  let flameSpawnCursor = 0;
+  const _flameColor = new THREE.Color();
+
   let treadSpawnCursor = 0;
   let windTime = 0;
   const dummy = new THREE.Object3D();
@@ -258,6 +279,9 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }
   for (let i = 0; i < MAX_SPARKS; i++) {
     sparkMesh.setMatrixAt(i, hiddenMatrix);
+  }
+  for (let i = 0; i < MAX_TURBO_FLAME; i++) {
+    flameMesh.setMatrixAt(i, hiddenMatrix);
   }
 
 
@@ -433,12 +457,42 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     }
   }
 
+  function spawnTurboFlame(pos: THREE.Vector3, bodyRotation: number): void {
+    const sin = Math.sin(bodyRotation);
+    const cos = Math.cos(bodyRotation);
+    // Spawn 3–5 flame puffs per call
+    const count = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      const slot = flameSpawnCursor;
+      flameSpawnCursor = (flameSpawnCursor + 1) % MAX_TURBO_FLAME;
+      const s = flameStates[slot];
+
+      // Behind the tank, spread slightly sideways
+      const backDist = 0.8 + Math.random() * 0.6;
+      const sideOff = (Math.random() - 0.5) * 0.7;
+      s.px = pos.x + (-backDist * sin + sideOff * cos);
+      s.py = pos.y + 0.1 + Math.random() * 0.4;
+      s.pz = pos.z + (-backDist * cos - sideOff * sin);
+
+      // Shoot backward + slightly upward
+      const backSpeed = 1.5 + Math.random() * 2.5;
+      s.vx = -sin * backSpeed + (Math.random() - 0.5) * 0.6;
+      s.vz = -cos * backSpeed + (Math.random() - 0.5) * 0.6;
+      s.vy = 0.8 + Math.random() * 1.2;
+
+      s.size = 0.12 + Math.random() * 0.14;
+      s.life = TURBO_FLAME_LIFETIME * (0.7 + Math.random() * 0.6);
+      s.active = true;
+    }
+  }
+
   return {
     spawnTreadDust,
     spawnExhaustSmoke,
     spawnMuzzleFX,
     spawnShellCasing,
     spawnImpactSparks,
+    spawnTurboFlame,
 
 
     update(dt: number, camera: THREE.Camera, tanks: Map<string, TankMesh>): void {
@@ -693,6 +747,43 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         sparkMesh.setMatrixAt(i, dummy.matrix);
       }
       if (sparkActive || true) sparkMesh.instanceMatrix.needsUpdate = true;
+
+      // 8. Update Turbo Flame
+      for (let i = 0; i < MAX_TURBO_FLAME; i++) {
+        const s = flameStates[i];
+        if (!s.active) { flameMesh.setMatrixAt(i, hiddenMatrix); continue; }
+        s.life -= dt;
+        if (s.life <= 0) {
+          s.active = false;
+          flameMesh.setMatrixAt(i, hiddenMatrix);
+          continue;
+        }
+        s.px += s.vx * dt;
+        s.py += s.vy * dt;
+        s.pz += s.vz * dt;
+        s.vy += dt * 0.5; // slight buoyancy
+        s.vx *= Math.pow(0.7, dt);
+        s.vz *= Math.pow(0.7, dt);
+
+        const t = s.life / TURBO_FLAME_LIFETIME; // 1=fresh, 0=fading
+        // Color: yellow (#ffd700) → orange (#ff6600) → red (#cc0000) as t decreases
+        if (t > 0.5) {
+          const u = (t - 0.5) * 2; // 1→0 as t goes 1→0.5
+          _flameColor.setRGB(1, 0.84 * u + 0.4 * (1 - u), 0);
+        } else {
+          const u = t * 2; // 1→0 as t goes 0.5→0
+          _flameColor.setRGB(1, 0.4 * u, 0);
+        }
+        flameMesh.setColorAt(i, _flameColor);
+
+        const scale = s.size * (1 + (1 - t) * 1.5); // puff up as it fades
+        dummy.position.set(s.px, s.py, s.pz);
+        dummy.scale.setScalar(scale);
+        dummy.updateMatrix();
+        flameMesh.setMatrixAt(i, dummy.matrix);
+      }
+      flameMesh.instanceMatrix.needsUpdate = true;
+      if (flameMesh.instanceColor) flameMesh.instanceColor.needsUpdate = true;
     },
     dispose(): void {
       scene.remove(airDustMesh);
@@ -716,6 +807,9 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       shellMat.dispose();
       sparkGeom.dispose();
       sparkMat.dispose();
+      scene.remove(flameMesh);
+      flameGeom.dispose();
+      flameMat.dispose();
     }
 
 

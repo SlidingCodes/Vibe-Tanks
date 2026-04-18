@@ -46,6 +46,10 @@ export function getMovementInput(): InputKeys {
   };
 }
 
+export function isShiftHeld(): boolean {
+  return !!(keys['ShiftLeft'] || keys['ShiftRight']);
+}
+
 const mouse = new THREE.Vector2();
 let mouseDown = false;
 

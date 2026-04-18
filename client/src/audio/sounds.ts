@@ -326,6 +326,43 @@ export function playWeaponSwitch(): void {
   noise2.stop(now + 0.07);
 }
 
+// ── Turbo boost ──
+// Jet-engine whoosh: noise burst + rising sine sweep, short and punchy.
+
+export function playTurbo(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // White noise filtered through bandpass, sweeping 300 → 3000 Hz
+  const noise = createNoise(ac, 0.5);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.Q.value = 1.2;
+  nf.frequency.setValueAtTime(300, now);
+  nf.frequency.exponentialRampToValueAtTime(3000, now + 0.35);
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0, now);
+  ng.gain.linearRampToValueAtTime(0.55, now + 0.05);
+  ng.gain.linearRampToValueAtTime(0, now + 0.4);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.45);
+
+  // Rising sawtooth — gives the "jet spool-up" feel
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(120, now);
+  osc.frequency.exponentialRampToValueAtTime(900, now + 0.3);
+  const og = ac.createGain();
+  og.gain.setValueAtTime(0, now);
+  og.gain.linearRampToValueAtTime(0.2, now + 0.06);
+  og.gain.linearRampToValueAtTime(0, now + 0.35);
+  osc.connect(og).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.38);
+}
+
 // ── Hit marker (your shot hit someone) ──
 // Quick metallic "ting".
 

@@ -28,6 +28,8 @@ import {
   DEFAULT_GRAVITY,
   GRAVITY,
   setGravity,
+  TURBO_DURATION,
+  TURBO_COOLDOWN,
 } from '@shared/constants';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
@@ -86,6 +88,10 @@ interface PlayerState {
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
   botWeaponIndex?: number;
+  /** Epoch seconds until which the turbo boost is active. */
+  turboActiveUntil: number;
+  /** Epoch seconds before which turbo cannot be re-activated (recharge). */
+  turboCooldownUntil: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -262,6 +268,8 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
+      turboActiveUntil: 0,
+      turboCooldownUntil: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -473,6 +481,8 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
+      turboActiveUntil: 0,
+      turboCooldownUntil: 0,
     });
 
     this.spawnTank(botId, playerName);
@@ -871,11 +881,31 @@ export class Room {
     const mapW = this.voxels.sizeX * cellSize;
     const mapH = this.voxels.sizeZ * cellSize;
     const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
+    const nowSec = Date.now() / 1000;
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank) continue;
-      this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
+
+      if (tank.alive) {
+        // Server-authoritative turbo: activate only when not on cooldown.
+        if (player.input.turbo) {
+          if (nowSec < player.turboActiveUntil) {
+            // already active — keep going
+          } else if (nowSec >= player.turboCooldownUntil) {
+            // start a new turbo burst
+            player.turboActiveUntil = nowSec + TURBO_DURATION;
+            player.turboCooldownUntil = player.turboActiveUntil + TURBO_COOLDOWN;
+          }
+        }
+        const effectiveTurbo = nowSec < player.turboActiveUntil;
+        const effectiveInput: MovementInput = effectiveTurbo
+          ? { ...player.input, turbo: true }
+          : { ...player.input, turbo: false };
+        this.physics.setTankInput(pid, effectiveInput);
+      } else {
+        this.physics.setTankInput(pid, EMPTY);
+      }
     }
 
     this.physics.applyTankInputs(dt);

@@ -25,6 +25,8 @@ export interface MovementInput {
   backward: boolean;
   left: boolean;
   right: boolean;
+  /** True while the turbo boost is active (Shift held + server-validated). */
+  turbo?: boolean;
   /** Monotonic client-side tick counter stamped when the input was applied
    *  locally. The server echoes the highest seq it has applied back to the
    *  client via `TankState.lastAppliedSeq`, letting the client rewind to
