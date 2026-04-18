@@ -132,7 +132,7 @@ const predictedVel = { x: 0, z: 0 };
 let wasDead = false;
 
 const SPECIAL_EVENT_NAMES: Record<SpecialEvent, string> = {
-  none: '',
+  none: 'No Special Event',
   double_terrain_damage: 'Double Terrain Damage',
   low_gravity: 'Low Gravity',
   dense_fog: 'Dense Fog',
@@ -231,7 +231,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
       // First announcement: "Vibe Tanks! [Event Name]"
       const welcome = eventName ? `VIBE TANKS! ${eventName}` : 'VIBE TANKS!';
       playAnnouncer(welcome);
-    } else if (activeSpecialEvent !== 'none' && eventName) {
+    } else if (eventName) {
       // Mid-game event change: "[Event Name]!"
       playSpeech(eventName);
     }
