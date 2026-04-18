@@ -18,6 +18,11 @@ const turboBar = document.getElementById('turbo-bar') as HTMLDivElement;
 const turboVfx = document.getElementById('turbo-vfx') as HTMLDivElement;
 const shieldBar = document.getElementById('shield-bar') as HTMLDivElement;
 const shieldWrap = document.getElementById('shield-wrap') as HTMLDivElement;
+const killOverlay = document.getElementById('kill-overlay') as HTMLDivElement;
+const killVictim = document.getElementById('kill-victim')!;
+const leaderboardOverlay = document.getElementById('leaderboard-overlay')!;
+const leaderboardBody = document.getElementById('leaderboard-body')!;
+const leaderboardCountdown = document.getElementById('leaderboard-countdown')!;
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -83,6 +88,57 @@ export function hideDeathScreen(): void {
   if (deathCountdownInterval) { clearInterval(deathCountdownInterval); deathCountdownInterval = null; }
   deathRespawnBtn.onclick = null;
   activeRespawnCallback = null;
+}
+
+let killIndicatorTimeout: ReturnType<typeof setTimeout> | null = null;
+const KILL_INDICATOR_DURATION_MS = 3200;
+
+export function showKillIndicator(victimName: string, color: string): void {
+  if (killIndicatorTimeout) {
+    clearTimeout(killIndicatorTimeout);
+    killIndicatorTimeout = null;
+  }
+
+  killOverlay.style.display = 'block';
+  killOverlay.classList.remove('fade-out');
+  
+  const safeName = escapeHtml(victimName);
+  const safeColor = /^#[0-9a-f]{3,6}$/i.test(color) ? color : '#fff';
+  killVictim.innerHTML = `ENEMY: <span class="kill-victim-name" style="color:${safeColor}">${safeName}</span>`;
+
+  killIndicatorTimeout = setTimeout(() => {
+    killOverlay.classList.add('fade-out');
+    killIndicatorTimeout = setTimeout(() => {
+      killOverlay.style.display = 'none';
+      killIndicatorTimeout = null;
+    }, 400); // Wait for fade-out animation
+  }, KILL_INDICATOR_DURATION_MS);
+}
+
+export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): void {
+  leaderboardOverlay.style.display = 'flex';
+  
+  const sorted = [...tanks].sort((a, b) => b.score - a.score);
+  leaderboardBody.innerHTML = sorted
+    .map((t, i) => {
+      const name = escapeHtml(t.playerName ?? t.playerId.slice(0, 6));
+      return `
+        <tr>
+          <td class="lb-rank">#${i + 1}</td>
+          <td class="lb-name" style="color:${t.color}">${name}</td>
+          <td class="lb-kills">${t.kills || 0}</td>
+          <td class="lb-deaths">${t.deaths || 0}</td>
+          <td class="lb-score">${Math.round(t.score)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  leaderboardCountdown.textContent = Math.ceil(resetsInSeconds).toString();
+}
+
+export function hideLeaderboard(): void {
+  leaderboardOverlay.style.display = 'none';
 }
 
 export function setHealth(tank: TankState | undefined): void {

@@ -199,17 +199,32 @@ export class Room {
     this.ensureFourTanks();
   }
 
+  private scheduleReset(): void {
+    if (this.resetTimeout) clearTimeout(this.resetTimeout);
+    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
+    this.resetTimeout = setTimeout(() => this.startLeaderboard(), MATCH_DURATION_SECONDS * 1000);
+  }
+
+  private startLeaderboard(): void {
+    const LEADERBOARD_DURATION_SECONDS = 10;
+    this.phase = MatchPhase.Leaderboard;
+    // Set matchResetAt so clients see a 10s countdown
+    this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
+    
+    // Broadcast the room snapshot so clients see the Leaderboard phase
+    // and the final scores/kills/deaths.
+    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+
+    // Schedule the actual terrain/score reset after a delay
+    setTimeout(() => this.resetMatch(), LEADERBOARD_DURATION_SECONDS * 1000);
+  }
+
   private getVoxelSnapshot() {
     return this.voxels.toSnapshot();
   }
 
-  private scheduleReset(): void {
-    if (this.resetTimeout) clearTimeout(this.resetTimeout);
-    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
-    this.resetTimeout = setTimeout(() => this.resetMatch(), MATCH_DURATION_SECONDS * 1000);
-  }
-
   private resetMatch(): void {
+    this.phase = MatchPhase.InProgress;
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     this.activeProjectiles.clear();
@@ -236,6 +251,8 @@ export class Room {
       tank.hp = TANK_MAX_HP;
       tank.alive = true;
       tank.score = 0;
+      tank.kills = 0;
+      tank.deaths = 0;
       tank.bodyRotation = 0;
       tank.bodyPitch = 0;
       tank.bodyRoll = 0;
@@ -364,6 +381,8 @@ export class Room {
       maxHp: TANK_MAX_HP,
       alive: true,
       score: 0,
+      kills: 0,
+      deaths: 0,
       airborne: false,
       linVel: { x: 0, y: 0, z: 0 },
       angVel: { x: 0, y: 0, z: 0 },
@@ -608,11 +627,14 @@ export class Room {
       const killed = victim.hp <= 0;
       if (killed) {
         victim.alive = false;
+        victim.deaths++;
         if (victimPlayer) {
           victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
         }
         if (owner) {
           if (dmg.playerId === ownerId) {
+            // Suicide doesn't count as a kill for the owner, 
+            // but we already incremented victim.deaths above.
             this.io.to(this.id).emit('match_event', {
               kind: 'suicide',
               victimId: victim.playerId,
@@ -621,6 +643,7 @@ export class Room {
               weaponId,
             });
           } else {
+            owner.kills++;
             this.io.to(this.id).emit('match_event', {
               kind: 'kill',
               killerId: owner.playerId,
@@ -891,6 +914,9 @@ export class Room {
     const simDt = 1 / SIM_TICK_RATE;
 
     this.simInterval = setInterval(() => {
+      // Pause simulation during leaderboard to let players admire the results
+      if (this.phase === MatchPhase.Leaderboard) return;
+
       this.simTime += simDt;
       this.tickBots(simDt);
       this.tickMovement(simDt);
@@ -1444,7 +1470,7 @@ export class Room {
       projectiles: state.projectiles,
       hazards: state.hazards,
       specialEvent: this.specialEvent,
-      resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
+      resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
     };
   }
 }
