@@ -14,6 +14,8 @@ const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonEl
 const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
 const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
 const specialEventBanner = document.getElementById('special-event-banner') as HTMLDivElement;
+const killOverlay = document.getElementById('kill-overlay') as HTMLDivElement;
+const killVictim = document.getElementById('kill-victim')!;
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -79,6 +81,31 @@ export function hideDeathScreen(): void {
   if (deathCountdownInterval) { clearInterval(deathCountdownInterval); deathCountdownInterval = null; }
   deathRespawnBtn.onclick = null;
   activeRespawnCallback = null;
+}
+
+let killIndicatorTimeout: ReturnType<typeof setTimeout> | null = null;
+const KILL_INDICATOR_DURATION_MS = 3200;
+
+export function showKillIndicator(victimName: string, color: string): void {
+  if (killIndicatorTimeout) {
+    clearTimeout(killIndicatorTimeout);
+    killIndicatorTimeout = null;
+  }
+
+  killOverlay.style.display = 'block';
+  killOverlay.classList.remove('fade-out');
+  
+  const safeName = escapeHtml(victimName);
+  const safeColor = /^#[0-9a-f]{3,6}$/i.test(color) ? color : '#fff';
+  killVictim.innerHTML = `ENEMY: <span class="kill-victim-name" style="color:${safeColor}">${safeName}</span>`;
+
+  killIndicatorTimeout = setTimeout(() => {
+    killOverlay.classList.add('fade-out');
+    killIndicatorTimeout = setTimeout(() => {
+      killOverlay.style.display = 'none';
+      killIndicatorTimeout = null;
+    }, 400); // Wait for fade-out animation
+  }, KILL_INDICATOR_DURATION_MS);
 }
 
 export function setHealth(tank: TankState | undefined): void {

@@ -256,6 +256,44 @@
       background: rgba(154,19,19,0.15); color: #c22;
       border-color: rgba(194,34,34,0.9);
     }
+    /* Kill Overlay — same letterbox style as death, but with a vibrant
+       cyan/white "victory" palette. */
+    #kill-overlay {
+      position: fixed; inset: 0; display: none; z-index: 25;
+      pointer-events: none;
+      font-family: 'Times New Roman', serif; color: #4af;
+      text-shadow: 0 0 18px rgba(64,170,255,0.6), 0 0 4px #000;
+    }
+    #kill-top, #kill-bottom {
+      position: absolute; left: 0; right: 0;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    #kill-top {
+      top: 0; padding: 48px 16px 64px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      animation: kill-slide-down 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+    }
+    #kill-bottom {
+      bottom: 0; padding: 64px 16px 48px;
+      background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      animation: kill-slide-up 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+    }
+    @keyframes kill-slide-down { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+    @keyframes kill-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes kill-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    #kill-overlay.fade-out { animation: kill-fade-out 0.4s ease-in forwards; }
+
+    #kill-title {
+      font-size: 52px; letter-spacing: 12px; font-style: italic;
+      font-weight: bold; border-top: 1px solid rgba(64,170,255,0.5);
+      border-bottom: 1px solid rgba(64,170,255,0.5); padding: 12px 40px;
+      color: #fff; text-shadow: 0 0 20px #4af, 0 0 4px #000;
+    }
+    #kill-victim {
+      font-family: monospace; font-size: 18px; letter-spacing: 4px;
+      color: rgba(255,255,255,0.9); text-shadow: 0 0 4px #000;
+    }
+    #kill-victim .kill-victim-name { font-weight: bold; }
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
     #fullscreen-btn {
@@ -420,6 +458,13 @@
     <div id="controls-hint">1-9 / 0 switch weapon | WASD move | Mouse aim | Click shoot</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
     <div id="special-event-banner">NEW EVENT: DOUBLE DAMAGE</div>
+  </div>
+  <div id="kill-overlay">
+    <div id="kill-top">
+      <div id="kill-title">TANK DESTROYED</div>
+      <div id="kill-victim"></div>
+    </div>
+    <div id="kill-bottom"></div>
   </div>
   <div id="death-overlay">
     <div id="death-top">

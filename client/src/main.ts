@@ -742,6 +742,12 @@ socket.on('match_event', (ev) => {
       timeSec: Date.now() / 1000,
     };
   }
+  
+  if (ev.kind === 'kill' && ev.killerId === myId && ev.victimId !== myId) {
+    // I killed someone! Show the indicator and announce it.
+    hud.showKillIndicator(ev.victimName, ev.victimColor);
+    playSpeech(`Enemy Destroyed: ${ev.victimName}`);
+  }
 });
 
 socket.on('game_over', ({ winnerId }) => {
