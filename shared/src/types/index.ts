@@ -7,6 +7,7 @@ export enum MatchPhase {
   WaitingForPlayers = 'waiting',
   InProgress = 'in_progress',
   GameOver = 'game_over',
+  Leaderboard = 'leaderboard',
 }
 
 // ── Special Events ──
@@ -47,6 +48,8 @@ export interface TankState {
   maxHp: number;
   alive: boolean;
   score: number;
+  kills: number;
+  deaths: number;
   color: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the

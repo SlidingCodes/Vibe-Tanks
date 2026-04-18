@@ -289,11 +289,48 @@
       border-bottom: 1px solid rgba(64,170,255,0.5); padding: 12px 40px;
       color: #fff; text-shadow: 0 0 20px #4af, 0 0 4px #000;
     }
-    #kill-victim {
-      font-family: monospace; font-size: 18px; letter-spacing: 4px;
-      color: rgba(255,255,255,0.9); text-shadow: 0 0 4px #000;
-    }
     #kill-victim .kill-victim-name { font-weight: bold; }
+
+    /* Leaderboard Overlay — full screen table style with a premium "post-match" feel */
+    #leaderboard-overlay {
+      position: fixed; inset: 0; display: none; z-index: 30;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(8px);
+      flex-direction: column; align-items: center; justify-content: center;
+      color: #fff; font-family: 'Times New Roman', serif;
+    }
+    #leaderboard-title {
+      font-size: 52px; letter-spacing: 16px; font-weight: bold;
+      text-transform: uppercase; margin-bottom: 40px;
+      text-shadow: 0 0 20px rgba(255,215,0,0.4);
+      color: #ffd700;
+    }
+    #leaderboard-table {
+      width: 80%; max-width: 800px;
+      border-collapse: collapse; font-family: monospace;
+      font-size: 18px;
+    }
+    #leaderboard-table th {
+      text-align: left; padding: 12px; border-bottom: 2px solid rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 2px;
+      font-size: 14px;
+    }
+    #leaderboard-table td {
+      padding: 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    #leaderboard-table tr:first-child { color: #ffd700; font-size: 24px; }
+    #leaderboard-table tr:first-child td { border-bottom: 2px solid rgba(255,215,0,0.3); }
+    
+    .lb-rank { width: 60px; opacity: 0.5; }
+    .lb-name { font-weight: bold; letter-spacing: 1px; }
+    .lb-kills { color: #4af; text-align: center; width: 80px; }
+    .lb-deaths { color: #f44; text-align: center; width: 80px; }
+    .lb-score { color: #fff; text-align: right; width: 100px; font-weight: bold; }
+    
+    #leaderboard-timer {
+      margin-top: 40px; font-size: 14px; opacity: 0.5;
+      letter-spacing: 4px; text-transform: uppercase;
+    }
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
     #fullscreen-btn {
@@ -479,6 +516,25 @@
       </button>
     </div>
   </div>
+  <div id="leaderboard-overlay">
+    <div id="leaderboard-title">Leaderboard</div>
+    <table id="leaderboard-table">
+      <thead>
+        <tr>
+          <th class="lb-rank">#</th>
+          <th>Player</th>
+          <th class="lb-kills">Kills</th>
+          <th class="lb-deaths">Deaths</th>
+          <th class="lb-score">Score</th>
+        </tr>
+      </thead>
+      <tbody id="leaderboard-body">
+        <!-- populated by js -->
+      </tbody>
+    </table>
+    <div id="leaderboard-timer">Next round starts in <span id="leaderboard-countdown">10</span>s</div>
+  </div>
+
   <div id="mobile-controls">
     <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>
     <div id="mc-aim-bar">

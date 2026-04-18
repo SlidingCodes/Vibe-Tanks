@@ -50,9 +50,10 @@ import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
 
-// Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
 const LOCAL_HULL_RADIUS = HULL_RADIUS;
+let previousPhase: MatchPhase | null = null;
+
 /** Emergency snap threshold. Under normal operation the client Rapier
  *  mirror stays within a few cm of the server (same inputs, same TriMesh,
  *  same fixed-dt stepping), so reconciliation does nothing and the local
@@ -241,6 +242,26 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
+
+  if (snap.phase === MatchPhase.Leaderboard) {
+    hud.showLeaderboard(snap.tanks, snap.resetsInSeconds);
+    
+    if (previousPhase !== MatchPhase.Leaderboard) {
+      // Transition START: find winner and announce after 3s delay
+      const winner = [...snap.tanks].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      if (winner) {
+        setTimeout(() => {
+          // Re-verify we are still in leaderboard phase before speaking
+          if (snapshot?.phase === MatchPhase.Leaderboard) {
+            playSpeech(`Winner is ${winner.playerName}`);
+          }
+        }, 3000);
+      }
+    }
+  } else {
+    hud.hideLeaderboard();
+  }
+  previousPhase = snap.phase;
 
   const existingIds = new Set(getAllTankMeshes().keys());
   for (const tankState of snap.tanks) {
