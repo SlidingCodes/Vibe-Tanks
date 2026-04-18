@@ -17,6 +17,7 @@ import {
   TrackHistory,
   TrackHistoryPoint,
   Vec3,
+  WeaponDefinition,
 } from '@shared/types/index';
 import {
   TANK_MAX_HP,
@@ -382,33 +383,7 @@ export class Room {
       if (now - player.lastFireTime < weapon.cooldown) return;
       player.lastFireTime = now;
 
-      switch (weapon.behavior) {
-        case 'drill':
-          this.fireDrill(tank, weapon);
-          break;
-        case 'napalm':
-          this.fireNapalm(tank, weapon);
-          break;
-        case 'seeker':
-          this.fireSeeker(tank, weapon);
-          break;
-        case 'mortar':
-          this.fireMortar(tank, weapon, data.aimPoint ?? null);
-          break;
-        case 'mine':
-          this.fireMine(tank, weapon);
-          break;
-        default: {
-          const result = simulateShot(
-            tank,
-            weapon,
-            this.voxels,
-            Array.from(this.tanks.values()),
-          );
-          this.scheduleShotResult(result, tank.playerId, weapon.id);
-          break;
-        }
-      }
+      this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
     socket.on('respawn_request', () => {
@@ -427,6 +402,38 @@ export class Room {
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
+    player.lastFireTime = Date.now() / 1000;
+
+    switch (weapon.behavior) {
+      case 'drill':
+        this.fireDrill(tank, weapon);
+        break;
+      case 'napalm':
+        this.fireNapalm(tank, weapon);
+        break;
+      case 'seeker':
+        this.fireSeeker(tank, weapon);
+        break;
+      case 'mortar':
+        this.fireMortar(tank, weapon, aimPoint);
+        break;
+      case 'mine':
+        this.fireMine(tank, weapon);
+        break;
+      default: {
+        const result = precomputedResult || simulateShot(
+          tank,
+          weapon,
+          this.voxels,
+          Array.from(this.tanks.values()),
+        );
+        this.scheduleShotResult(result, tank.playerId, weapon.id);
+        break;
+      }
+    }
   }
 
   private ensureFourTanks(): void {
@@ -1278,16 +1285,25 @@ export class Room {
           player.input.left = true; // Spin away from water
         }
 
-        // Firing logic - 20m range, respecting weapon cooldown (seconds)
+        // Predictive Firing Logic - Initiative Enhancement
         const weaponIndex = player.botWeaponIndex ?? 0;
         const weapon = WEAPONS[weaponIndex];
-        if (dist < 20 && now - player.lastFireTime >= weapon.cooldown && Math.abs(angleDiff) < 0.5) {
-          player.lastFireTime = now;
-          const result = simulateShot(tank, weapon, this.voxels, this.getTankList());
-          this.scheduleShotResult(result, pid, weapon.id);
+        
+        // Only run simulation if cooldown is ready to save performance
+        if (now - player.lastFireTime >= weapon.cooldown) {
+          // Dry-run simulation using the current aim
+          const result = simulateShot(tank, weapon, this.voxels, allTanks);
+          
+          // Check if any enemy is damaged by this shot (direct or splash)
+          const hitsEnemy = result.damageDealt.some(d => d.playerId !== pid && d.damage > 0);
+          
+          if (hitsEnemy) {
+            // Use the target position as aimPoint for weapons that need it
+            this.performFire(tank, player, weapon, targetTank.position, result);
 
-          // Switch to a random weapon for the next shot to increase variety
-          player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
+            // Switch to a random weapon for the next shot to increase variety
+            player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
+          }
         }
       } else {
         // No target? Roam the map.
