@@ -73,7 +73,7 @@ const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen count
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 
 interface PlayerState {
-  socket: Socket;
+  socket?: Socket;
   input: MovementInput;
   lastFireTime: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
@@ -83,6 +83,7 @@ interface PlayerState {
   /** Last tank XZ at which a track history sample was appended. null before
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
+  isBot: boolean;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -181,6 +182,7 @@ export class Room {
     this.physics = new RapierVoxelWorld(this.voxels);
     this.physics.setGravity(GRAVITY);
     this.scheduleReset();
+    this.ensureFourTanks();
   }
 
   private getVoxelSnapshot() {
@@ -238,6 +240,7 @@ export class Room {
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
+    this.ensureFourTanks();
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
@@ -256,6 +259,7 @@ export class Room {
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
+      isBot: false,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -270,6 +274,8 @@ export class Room {
     this.io.to(this.id).emit('match_event', {
       kind: 'join', name: tank.playerName, color: tank.color,
     });
+
+    this.ensureFourTanks();
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
       this.startMatch();
@@ -301,6 +307,8 @@ export class Room {
         kind: 'leave', name: tank.playerName, color: tank.color,
       });
     }
+
+    this.ensureFourTanks();
 
     if (this.players.size === 0) {
       this.stopLoop();
@@ -418,6 +426,59 @@ export class Room {
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  private ensureFourTanks(): void {
+    const TARGET_TANKS = 4;
+    
+    // Remove bots if we have too many tanks
+    if (this.players.size > TARGET_TANKS) {
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      const toRemove = this.players.size - TARGET_TANKS;
+      for (let i = 0; i < Math.min(toRemove, bots.length); i++) {
+        this.removeBot(bots[i][0]);
+      }
+    }
+
+    // Add bots if we have too few tanks
+    while (this.players.size < TARGET_TANKS) {
+      this.addBot();
+    }
+  }
+
+  private addBot(): void {
+    const botId = `bot_${Math.random().toString(36).substr(2, 9)}`;
+    const botNames = ['Bit', 'Byte', 'Kernel', 'Shell', 'Buffer', 'Pointer', 'Array', 'Struct'];
+    const playerName = botNames[Math.floor(Math.random() * botNames.length)];
+
+    this.players.set(botId, {
+      input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastFireTime: 0,
+      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      respawnAllowedAt: 0,
+      lastTrackSampleAt: null,
+      isBot: true,
+    });
+
+    this.spawnTank(botId, playerName);
+    const tank = this.tanks.get(botId)!;
+    this.io.to(this.id).emit('player_spawned', tank);
+    this.io.to(this.id).emit('match_event', {
+      kind: 'join', name: tank.playerName, color: tank.color,
+    });
+  }
+
+  private removeBot(botId: string): void {
+    const tank = this.tanks.get(botId);
+    this.physics.removeTank(botId);
+    this.players.delete(botId);
+    this.tanks.delete(botId);
+    this.io.to(this.id).emit('player_left', { playerId: botId });
+    if (tank) {
+      this.io.to(this.id).emit('match_event', {
+        kind: 'leave', name: tank.playerName, color: tank.color,
+      });
+    }
   }
 
   private getStepFlightSeconds(step: ShotResult['steps'][number]): number {
@@ -766,6 +827,7 @@ export class Room {
 
     this.simInterval = setInterval(() => {
       this.simTime += simDt;
+      this.tickBots(simDt);
       this.tickMovement(simDt);
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
@@ -1158,6 +1220,65 @@ export class Room {
         damage,
         killed: false,
       }]);
+    }
+  }
+
+  private tickBots(dt: number): void {
+    if (this.players.size < 2) return; // Bots need targets
+
+    const now = Date.now() / 1000;
+
+    for (const [pid, player] of this.players) {
+      if (!player.isBot) continue;
+
+      const tank = this.tanks.get(pid);
+      if (!tank || !tank.alive) {
+        if (!tank?.alive && now >= player.respawnAllowedAt) {
+          this.respawnTank(pid);
+        }
+        continue;
+      }
+
+      const targetId = findNearestEnemyFn(tank.position, pid, 100, this.tanks.values());
+      const target = targetId ? this.tanks.get(targetId) : null;
+
+      if (target && target.alive) {
+        // Aim at target
+        const dx = target.position.x - tank.position.x;
+        const dz = target.position.z - tank.position.z;
+        const targetRotation = Math.atan2(dx, dz);
+        
+        // Basic turret rotation smoothing (instant for bots for now, or I can make it gradual)
+        tank.turretRotation = targetRotation;
+        
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        
+        // Move towards target
+        const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+        
+        player.input.left = angleDiff < -0.1;
+        player.input.right = angleDiff > 0.1;
+        player.input.forward = dist > 12;
+        player.input.backward = dist < 6;
+
+        // Fire if aimed and cooldown elapsed
+        const weapon = WEAPONS[0]; // Standard weapon
+        if (now - player.lastFireTime >= weapon.cooldown && Math.abs(angleDiff) < 0.2) {
+          player.lastFireTime = now;
+          const result = simulateShot(
+            tank,
+            weapon,
+            this.voxels,
+            this.getTankList(),
+          );
+          this.scheduleShotResult(result, pid, weapon.id);
+        }
+      } else {
+        // Idle behavior
+        player.input.forward = false;
+        player.input.left = false;
+        player.input.right = false;
+      }
     }
   }
 

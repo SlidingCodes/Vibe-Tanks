@@ -89,7 +89,7 @@ let rapierReady: Promise<void> | null = null;
 export function initRapier(): Promise<void> {
   if (rapierReady) return rapierReady;
   rapierReady = RAPIER.init();
-  return rapierReady;
+  return rapierReady!;
 }
 
 const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
