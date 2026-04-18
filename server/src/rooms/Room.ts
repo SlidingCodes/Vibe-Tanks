@@ -84,6 +84,7 @@ interface PlayerState {
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
+  botWeaponIndex?: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -1224,7 +1225,7 @@ export class Room {
   }
 
   private tickBots(dt: number): void {
-    const now = Date.now();
+    const now = Date.now() / 1000;
     const allTanks = Array.from(this.tanks.values());
 
     for (const [pid, player] of this.players) {
@@ -1277,12 +1278,16 @@ export class Room {
           player.input.left = true; // Spin away from water
         }
 
-        // Firing logic - 20m range
-        const weapon = WEAPONS[0]; // Standard weapon
-        if (dist < 20 && now - player.lastFireTime >= weapon.cooldown * 1000 && Math.abs(angleDiff) < 0.5) {
+        // Firing logic - 20m range, respecting weapon cooldown (seconds)
+        const weaponIndex = player.botWeaponIndex ?? 0;
+        const weapon = WEAPONS[weaponIndex];
+        if (dist < 20 && now - player.lastFireTime >= weapon.cooldown && Math.abs(angleDiff) < 0.5) {
           player.lastFireTime = now;
           const result = simulateShot(tank, weapon, this.voxels, this.getTankList());
           this.scheduleShotResult(result, pid, weapon.id);
+
+          // Switch to a random weapon for the next shot to increase variety
+          player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
         }
       } else {
         // No target? Roam the map.
