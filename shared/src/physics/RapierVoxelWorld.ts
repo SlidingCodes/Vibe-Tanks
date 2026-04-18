@@ -166,6 +166,10 @@ export class RapierVoxelWorld {
     this.world.gravity = { x: 0, y, z: 0 };
   }
 
+  getHeight(x: number, z: number): number {
+    return this.grid.getHeight(x, z);
+  }
+
   private setChunkCollider(cx: number, cy: number, cz: number): boolean {
     const key = chunkKey(cx, cy, cz);
     const prev = this.colliders.get(key);

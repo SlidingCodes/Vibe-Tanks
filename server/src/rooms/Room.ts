@@ -1219,65 +1219,75 @@ export class Room {
         playerId: tank.playerId,
         damage,
         killed: false,
-      }]);
+          }]);
     }
   }
 
   private tickBots(dt: number): void {
-    if (this.players.size < 2) return; // Bots need targets
-
-    const now = Date.now() / 1000;
+    const now = Date.now();
+    const allTanks = Array.from(this.tanks.values());
 
     for (const [pid, player] of this.players) {
       if (!player.isBot) continue;
 
       const tank = this.tanks.get(pid);
-      if (!tank || !tank.alive) {
-        if (!tank?.alive && now >= player.respawnAllowedAt) {
-          this.respawnTank(pid);
-        }
+      if (!tank) continue;
+
+      if (!tank.alive) {
+        if (now >= player.respawnAllowedAt) this.respawnTank(pid);
         continue;
       }
 
-      const targetId = findNearestEnemyFn(tank.position, pid, 100, this.tanks.values());
-      const target = targetId ? this.tanks.get(targetId) : null;
+      // TARGETING - very large radius to ensure they always find an enemy
+      const targetId = findNearestEnemyFn(tank.position, pid, 5000, allTanks);
+      const targetTank = targetId ? this.tanks.get(targetId) : null;
 
-      if (target && target.alive) {
-        // Aim at target
-        const dx = target.position.x - tank.position.x;
-        const dz = target.position.z - tank.position.z;
-        const targetRotation = Math.atan2(dx, dz);
-        
-        // Basic turret rotation smoothing (instant for bots for now, or I can make it gradual)
-        tank.turretRotation = targetRotation;
-        
+      // Default state: Always move forward!
+      player.input.forward = true;
+      player.input.backward = false;
+      player.input.left = false;
+      player.input.right = false;
+
+      if (targetTank) {
+        const dx = targetTank.position.x - tank.position.x;
+        const dz = targetTank.position.z - tank.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
-        
-        // Move towards target
-        const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-        
-        player.input.left = angleDiff < -0.1;
-        player.input.right = angleDiff > 0.1;
-        player.input.forward = dist > 12;
-        player.input.backward = dist < 6;
+        const targetRotation = Math.atan2(dx, dz);
 
-        // Fire if aimed and cooldown elapsed
+        // Turret follows target
+        tank.turretRotation = targetRotation;
+
+        const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+
+        // More aggressive steering
+        if (angleDiff < -0.05) player.input.right = true;
+        else if (angleDiff > 0.05) player.input.left = true;
+
+        // Stop only when very close to target
+        if (dist < 3) player.input.forward = false;
+
+        // Simple water avoidance
+        const lookAheadDist = 5;
+        const lookX = tank.position.x + Math.sin(tank.bodyRotation) * lookAheadDist;
+        const lookZ = tank.position.z + Math.cos(tank.bodyRotation) * lookAheadDist;
+        const groundHeight = this.physics.getHeight(lookX, lookZ);
+        if (groundHeight < 0.2) {
+          player.input.forward = false;
+          player.input.backward = true;
+          player.input.left = true; // Spin away from water
+        }
+
+        // Firing logic - 20m range
         const weapon = WEAPONS[0]; // Standard weapon
-        if (now - player.lastFireTime >= weapon.cooldown && Math.abs(angleDiff) < 0.2) {
+        if (dist < 20 && now - player.lastFireTime >= weapon.cooldown * 1000 && Math.abs(angleDiff) < 0.5) {
           player.lastFireTime = now;
-          const result = simulateShot(
-            tank,
-            weapon,
-            this.voxels,
-            this.getTankList(),
-          );
+          const result = simulateShot(tank, weapon, this.voxels, this.getTankList());
           this.scheduleShotResult(result, pid, weapon.id);
         }
       } else {
-        // Idle behavior
-        player.input.forward = false;
-        player.input.left = false;
-        player.input.right = false;
+        // No target? Roam the map.
+        player.input.forward = true;
+        player.input.left = true;
       }
     }
   }
