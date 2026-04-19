@@ -16,6 +16,25 @@ const TRACK_COLOR = new THREE.Color(0x3a281a).convertSRGBToLinear();
 // alpha blending, so tall mix values still leave the palette visible.
 const TRACK_MAX_MIX = 0.85;
 
+// Cool dark-brown rock tone for steep slopes — visually distinct from the
+// bedrock grey (0x6a6a6a) and the elevation palette so cliff faces read as
+// exposed rock rather than just darker dirt.
+const ROCK_COLOR = new THREE.Color(0x4a4038).convertSRGBToLinear();
+// Slope exponent: higher values keep flat ground free of rock tone and only
+// surface it on near-vertical walls. 2.5 gives a visible band on ~45° slopes.
+const ROCK_BLEND_POWER = 2.5;
+// Max amount of rock tint applied on a fully vertical wall.
+const ROCK_MAX_MIX = 0.8;
+// How much the procedural detail noise modulates brightness (±, around 1).
+const DETAIL_STRENGTH = 0.22;
+// How much the noise-gradient perturbs the shading normal. 0 = off, 1 = strong.
+const BUMP_STRENGTH = 0.55;
+// World-space frequency for the detail noise (lower = larger features).
+const DETAIL_FREQ = 0.22;
+// World-space frequency for the bump-map noise (independent from detail so
+// each can be tuned without affecting the other).
+const BUMP_FREQ = 0.55;
+
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
   const geom = new THREE.BufferGeometry();
@@ -98,41 +117,127 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uTrackColor = { value: TRACK_COLOR };
     shader.uniforms.uTrackMaxMix = { value: TRACK_MAX_MIX };
     shader.uniforms.uTrackEnabled = uTrackEnabled;
+    shader.uniforms.uRockColor = { value: ROCK_COLOR };
+    shader.uniforms.uRockBlendPower = { value: ROCK_BLEND_POWER };
+    shader.uniforms.uRockMaxMix = { value: ROCK_MAX_MIX };
+    shader.uniforms.uDetailStrength = { value: DETAIL_STRENGTH };
+    shader.uniforms.uDetailFreq = { value: DETAIL_FREQ };
+    shader.uniforms.uBumpStrength = { value: BUMP_STRENGTH };
+    shader.uniforms.uBumpFreq = { value: BUMP_FREQ };
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
-varying vec2 vTrackWorldXZ;`,
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-vTrackWorldXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`,
+vec4 _vtWorldPos = modelMatrix * vec4(transformed, 1.0);
+vWorldPos = _vtWorldPos.xyz;
+vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
       );
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
-varying vec2 vTrackWorldXZ;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
 uniform sampler2D uTrackMap;
 uniform vec2 uTrackWorldMin;
 uniform vec2 uTrackWorldSize;
 uniform vec3 uTrackColor;
 uniform float uTrackMaxMix;
-uniform float uTrackEnabled;`,
+uniform float uTrackEnabled;
+uniform vec3 uRockColor;
+uniform float uRockBlendPower;
+uniform float uRockMaxMix;
+uniform float uDetailStrength;
+uniform float uDetailFreq;
+uniform float uBumpStrength;
+uniform float uBumpFreq;
+
+float vt_hash(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float vt_vnoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(vt_hash(i + vec3(0.0, 0.0, 0.0)), vt_hash(i + vec3(1.0, 0.0, 0.0)), f.x),
+        mix(vt_hash(i + vec3(0.0, 1.0, 0.0)), vt_hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+    mix(mix(vt_hash(i + vec3(0.0, 0.0, 1.0)), vt_hash(i + vec3(1.0, 0.0, 1.0)), f.x),
+        mix(vt_hash(i + vec3(0.0, 1.0, 1.0)), vt_hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y),
+    f.z);
+}
+float vt_fbm(vec3 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 3; i++) {
+    v += vt_vnoise(p) * a;
+    p *= 2.03;
+    a *= 0.5;
+  }
+  return v;
+}
+
+float vt_detailNoise = 0.0;`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
+// --- slope-based rock blend: steep faces surface a cool dark-rock tone on
+//     top of the baked elevation palette so cliffs read as exposed rock. ---
+vec3 vt_wn = normalize(vWorldNormal);
+float vt_slope = 1.0 - clamp(vt_wn.y, 0.0, 1.0);
+float vt_rockMix = pow(vt_slope, uRockBlendPower) * uRockMaxMix;
+diffuseColor.rgb = mix(diffuseColor.rgb, uRockColor, vt_rockMix);
+
+// --- procedural detail: fbm mask modulates brightness so adjacent vertices
+//     don't read as flat panels. Stored for reuse by roughness below. ---
+vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
+diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
+
+// --- tread-track decal (unchanged behaviour, now keyed off vWorldPos.xz) ---
 if (uTrackEnabled > 0.5) {
-  vec2 trackUv = (vTrackWorldXZ - uTrackWorldMin) / uTrackWorldSize;
+  vec2 trackUv = (vWorldPos.xz - uTrackWorldMin) / uTrackWorldSize;
   if (trackUv.x >= 0.0 && trackUv.x <= 1.0 && trackUv.y >= 0.0 && trackUv.y <= 1.0) {
     float trackMask = texture2D(uTrackMap, trackUv).a;
     float mixAmount = clamp(trackMask, 0.0, 1.0) * uTrackMaxMix;
     diffuseColor.rgb = mix(diffuseColor.rgb, uTrackColor, mixAmount);
   }
+}`,
+      )
+      .replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+// Tie roughness to the detail noise so highlights break up across terrain.
+roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+// --- noise-gradient bump: central-difference sample in world space, project
+//     off the surface normal, transform to view space, and bias the shading
+//     normal. Gives cheap micro-relief without any normal-map asset. ---
+{
+  float vt_eps = 0.4;
+  vec3 vt_bp = vWorldPos * uBumpFreq;
+  float vt_nx = vt_vnoise(vt_bp + vec3(vt_eps, 0.0, 0.0)) - vt_vnoise(vt_bp - vec3(vt_eps, 0.0, 0.0));
+  float vt_ny = vt_vnoise(vt_bp + vec3(0.0, vt_eps, 0.0)) - vt_vnoise(vt_bp - vec3(0.0, vt_eps, 0.0));
+  float vt_nz = vt_vnoise(vt_bp + vec3(0.0, 0.0, vt_eps)) - vt_vnoise(vt_bp - vec3(0.0, 0.0, vt_eps));
+  vec3 vt_gradWorld = vec3(vt_nx, vt_ny, vt_nz);
+  // Reject the component along the world normal so we only displace tangentially.
+  vt_gradWorld -= dot(vt_gradWorld, vt_wn) * vt_wn;
+  // world → view for the rotation part; directions ignore translation.
+  vec3 vt_gradView = mat3(viewMatrix) * vt_gradWorld;
+  normal = normalize(normal - vt_gradView * uBumpStrength);
 }`,
       );
   };
