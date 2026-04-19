@@ -27,16 +27,26 @@ const INTENSITY_DECAY_PER_SEC = 90;
 const FUELED_INTENSITY_RECOVER = 120;
 /** A neighbour cell only gets a chance to ignite once the source cell is
  *  at least this hot — lets fire "settle" before it spreads. */
-const IGNITE_INTENSITY_THRESHOLD = 160;
+const IGNITE_INTENSITY_THRESHOLD = 180;
+/** Source cell must still have at least this much fuel left to spread.
+ *  Stops a dying ember from marching forever: once the core has burned
+ *  down, edges stop propagating. */
+const SPREAD_MIN_SRC_FUEL = 30;
 /** Seed intensity on a freshly ignited neighbour. Below MAX so the first
  *  propagation pulse doesn't immediately re-spread elsewhere. */
 const NEIGHBOUR_SEED_INTENSITY = 210;
-/** Initial fuel added to a fresh ignition from spread (not stamp). */
-const NEIGHBOUR_SEED_FUEL = 55;
-/** Base probability per spread tick that fire jumps one flat neighbour.
- *  Slope bias adds/subtracts up to ±0.45 (downhill boost / uphill block). */
-const SPREAD_BASE_PROB = 0.55;
-const SPREAD_SLOPE_COEFF = 0.25;
+/** Initial fuel added to a fresh ignition from spread (not stamp). Short
+ *  — propagated cells burn briefly, so chain length is naturally capped. */
+const NEIGHBOUR_SEED_FUEL = 22;
+/** Base probability per 5 Hz tick that fire jumps one flat neighbour.
+ *  Tuned so flat ground stays mostly inside the ignite radius; slopes
+ *  can still extend the patch a few cells downhill over its lifetime. */
+const SPREAD_BASE_PROB = 0.05;
+const SPREAD_SLOPE_COEFF = 0.3;
+/** Clamps on the slope-biased probability delta. Asymmetric: downhill
+ *  gets a real boost, uphill is nearly blocked. */
+const SPREAD_SLOPE_BOOST_MAX = 0.22;
+const SPREAD_SLOPE_CUT_MAX = 0.05;
 
 export interface FireCellDelta {
   /** Cell index (iz * sizeX + ix). */
@@ -265,6 +275,8 @@ export class FireGrid {
     out: Array<{ idx: number; ownerSlot: number }>,
   ): void {
     if (nIx < 0 || nIx >= this.sizeX || nIz < 0 || nIz >= this.sizeZ) return;
+    // Burnt-out cores can't keep marching: require fuel left on the source.
+    if (this.fuel[srcIdx] < SPREAD_MIN_SRC_FUEL) return;
     const nIdx = this.indexOf(nIx, nIz);
     if (this.intensity[nIdx] >= NEIGHBOUR_SEED_INTENSITY) return;
 
@@ -276,7 +288,7 @@ export class FireGrid {
     if (nH <= 0.3) return;
 
     const dh = nH - srcH; // >0 = uphill, <0 = downhill
-    const slopeBias = Math.max(-0.45, Math.min(0.35, -dh * SPREAD_SLOPE_COEFF));
+    const slopeBias = Math.max(-SPREAD_SLOPE_CUT_MAX, Math.min(SPREAD_SLOPE_BOOST_MAX, -dh * SPREAD_SLOPE_COEFF));
     const p = SPREAD_BASE_PROB + slopeBias;
     if (p <= 0) return;
     if (Math.random() > p) return;
