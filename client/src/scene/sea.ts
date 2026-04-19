@@ -147,13 +147,16 @@ export function createSea(scene: THREE.Scene): SeaHandle {
         // so the ocean stays flat under the map (and never pokes through
         // the exposed bedrock floor of a crater). Full amplitude resumes
         // outside the rectangle, with a short smoothstep ramp at the edge
-        // so there's no hard seam.
+        // so there's no hard seam. Tangent/binormal blend back toward the
+        // flat-plane defaults (X+, Z+) so the cross-product normal stays
+        // (0,1,0) inside the map — scaling them to zero alongside p would
+        // produce a NaN normal and render the patch black.
         vec2 clampedToMap = clamp(wPos, uMapMin, uMapMax);
         float edgeDist = distance(wPos, clampedToMap);
         float mapRamp = smoothstep(0.0, 6.0, edgeDist);
         p *= mapRamp;
-        tangent *= mapRamp;
-        binormal *= mapRamp;
+        tangent = mix(vec3(1.0, 0.0, 0.0), tangent, mapRamp);
+        binormal = mix(vec3(0.0, 0.0, 1.0), binormal, mapRamp);
         vFoam = p.y;
         vUv = wPos;
 
