@@ -83,8 +83,20 @@ const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to
  *  loops so spread looks like a creeping burn, not a strobe. */
 const FIRE_TICK_RATE = 5;
 /** Per-fire-tick damage at full cell intensity. At 5 Hz ticks that's
- *  ~12.5 dps at max intensity, matching the old flat-zone napalm feel. */
-const FIRE_DAMAGE_PER_TICK_AT_FULL = 2.5;
+ *  40 dps at max intensity — 2.5 seconds of sustained exposure kills a
+ *  full-health tank. Napalm is area-denial; stepping in should hurt. */
+const FIRE_DAMAGE_PER_TICK_AT_FULL = 8;
+/** Tank hull sample offsets. The fire grid's 2 m cells can straddle the
+ *  edge of a 1.5 m tank, so a single-point centre sample can miss a hot
+ *  cell the tank is plainly sitting on. Sampling 5 hull points and
+ *  taking the max fixes that without having to bilinear-blend the grid. */
+const FIRE_HULL_SAMPLE_OFFSETS: Array<[number, number]> = [
+  [0, 0],
+  [0.8, 0.8],
+  [-0.8, 0.8],
+  [0.8, -0.8],
+  [-0.8, -0.8],
+];
 
 interface PlayerState {
   socket?: Socket;
@@ -656,7 +668,12 @@ export class Room {
         continue;
       }
 
-      victim.hp = Math.max(0, victim.hp - dmg.damage);
+      // Defence in depth — every caller already rounds, but HP is a
+      // player-visible number and one stray float anywhere creates
+      // 3.5435345345… artefacts in HP bars / scoreboards. Clamp here too.
+      const dmgInt = Math.max(0, Math.round(dmg.damage));
+      if (dmgInt === 0) continue;
+      victim.hp = Math.max(0, victim.hp - dmgInt);
       const killed = victim.hp <= 0;
       if (killed) {
         victim.alive = false;
@@ -685,7 +702,7 @@ export class Room {
               killerColor: owner.color,
               victimName: victim.playerName,
               victimColor: victim.color,
-              damage: Math.round(dmg.damage),
+              damage: dmgInt,
               weaponId,
             });
           }
@@ -693,7 +710,7 @@ export class Room {
       }
 
       if (owner && dmg.playerId !== ownerId) {
-        owner.score += dmg.damage;
+        owner.score += dmgInt;
         if (killed) owner.score += 50;
       }
     }
@@ -985,34 +1002,49 @@ export class Room {
     /** How long a tank keeps burning after leaving napalm. Napalm gel is
      *  sticky — the hull keeps cooking for this window and eats residual
      *  damage even if the tank ran clear of the patch. */
-    const BURN_LINGER = 1.2;
-    /** Residual damage multiplier while lingering (napalm on the hull
-     *  burns more slowly than direct contact with the patch). */
+    const BURN_LINGER = 2.0;
+    /** Residual damage multiplier while lingering. */
     const RESIDUAL_DAMAGE_FRACTION = 0.75;
     for (const tank of this.tanks.values()) {
       if (!tank.alive) continue;
       const player = this.players.get(tank.playerId);
-      const sample = this.fire.sampleDamage(tank.position.x, tank.position.z, FIRE_DAMAGE_PER_TICK_AT_FULL);
+
+      // Sample at 5 hull points (centre + 4 corners ~0.8 m off) and take
+      // the hottest reading so a tank straddling the edge of a fire cell
+      // doesn't escape damage just because its centre is in an unlit
+      // neighbour.
+      let bestDamage = 0;
+      let bestOwner: PlayerId | undefined;
+      const bx = tank.position.x;
+      const bz = tank.position.z;
+      for (const [dx, dz] of FIRE_HULL_SAMPLE_OFFSETS) {
+        const s = this.fire.sampleDamage(bx + dx, bz + dz, FIRE_DAMAGE_PER_TICK_AT_FULL);
+        if (s.damage > bestDamage) {
+          bestDamage = s.damage;
+          bestOwner = s.ownerId;
+        }
+      }
 
       let damage = 0;
       let owner: PlayerId | undefined;
-      if (sample.damage > 0) {
+      if (bestDamage > 0) {
         // Direct contact with fire this tick.
-        damage = sample.damage;
-        owner = sample.ownerId;
+        damage = bestDamage;
+        owner = bestOwner;
         if (player) {
           player.burningUntil = nowSec + BURN_LINGER;
-          player.burningOwner = sample.ownerId ?? null;
+          player.burningOwner = bestOwner ?? null;
         }
       } else if (player && nowSec < player.burningUntil) {
-        // Lingering: napalm still clinging to the hull is cooking the
-        // tank, attributed to whoever lit it last.
+        // Lingering: napalm clinging to the hull keeps cooking the tank.
         damage = FIRE_DAMAGE_PER_TICK_AT_FULL * RESIDUAL_DAMAGE_FRACTION;
         owner = player.burningOwner ?? undefined;
       }
 
       if (damage > 0) {
-        const entry = { playerId: tank.playerId, damage, killed: false };
+        // Round to an integer so HP/score stay whole numbers.
+        const dmgInt = Math.max(1, Math.round(damage));
+        const entry = { playerId: tank.playerId, damage: dmgInt, killed: false };
         if (owner === undefined) {
           orphaned.push(entry);
         } else {
