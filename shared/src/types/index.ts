@@ -78,6 +78,9 @@ export interface TankState {
   shieldAvailable: boolean;
   /** Seconds of shield time remaining (counts down from 5 while active, 0 otherwise). */
   shieldTimeRemaining: number;
+  /** True while the tank is taking napalm damage (or has been in the last
+   *  short timer window). Drives the on-tank flame VFX. */
+  burning: boolean;
 }
 
 // ── Weapons ──

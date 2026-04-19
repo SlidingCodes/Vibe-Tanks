@@ -442,7 +442,20 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
   // snapshot so it binds to the current grid (match reset regenerates it).
   if (fireRenderer) fireRenderer.dispose(scene);
-  fireRenderer = new FireRenderer(scene, voxelGrid, pendingFireSnapshot ?? undefined);
+  fireRenderer = new FireRenderer(
+    scene,
+    voxelGrid,
+    pendingFireSnapshot ?? undefined,
+    (center, radius, strength) => {
+      // Use the terrain surface Y at the cell centre so the scorch sphere
+      // sits exactly on the ground the flame renders against.
+      const gridNow = voxelGrid;
+      if (!gridNow || !voxelScorch) return;
+      const gy = gridNow.getHeight(center.x, center.z);
+      voxelScorch.addSphere({ x: center.x, y: gy, z: center.z }, radius, strength);
+      surfaceNets?.invalidateSphere({ x: center.x, y: gy, z: center.z }, radius);
+    },
+  );
   pendingFireSnapshot = null;
   // eslint-disable-next-line no-console
   console.log(

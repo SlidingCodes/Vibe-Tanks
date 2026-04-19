@@ -105,6 +105,10 @@ interface PlayerState {
   turboCooldownUntil: number;
   /** Epoch seconds at which the shield auto-expires (0 = not active). */
   shieldExpiresAt: number;
+  /** Epoch seconds until which the tank renders the "on fire" VFX. Set
+   *  whenever a fire cell samples damage on the tank; decays naturally
+   *  as the tank walks out of the napalm. */
+  burningUntil: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -276,12 +280,14 @@ export class Room {
       tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
       tank.lastAppliedSeq = 0;
+      tank.burning = false;
       const player = this.players.get(pid);
       if (player) {
         player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.input.seq = 0;
+        player.burningUntil = 0;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -309,6 +315,7 @@ export class Room {
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
+      burningUntil: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -408,6 +415,7 @@ export class Room {
       shieldActive: false,
       shieldAvailable: true,
       shieldTimeRemaining: 0,
+      burning: false,
     };
     this.tanks.set(playerId, tank);
     this.physics.addTank(tank);
@@ -541,6 +549,7 @@ export class Room {
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
+      burningUntil: 0,
     });
 
     this.spawnTank(botId, playerName);
@@ -902,7 +911,9 @@ export class Room {
     tank.shieldActive = false;
     tank.shieldAvailable = true;
     tank.shieldTimeRemaining = 0;
+    tank.burning = false;
     player.shieldExpiresAt = 0;
+    player.burningUntil = 0;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     this.physics.resetTank(playerId, tank.position, 0);
@@ -962,18 +973,25 @@ export class Room {
     // bookkeeping with the correct attacker per pass.
     const byOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
     const orphaned: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    const nowSec = Date.now() / 1000;
+    const BURN_LINGER = 1.2; // seconds of "still on fire" after leaving napalm
     for (const tank of this.tanks.values()) {
       if (!tank.alive) continue;
       const sample = this.fire.sampleDamage(tank.position.x, tank.position.z, FIRE_DAMAGE_PER_TICK_AT_FULL);
-      if (sample.damage <= 0) continue;
-      const entry = { playerId: tank.playerId, damage: sample.damage, killed: false };
-      if (sample.ownerId === undefined) {
-        orphaned.push(entry);
-      } else {
-        const list = byOwner.get(sample.ownerId);
-        if (list) list.push(entry);
-        else byOwner.set(sample.ownerId, [entry]);
+      if (sample.damage > 0) {
+        const player = this.players.get(tank.playerId);
+        if (player) player.burningUntil = nowSec + BURN_LINGER;
+        const entry = { playerId: tank.playerId, damage: sample.damage, killed: false };
+        if (sample.ownerId === undefined) {
+          orphaned.push(entry);
+        } else {
+          const list = byOwner.get(sample.ownerId);
+          if (list) list.push(entry);
+          else byOwner.set(sample.ownerId, [entry]);
+        }
       }
+      const player = this.players.get(tank.playerId);
+      tank.burning = !!player && nowSec < player.burningUntil;
     }
     for (const [ownerId, list] of byOwner) {
       this.applyResolvedDamage(ownerId, 'napalm', list);
