@@ -4,15 +4,17 @@ import { FireGridSnapshot } from '@shared/types/index';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { getParticleTextures } from './particles';
 
-/** Upper bound on simultaneously-rendered flame instances. Mirrors the
- *  server-side cap so the InstancedMesh never spills. */
-const MAX_INSTANCES = 600;
+/** Each active fire cell spawns N sub-flames at deterministic jittered
+ *  offsets within the cell so a napalm patch reads as one continuous
+ *  carpet of flame rather than a grid of pencil-straight tufts. */
+const FLAMES_PER_CELL = 3;
+const MAX_CELLS = 600;
+const MAX_TALL_FLAMES = MAX_CELLS * FLAMES_PER_CELL;
+const MAX_GROUND_EMBERS = MAX_CELLS;
 
 /** Cylindrical billboard vertex shader: keeps the quad world-upright but
- *  always facing the camera around the Y axis, so flames read as a 2D
- *  animation on a 3D surface. Per-instance intensity + phase are forwarded
- *  to the fragment for shape / flicker de-synchronisation. */
-const FIRE_VERTEX_SHADER = /* glsl */ `
+ *  always facing the camera around the Y axis. */
+const TALL_VERTEX_SHADER = /* glsl */ `
 attribute float aIntensity;
 attribute float aPhase;
 varying vec2 vUv;
@@ -37,11 +39,7 @@ void main() {
 }
 `;
 
-/** Fragment: distort the flame-silhouette UV with a scrolling noise
- *  texture, apply a 4-stop hot-to-smoke color gradient, modulate by
- *  cell intensity. One texture lookup for shape + two for noise = light
- *  enough to run 600 instances on mid-range mobile GPUs. */
-const FIRE_FRAGMENT_SHADER = /* glsl */ `
+const TALL_FRAGMENT_SHADER = /* glsl */ `
 precision mediump float;
 uniform sampler2D uShape;
 uniform sampler2D uNoise;
@@ -51,9 +49,6 @@ varying float vIntensity;
 varying float vPhase;
 
 void main() {
-  // Two noise samples scrolling upward at different scales — classic
-  // "flowing combustion" look. Phase offsets per-instance so neighbour
-  // flames don't animate in lockstep.
   float scroll = uTime * 0.55;
   vec2 n1uv = vec2(vUv.x * 1.0 + vPhase * 0.13, vUv.y * 1.1 - scroll);
   vec2 n2uv = vec2(vUv.x * 1.7 - vPhase * 0.07, vUv.y * 2.0 - scroll * 1.6);
@@ -61,8 +56,6 @@ void main() {
   float n2 = texture2D(uNoise, n2uv).r;
   float n = (n1 + n2) * 0.5;
 
-  // Distort the flame silhouette's UV with the noise. Wobble grows with
-  // height so the base stays compact and the tip dances.
   float wob = (n - 0.5) * 0.14 * (0.2 + vUv.y);
   vec2 shapeUv = clamp(vUv + vec2(wob, (n - 0.5) * 0.06), 0.0, 1.0);
   float shape = texture2D(uShape, shapeUv).a;
@@ -71,8 +64,6 @@ void main() {
   mask = clamp(mask, 0.0, 1.0);
   if (mask < 0.03) discard;
 
-  // Hot-core → yellow → orange → red-smoke tip, with noise shifting the
-  // gradient so the gradient bands don't read as banded stripes.
   float y = clamp(vUv.y + (n - 0.5) * 0.08, 0.0, 1.0);
   vec3 hot    = vec3(1.00, 0.97, 0.72);
   vec3 yellow = vec3(1.00, 0.78, 0.25);
@@ -92,48 +83,134 @@ void main() {
 }
 `;
 
+/** Ground-ember layer: horizontal quads glued to the terrain surface. The
+ *  fire_burst radial texture softly tiles over neighbour cells so the
+ *  bases of the tall flames read as one glowing carpet, not a grid of
+ *  isolated plumes. Fragment scrolls the noise to flicker the alpha. */
+const EMBER_FRAGMENT_SHADER = /* glsl */ `
+precision mediump float;
+uniform sampler2D uBurst;
+uniform sampler2D uNoise;
+uniform float uTime;
+varying vec2 vUv;
+varying float vIntensity;
+varying float vPhase;
+
+void main() {
+  vec2 uv = vUv;
+  float n = texture2D(uNoise, vec2(uv.x * 1.2 + vPhase, uv.y * 1.2 - uTime * 0.25)).r;
+  float a = texture2D(uBurst, uv).a;
+  float mask = a * (0.45 + 0.9 * n);
+  mask *= vIntensity;
+  if (mask < 0.03) discard;
+
+  vec3 warm = vec3(1.00, 0.55, 0.12);
+  vec3 core = vec3(1.00, 0.85, 0.35);
+  vec3 col = mix(warm, core, n);
+
+  gl_FragColor = vec4(col, mask);
+}
+`;
+
+/** Vertex shader for the ground embers — no billboarding, just pass UV
+ *  plus per-instance intensity + phase. */
+const EMBER_VERTEX_SHADER = /* glsl */ `
+attribute float aIntensity;
+attribute float aPhase;
+varying vec2 vUv;
+varying float vIntensity;
+varying float vPhase;
+
+void main() {
+  vUv = uv;
+  vIntensity = aIntensity;
+  vPhase = aPhase;
+  gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+}
+`;
+
+/** Deterministic 1-D hash → [0, 1). Used to pick stable sub-cell jitter
+ *  offsets from (cellIdx, subIdx) so a given cell always draws the same
+ *  set of flames. */
+function hash1(n: number): number {
+  const x = Math.sin(n * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
 export class FireRenderer {
-  private readonly mesh: THREE.InstancedMesh;
-  private readonly material: THREE.ShaderMaterial;
-  private readonly aIntensity: THREE.InstancedBufferAttribute;
-  private readonly aPhase: THREE.InstancedBufferAttribute;
+  private readonly tallMesh: THREE.InstancedMesh;
+  private readonly tallMaterial: THREE.ShaderMaterial;
+  private readonly tallIntensity: THREE.InstancedBufferAttribute;
+  private readonly tallPhase: THREE.InstancedBufferAttribute;
+
+  private readonly emberMesh: THREE.InstancedMesh;
+  private readonly emberMaterial: THREE.ShaderMaterial;
+  private readonly emberIntensity: THREE.InstancedBufferAttribute;
+  private readonly emberPhase: THREE.InstancedBufferAttribute;
+
   private readonly grid: FireGrid;
   private readonly dummy = new THREE.Object3D();
+  private readonly emberDummy = new THREE.Object3D();
   private time = 0;
 
   constructor(scene: THREE.Scene, voxels: VoxelGrid, initial?: FireGridSnapshot) {
     this.grid = new FireGrid(voxels);
     if (initial) this.grid.loadSnapshot(initial);
 
-    // Tall plane, base at y=0 so instance position sits on terrain.
-    const geom = new THREE.PlaneGeometry(1.0, 1.7);
-    geom.translate(0, 0.85, 0);
-
-    this.aIntensity = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES), 1);
-    this.aPhase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES), 1);
-    geom.setAttribute('aIntensity', this.aIntensity);
-    geom.setAttribute('aPhase', this.aPhase);
-
     const tex = getParticleTextures();
-    this.material = new THREE.ShaderMaterial({
+
+    // ── Tall flames ────────────────────────────────────────────────────
+    const tallGeom = new THREE.PlaneGeometry(1.0, 1.6);
+    tallGeom.translate(0, 0.8, 0);
+    this.tallIntensity = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TALL_FLAMES), 1);
+    this.tallPhase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TALL_FLAMES), 1);
+    tallGeom.setAttribute('aIntensity', this.tallIntensity);
+    tallGeom.setAttribute('aPhase', this.tallPhase);
+    this.tallMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uShape: { value: tex.flameShape },
         uNoise: { value: tex.fireNoise },
       },
-      vertexShader: FIRE_VERTEX_SHADER,
-      fragmentShader: FIRE_FRAGMENT_SHADER,
+      vertexShader: TALL_VERTEX_SHADER,
+      fragmentShader: TALL_FRAGMENT_SHADER,
       transparent: true,
       depthWrite: false,
       depthTest: true,
       blending: THREE.AdditiveBlending,
     });
+    this.tallMesh = new THREE.InstancedMesh(tallGeom, this.tallMaterial, MAX_TALL_FLAMES);
+    this.tallMesh.count = 0;
+    this.tallMesh.frustumCulled = false;
+    this.tallMesh.renderOrder = 3;
+    scene.add(this.tallMesh);
 
-    this.mesh = new THREE.InstancedMesh(geom, this.material, MAX_INSTANCES);
-    this.mesh.count = 0;
-    this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = 2;
-    scene.add(this.mesh);
+    // ── Ground embers ──────────────────────────────────────────────────
+    // Unit plane pre-rotated flat; per-instance matrices only translate + scale.
+    const emberGeom = new THREE.PlaneGeometry(1.0, 1.0);
+    emberGeom.rotateX(-Math.PI / 2);
+    this.emberIntensity = new THREE.InstancedBufferAttribute(new Float32Array(MAX_GROUND_EMBERS), 1);
+    this.emberPhase = new THREE.InstancedBufferAttribute(new Float32Array(MAX_GROUND_EMBERS), 1);
+    emberGeom.setAttribute('aIntensity', this.emberIntensity);
+    emberGeom.setAttribute('aPhase', this.emberPhase);
+    this.emberMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uBurst: { value: tex.fireBurst },
+        uNoise: { value: tex.fireNoise },
+      },
+      vertexShader: EMBER_VERTEX_SHADER,
+      fragmentShader: EMBER_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+    });
+    this.emberMesh = new THREE.InstancedMesh(emberGeom, this.emberMaterial, MAX_GROUND_EMBERS);
+    this.emberMesh.count = 0;
+    this.emberMesh.frustumCulled = false;
+    this.emberMesh.renderOrder = 2;
+    scene.add(this.emberMesh);
   }
 
   loadSnapshot(snap: FireGridSnapshot): void {
@@ -145,44 +222,86 @@ export class FireRenderer {
   }
 
   dispose(scene: THREE.Scene): void {
-    scene.remove(this.mesh);
-    this.mesh.geometry.dispose();
-    this.material.dispose();
+    scene.remove(this.tallMesh);
+    scene.remove(this.emberMesh);
+    this.tallMesh.geometry.dispose();
+    this.emberMesh.geometry.dispose();
+    this.tallMaterial.dispose();
+    this.emberMaterial.dispose();
   }
 
   update(dt: number, voxels: VoxelGrid): void {
     this.time += dt;
-    this.material.uniforms.uTime.value = this.time;
+    this.tallMaterial.uniforms.uTime.value = this.time;
+    this.emberMaterial.uniforms.uTime.value = this.time;
 
-    let i = 0;
-    const intensityArr = this.aIntensity.array as Float32Array;
-    const phaseArr = this.aPhase.array as Float32Array;
+    const cellSize = this.grid.cellSize;
+    const tallIntensityArr = this.tallIntensity.array as Float32Array;
+    const tallPhaseArr = this.tallPhase.array as Float32Array;
+    const emberIntensityArr = this.emberIntensity.array as Float32Array;
+    const emberPhaseArr = this.emberPhase.array as Float32Array;
+
+    let tallI = 0;
+    let emberI = 0;
 
     this.grid.forEachActive((idx, ix, iz, intensity) => {
-      if (i >= MAX_INSTANCES) return;
-      const wx = (ix + 0.5) * this.grid.cellSize;
-      const wz = (iz + 0.5) * this.grid.cellSize;
-      const wy = voxels.getHeight(wx, wz);
+      const cx = (ix + 0.5) * cellSize;
+      const cz = (iz + 0.5) * cellSize;
       const iScale = intensity / 255;
 
-      const width = 1.6 * (0.6 + 0.4 * iScale);
-      const height = 2.2 * (0.55 + 0.45 * iScale);
+      // Ground ember: one horizontal glow per cell. Scale to slightly
+      // larger than the cell so neighbour embers overlap seamlessly.
+      if (emberI < MAX_GROUND_EMBERS) {
+        const y = voxels.getHeight(cx, cz);
+        const spin = hash1(idx + 3) * Math.PI * 2;
+        const emberSize = cellSize * 1.55 * (0.85 + iScale * 0.3);
+        this.emberDummy.position.set(cx, y + 0.02, cz);
+        this.emberDummy.rotation.set(0, spin, 0);
+        this.emberDummy.scale.set(emberSize, emberSize, emberSize);
+        this.emberDummy.updateMatrix();
+        this.emberMesh.setMatrixAt(emberI, this.emberDummy.matrix);
+        emberIntensityArr[emberI] = iScale;
+        emberPhaseArr[emberI] = hash1(idx * 2 + 1) * Math.PI * 2;
+        emberI++;
+      }
 
-      this.dummy.position.set(wx, wy, wz);
-      this.dummy.rotation.set(0, 0, 0);
-      this.dummy.scale.set(width, height, 1);
-      this.dummy.updateMatrix();
-      this.mesh.setMatrixAt(i, this.dummy.matrix);
+      // Tall flames: a few per cell at jittered sub-positions so the patch
+      // reads as a continuous carpet, not a grid of pencil plumes.
+      for (let sub = 0; sub < FLAMES_PER_CELL; sub++) {
+        if (tallI >= MAX_TALL_FLAMES) break;
+        const hOffX = hash1(idx * 7.17 + sub * 31.5);
+        const hOffZ = hash1(idx * 11.3 + sub * 23.1);
+        const hScale = hash1(idx * 13.9 + sub * 41.7);
+        const hPhase = hash1(idx * 17.1 + sub * 53.9);
+        const jx = (hOffX - 0.5) * cellSize * 0.85;
+        const jz = (hOffZ - 0.5) * cellSize * 0.85;
+        const wx = cx + jx;
+        const wz = cz + jz;
+        const wy = voxels.getHeight(wx, wz);
+        const sz = 0.65 + hScale * 0.55;
 
-      intensityArr[i] = iScale;
-      phaseArr[i] = (idx * 0.3754) % (Math.PI * 2);
+        const width = 1.45 * sz * (0.6 + 0.4 * iScale);
+        const height = 2.0 * sz * (0.55 + 0.45 * iScale);
 
-      i++;
+        this.dummy.position.set(wx, wy, wz);
+        this.dummy.rotation.set(0, 0, 0);
+        this.dummy.scale.set(width, height, 1);
+        this.dummy.updateMatrix();
+        this.tallMesh.setMatrixAt(tallI, this.dummy.matrix);
+
+        tallIntensityArr[tallI] = iScale * (0.75 + hScale * 0.25);
+        tallPhaseArr[tallI] = hPhase * Math.PI * 2;
+        tallI++;
+      }
     });
 
-    this.mesh.count = i;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.aIntensity.needsUpdate = true;
-    this.aPhase.needsUpdate = true;
+    this.tallMesh.count = tallI;
+    this.emberMesh.count = emberI;
+    this.tallMesh.instanceMatrix.needsUpdate = true;
+    this.emberMesh.instanceMatrix.needsUpdate = true;
+    this.tallIntensity.needsUpdate = true;
+    this.tallPhase.needsUpdate = true;
+    this.emberIntensity.needsUpdate = true;
+    this.emberPhase.needsUpdate = true;
   }
 }

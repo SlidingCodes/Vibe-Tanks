@@ -239,18 +239,19 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
 
 
-  // ── Turbo Flame ──
-  // Flame sprites on cylindrical-billboarded planes + Kenney flame_shape
-  // as an alpha mask. Per-instance aTint carries the yellow→orange→red
-  // color transition computed on the CPU (short lifetime, no noise
-  // distortion needed — it's a puff, not a steady burn like napalm).
+  // ── Turbo Exhaust ──
+  // Full-billboard puffs that always face the camera. Uses the Kenney
+  // fire_burst radial texture (not the tall flame silhouette) so each
+  // puff reads as a round pulse of hot gas, not a flame licking the
+  // tank. Color ramp goes blue-white (fresh, afterburner-hot) → yellow
+  // → orange → dark (dissipating) so the effect reads as jet exhaust,
+  // not "carro in fiamme".
   const flameTextures = getParticleTextures();
-  const flameGeom = new THREE.PlaneGeometry(1.0, 1.4);
-  flameGeom.translate(0, 0.7, 0);
+  const flameGeom = new THREE.PlaneGeometry(1.0, 1.0);
   const flameTintAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
   flameGeom.setAttribute('aTint', flameTintAttr);
   const flameMat = new THREE.ShaderMaterial({
-    uniforms: { uMap: { value: flameTextures.flameShape } },
+    uniforms: { uMap: { value: flameTextures.fireBurst } },
     vertexShader: /* glsl */ `
       attribute vec3 aTint;
       varying vec2 vUv;
@@ -258,14 +259,14 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       void main() {
         vUv = uv;
         vTint = aTint;
+        // Full spherical billboard — quad vertices are built in view
+        // space, so the puff always faces the camera regardless of angle.
         vec3 instancePos = vec3(instanceMatrix[3]);
-        vec3 worldInstancePos = (modelMatrix * vec4(instancePos, 1.0)).xyz;
         float sx = length(vec3(instanceMatrix[0]));
         float sy = length(vec3(instanceMatrix[1]));
-        vec3 camRight = normalize(vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]));
-        vec3 camUp = vec3(0.0, 1.0, 0.0);
-        vec3 offset = camRight * (position.x * sx) + camUp * (position.y * sy);
-        gl_Position = projectionMatrix * viewMatrix * vec4(worldInstancePos + offset, 1.0);
+        vec4 viewInstancePos = modelViewMatrix * vec4(instancePos, 1.0);
+        vec4 viewPos = viewInstancePos + vec4(position.x * sx, position.y * sy, 0.0, 0.0);
+        gl_Position = projectionMatrix * viewPos;
       }
     `,
     fragmentShader: /* glsl */ `
@@ -514,11 +515,12 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       s.py = pos.y + 0.1 + Math.random() * 0.4;
       s.pz = pos.z + (-backDist * cos - sideOff * sin);
 
-      // Shoot backward + slightly upward
-      const backSpeed = 1.5 + Math.random() * 2.5;
-      s.vx = -sin * backSpeed + (Math.random() - 0.5) * 0.6;
-      s.vz = -cos * backSpeed + (Math.random() - 0.5) * 0.6;
-      s.vy = 0.8 + Math.random() * 1.2;
+      // Shoot backward, only a hint of upward drift so the puff trails
+      // behind the tank like jet wash, not smoke rising off a fire.
+      const backSpeed = 2.0 + Math.random() * 2.5;
+      s.vx = -sin * backSpeed + (Math.random() - 0.5) * 0.5;
+      s.vz = -cos * backSpeed + (Math.random() - 0.5) * 0.5;
+      s.vy = 0.15 + Math.random() * 0.3;
 
       s.size = 0.12 + Math.random() * 0.14;
       s.life = TURBO_FLAME_LIFETIME * (0.7 + Math.random() * 0.6);
@@ -802,28 +804,40 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         s.px += s.vx * dt;
         s.py += s.vy * dt;
         s.pz += s.vz * dt;
-        s.vy += dt * 0.5; // slight buoyancy
-        s.vx *= Math.pow(0.7, dt);
-        s.vz *= Math.pow(0.7, dt);
+        s.vy += dt * 0.15; // very slight buoyancy — keeps the trail low
+        s.vx *= Math.pow(0.5, dt); // faster horizontal drag so puffs stack
+        s.vz *= Math.pow(0.5, dt);
 
         const t = s.life / TURBO_FLAME_LIFETIME; // 1=fresh, 0=fading
-        // Color: yellow (#ffd700) → orange (#ff6600) → red (#cc0000) as t decreases
+        // Afterburner ramp: blue-white fresh → yellow mid → orange →
+        // dark amber tail. Keeps the visual read "engine heat", not
+        // "tank burning".
         let r: number, g: number, b: number;
-        if (t > 0.5) {
-          const u = (t - 0.5) * 2; // 1→0 as t goes 1→0.5
-          r = 1; g = 0.84 * u + 0.4 * (1 - u); b = 0;
+        if (t > 0.75) {
+          const u = (t - 0.75) * 4; // 1→0 as t goes 1→0.75
+          r = 0.72 + 0.25 * (1 - u);
+          g = 0.92 + 0.04 * (1 - u);
+          b = 1.00 * u + 0.40 * (1 - u);
+        } else if (t > 0.4) {
+          const u = (t - 0.4) / 0.35; // 1→0 as t goes 0.75→0.4
+          r = 1.00;
+          g = 0.96 * u + 0.55 * (1 - u);
+          b = 0.40 * u + 0.10 * (1 - u);
         } else {
-          const u = t * 2; // 1→0 as t goes 0.5→0
-          r = 1; g = 0.4 * u; b = 0;
+          const u = t / 0.4; // 1→0 as t goes 0.4→0
+          r = 0.85 * u + 0.25 * (1 - u);
+          g = 0.55 * u + 0.08 * (1 - u);
+          b = 0.10 * u + 0.02 * (1 - u);
         }
         const ti = i * 3;
         tintArr[ti] = r;
         tintArr[ti + 1] = g;
         tintArr[ti + 2] = b;
 
-        const scale = s.size * (1 + (1 - t) * 1.5); // puff up as it fades
+        // Short puff: starts tight, expands as it fades.
+        const scale = s.size * (1.2 + (1 - t) * 1.3);
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.scale.setScalar(scale * 3.2); // plane is smaller than sphere; scale up to match previous visual footprint
+        dummy.scale.setScalar(scale * 2.4);
         dummy.updateMatrix();
         flameMesh.setMatrixAt(i, dummy.matrix);
       }
