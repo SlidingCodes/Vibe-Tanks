@@ -809,25 +809,26 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         s.vz *= Math.pow(0.5, dt);
 
         const t = s.life / TURBO_FLAME_LIFETIME; // 1=fresh, 0=fading
-        // Afterburner ramp: blue-white fresh → yellow mid → orange →
-        // dark amber tail. Keeps the visual read "engine heat", not
-        // "tank burning".
+        // Fully blue afterburner ramp — no yellow/orange at any point,
+        // so the effect reads unambiguously as "jet exhaust" and never
+        // as fire on the tank. White-blue tip → electric cyan-blue →
+        // deep blue → near-black dissipation.
         let r: number, g: number, b: number;
-        if (t > 0.75) {
-          const u = (t - 0.75) * 4; // 1→0 as t goes 1→0.75
-          r = 0.72 + 0.25 * (1 - u);
-          g = 0.92 + 0.04 * (1 - u);
-          b = 1.00 * u + 0.40 * (1 - u);
-        } else if (t > 0.4) {
-          const u = (t - 0.4) / 0.35; // 1→0 as t goes 0.75→0.4
-          r = 1.00;
-          g = 0.96 * u + 0.55 * (1 - u);
-          b = 0.40 * u + 0.10 * (1 - u);
+        if (t > 0.7) {
+          const u = (t - 0.7) / 0.3; // 1→0 as t goes 1→0.7
+          r = 0.85 * u + 0.40 * (1 - u);
+          g = 0.95 * u + 0.75 * (1 - u);
+          b = 1.00;
+        } else if (t > 0.35) {
+          const u = (t - 0.35) / 0.35; // 1→0 as t goes 0.7→0.35
+          r = 0.40 * u + 0.12 * (1 - u);
+          g = 0.75 * u + 0.38 * (1 - u);
+          b = 1.00 * u + 0.90 * (1 - u);
         } else {
-          const u = t / 0.4; // 1→0 as t goes 0.4→0
-          r = 0.85 * u + 0.25 * (1 - u);
-          g = 0.55 * u + 0.08 * (1 - u);
-          b = 0.10 * u + 0.02 * (1 - u);
+          const u = t / 0.35; // 1→0 as t goes 0.35→0
+          r = 0.12 * u + 0.03 * (1 - u);
+          g = 0.38 * u + 0.08 * (1 - u);
+          b = 0.90 * u + 0.25 * (1 - u);
         }
         const ti = i * 3;
         tintArr[ti] = r;
