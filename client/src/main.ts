@@ -24,6 +24,7 @@ import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
 import { FireRenderer } from './scene/fire';
+import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
 
 
@@ -78,6 +79,11 @@ const CLIENT_PHYSICS_STEP = SIM_DT;
 const MAX_PHYSICS_STEPS_PER_FRAME = 4;
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
+
+// Kick off particle texture downloads as early as possible so the first
+// napalm / turbo / explosion after login renders with real textures,
+// not the 1×1 default placeholder.
+getParticleTextures();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);

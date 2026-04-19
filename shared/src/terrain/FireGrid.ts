@@ -1,5 +1,6 @@
 import { PlayerId } from '../types/index';
 import { VoxelGrid } from './VoxelGrid';
+import { SEA_LEVEL } from '../terrain';
 
 /**
  * 2D cellular-automaton fire layer. Lives at coarser resolution than the
@@ -162,10 +163,12 @@ export class FireGrid {
         const ix = c.ix + dx;
         const iz = c.iz + dz;
         if (ix < 0 || ix >= this.sizeX || iz < 0 || iz >= this.sizeZ) continue;
-        // Skip cells that sit on water — napalm on water extinguishes.
+        // Skip only cells that sit in water — napalm still burns in
+        // craters and on exposed bedrock (both are below 0 but above
+        // SEA_LEVEL = -10).
         const worldCenter = this.worldCenter(ix, iz);
         const terrainH = this.voxels.getHeight(worldCenter.x, worldCenter.z);
-        if (terrainH < 0.3) continue;
+        if (terrainH <= SEA_LEVEL + 0.1) continue;
         const idx = this.indexOf(ix, iz);
         const falloff = 1 - d / Math.max(0.001, radiusCells);
         const addFuel = Math.round(fuelAmount * falloff);
@@ -284,8 +287,8 @@ export class FireGrid {
     const nW = this.worldCenter(nIx, nIz);
     const srcH = this.voxels.getHeight(srcW.x, srcW.z);
     const nH = this.voxels.getHeight(nW.x, nW.z);
-    // Water extinguishes — no spread onto low-lying wet cells.
-    if (nH <= 0.3) return;
+    // Water extinguishes — no spread onto submerged cells.
+    if (nH <= SEA_LEVEL + 0.1) return;
 
     const dh = nH - srcH; // >0 = uphill, <0 = downhill
     const slopeBias = Math.max(-SPREAD_SLOPE_CUT_MAX, Math.min(SPREAD_SLOPE_BOOST_MAX, -dh * SPREAD_SLOPE_COEFF));
