@@ -8,6 +8,7 @@ import {
   Vec3,
 } from '@shared/types/index';
 import { AtmosphereHandle } from '../scene/atmosphere';
+import { getParticleTextures } from '../scene/particles';
 
 
 const SECONDS_PER_SAMPLE = 4 / 60;
@@ -415,23 +416,49 @@ function disposeStep(step: ActiveShotStep, scene: THREE.Scene): void {
 function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
   const baseRadius = Math.max(0.7, step.blastRadius * spec.explosionScale);
-  const geo = new THREE.SphereGeometry(baseRadius, 16, 16);
-  const mat = new THREE.MeshBasicMaterial({ color: spec.explosionColor, transparent: true, opacity: 0.88 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(step.endPoint.x, step.endPoint.y, step.endPoint.z);
-  scene.add(mesh);
+
+  // Camera-facing sprite using the Kenney fire_burst texture, tinted by
+  // the per-weapon explosion color. Additive so overlapping bursts compound
+  // into brighter cores. Two overlapping sprites at slightly different
+  // scales and rotations read as a volumetric puff without going full
+  // volumetric-shader.
+  const tex = getParticleTextures().fireBurst;
+  const makeSprite = (rotation: number, scaleMul: number, opacity: number, tint: number) => {
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      color: tint,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const sp = new THREE.Sprite(mat);
+    sp.position.set(step.endPoint.x, step.endPoint.y + baseRadius * 0.35, step.endPoint.z);
+    sp.scale.setScalar(baseRadius * 2.0 * scaleMul);
+    sp.material.rotation = rotation;
+    scene.add(sp);
+    return sp;
+  };
+  const back = makeSprite(0.6, 1.15, 0.75, spec.explosionColor);
+  const front = makeSprite(-0.4, 0.85, 0.95, 0xffd07a);
 
   let frame = 0;
   const animate = () => {
     frame++;
-    mesh.scale.setScalar(1 + frame * 0.08);
-    mat.opacity = Math.max(0, 0.88 - frame * 0.032);
-    if (frame < 26) {
+    const grow = 1 + frame * 0.06;
+    back.scale.setScalar(baseRadius * 2.0 * 1.15 * grow);
+    front.scale.setScalar(baseRadius * 2.0 * 0.85 * grow);
+    (back.material as THREE.SpriteMaterial).opacity = Math.max(0, 0.75 - frame * 0.028);
+    (front.material as THREE.SpriteMaterial).opacity = Math.max(0, 0.95 - frame * 0.038);
+    back.material.rotation += 0.01;
+    front.material.rotation -= 0.015;
+    if (frame < 28) {
       requestAnimationFrame(animate);
     } else {
-      scene.remove(mesh);
-      mesh.geometry.dispose();
-      mat.dispose();
+      scene.remove(back);
+      scene.remove(front);
+      (back.material as THREE.SpriteMaterial).dispose();
+      (front.material as THREE.SpriteMaterial).dispose();
     }
   };
   animate();

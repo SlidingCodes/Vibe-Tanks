@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TankMesh } from '../entities/tank';
+import { getParticleTextures } from './particles';
 
 const MAX_AIR_DUST = 1000;
 const AIR_DUST_RANGE = 40; // Particles within this range of the camera
@@ -239,11 +240,51 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
 
   // ── Turbo Flame ──
-  const flameGeom = new THREE.SphereGeometry(1, 6, 6);
-  const flameMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true });
+  // Flame sprites on cylindrical-billboarded planes + Kenney flame_shape
+  // as an alpha mask. Per-instance aTint carries the yellow→orange→red
+  // color transition computed on the CPU (short lifetime, no noise
+  // distortion needed — it's a puff, not a steady burn like napalm).
+  const flameTextures = getParticleTextures();
+  const flameGeom = new THREE.PlaneGeometry(1.0, 1.4);
+  flameGeom.translate(0, 0.7, 0);
+  const flameTintAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
+  flameGeom.setAttribute('aTint', flameTintAttr);
+  const flameMat = new THREE.ShaderMaterial({
+    uniforms: { uMap: { value: flameTextures.flameShape } },
+    vertexShader: /* glsl */ `
+      attribute vec3 aTint;
+      varying vec2 vUv;
+      varying vec3 vTint;
+      void main() {
+        vUv = uv;
+        vTint = aTint;
+        vec3 instancePos = vec3(instanceMatrix[3]);
+        vec3 worldInstancePos = (modelMatrix * vec4(instancePos, 1.0)).xyz;
+        float sx = length(vec3(instanceMatrix[0]));
+        float sy = length(vec3(instanceMatrix[1]));
+        vec3 camRight = normalize(vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]));
+        vec3 camUp = vec3(0.0, 1.0, 0.0);
+        vec3 offset = camRight * (position.x * sx) + camUp * (position.y * sy);
+        gl_Position = projectionMatrix * viewMatrix * vec4(worldInstancePos + offset, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      precision mediump float;
+      uniform sampler2D uMap;
+      varying vec2 vUv;
+      varying vec3 vTint;
+      void main() {
+        float a = texture2D(uMap, vUv).a;
+        if (a < 0.02) discard;
+        gl_FragColor = vec4(vTint * a, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
   const flameMesh = new THREE.InstancedMesh(flameGeom, flameMat, MAX_TURBO_FLAME);
   flameMesh.frustumCulled = false;
-  flameMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
   scene.add(flameMesh);
 
   const flameStates: ParticleState[] = Array.from({ length: MAX_TURBO_FLAME }, () => ({
@@ -253,7 +294,6 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     size: 0, life: 0, active: false,
   }));
   let flameSpawnCursor = 0;
-  const _flameColor = new THREE.Color();
 
   let treadSpawnCursor = 0;
   let windTime = 0;
@@ -749,6 +789,7 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       if (sparkActive || true) sparkMesh.instanceMatrix.needsUpdate = true;
 
       // 8. Update Turbo Flame
+      const tintArr = flameTintAttr.array as Float32Array;
       for (let i = 0; i < MAX_TURBO_FLAME; i++) {
         const s = flameStates[i];
         if (!s.active) { flameMesh.setMatrixAt(i, hiddenMatrix); continue; }
@@ -767,23 +808,27 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const t = s.life / TURBO_FLAME_LIFETIME; // 1=fresh, 0=fading
         // Color: yellow (#ffd700) → orange (#ff6600) → red (#cc0000) as t decreases
+        let r: number, g: number, b: number;
         if (t > 0.5) {
           const u = (t - 0.5) * 2; // 1→0 as t goes 1→0.5
-          _flameColor.setRGB(1, 0.84 * u + 0.4 * (1 - u), 0);
+          r = 1; g = 0.84 * u + 0.4 * (1 - u); b = 0;
         } else {
           const u = t * 2; // 1→0 as t goes 0.5→0
-          _flameColor.setRGB(1, 0.4 * u, 0);
+          r = 1; g = 0.4 * u; b = 0;
         }
-        flameMesh.setColorAt(i, _flameColor);
+        const ti = i * 3;
+        tintArr[ti] = r;
+        tintArr[ti + 1] = g;
+        tintArr[ti + 2] = b;
 
         const scale = s.size * (1 + (1 - t) * 1.5); // puff up as it fades
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.scale.setScalar(scale);
+        dummy.scale.setScalar(scale * 3.2); // plane is smaller than sphere; scale up to match previous visual footprint
         dummy.updateMatrix();
         flameMesh.setMatrixAt(i, dummy.matrix);
       }
       flameMesh.instanceMatrix.needsUpdate = true;
-      if (flameMesh.instanceColor) flameMesh.instanceColor.needsUpdate = true;
+      flameTintAttr.needsUpdate = true;
     },
     dispose(): void {
       scene.remove(airDustMesh);
