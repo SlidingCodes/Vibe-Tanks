@@ -109,6 +109,10 @@ interface PlayerState {
    *  whenever a fire cell samples damage on the tank; decays naturally
    *  as the tank walks out of the napalm. */
   burningUntil: number;
+  /** Owner of the napalm patch that last lit this tank. Used to attribute
+   *  residual "sticky" damage for kills after the victim walked out of
+   *  the fire. `null` = orphaned (e.g. owner disconnected). */
+  burningOwner: PlayerId | null;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -288,6 +292,7 @@ export class Room {
         player.lastTrackSampleAt = null;
         player.input.seq = 0;
         player.burningUntil = 0;
+        player.burningOwner = null;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -316,6 +321,7 @@ export class Room {
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
       burningUntil: 0,
+      burningOwner: null,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -550,6 +556,7 @@ export class Room {
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
       burningUntil: 0,
+      burningOwner: null,
     });
 
     this.spawnTank(botId, playerName);
@@ -914,6 +921,7 @@ export class Room {
     tank.burning = false;
     player.shieldExpiresAt = 0;
     player.burningUntil = 0;
+    player.burningOwner = null;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     this.physics.resetTank(playerId, tank.position, 0);
@@ -974,23 +982,46 @@ export class Room {
     const byOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
     const orphaned: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
     const nowSec = Date.now() / 1000;
-    const BURN_LINGER = 1.2; // seconds of "still on fire" after leaving napalm
+    /** How long a tank keeps burning after leaving napalm. Napalm gel is
+     *  sticky — the hull keeps cooking for this window and eats residual
+     *  damage even if the tank ran clear of the patch. */
+    const BURN_LINGER = 1.2;
+    /** Residual damage multiplier while lingering (napalm on the hull
+     *  burns more slowly than direct contact with the patch). */
+    const RESIDUAL_DAMAGE_FRACTION = 0.75;
     for (const tank of this.tanks.values()) {
       if (!tank.alive) continue;
+      const player = this.players.get(tank.playerId);
       const sample = this.fire.sampleDamage(tank.position.x, tank.position.z, FIRE_DAMAGE_PER_TICK_AT_FULL);
+
+      let damage = 0;
+      let owner: PlayerId | undefined;
       if (sample.damage > 0) {
-        const player = this.players.get(tank.playerId);
-        if (player) player.burningUntil = nowSec + BURN_LINGER;
-        const entry = { playerId: tank.playerId, damage: sample.damage, killed: false };
-        if (sample.ownerId === undefined) {
+        // Direct contact with fire this tick.
+        damage = sample.damage;
+        owner = sample.ownerId;
+        if (player) {
+          player.burningUntil = nowSec + BURN_LINGER;
+          player.burningOwner = sample.ownerId ?? null;
+        }
+      } else if (player && nowSec < player.burningUntil) {
+        // Lingering: napalm still clinging to the hull is cooking the
+        // tank, attributed to whoever lit it last.
+        damage = FIRE_DAMAGE_PER_TICK_AT_FULL * RESIDUAL_DAMAGE_FRACTION;
+        owner = player.burningOwner ?? undefined;
+      }
+
+      if (damage > 0) {
+        const entry = { playerId: tank.playerId, damage, killed: false };
+        if (owner === undefined) {
           orphaned.push(entry);
         } else {
-          const list = byOwner.get(sample.ownerId);
+          const list = byOwner.get(owner);
           if (list) list.push(entry);
-          else byOwner.set(sample.ownerId, [entry]);
+          else byOwner.set(owner, [entry]);
         }
       }
-      const player = this.players.get(tank.playerId);
+
       tank.burning = !!player && nowSec < player.burningUntil;
     }
     for (const [ownerId, list] of byOwner) {
