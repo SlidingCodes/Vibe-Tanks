@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TankMesh } from '../entities/tank';
-import { getParticleTextures } from './particles';
+import { createSmokeMaterial, getParticleTextures } from './particles';
 
 const MAX_AIR_DUST = 1000;
 const AIR_DUST_RANGE = 40; // Particles within this range of the camera
@@ -99,15 +99,15 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }));
 
 
+  const smokeTex = getParticleTextures().smokePuff;
+
   // ── Tread Dust (Spawned trail) ──
-  const treadGeom = new THREE.BoxGeometry(1, 1, 1);
-  const treadMat = new THREE.MeshStandardMaterial({
-    color: 0x8b7355, // Dust color
-    transparent: true,
-    opacity: 0.45,
-    roughness: 1,
-    metalness: 0,
-  });
+  // Billboarded smoke sprite tinted dusty brown. aRgba attribute carries
+  // the per-instance (tint, opacity) that the shared smoke material reads.
+  const treadGeom = new THREE.PlaneGeometry(1, 1);
+  const treadRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TREAD_DUST * 4), 4);
+  treadGeom.setAttribute('aRgba', treadRgbaAttr);
+  const treadMat = createSmokeMaterial(smokeTex);
 
   const treadMesh = new THREE.InstancedMesh(treadGeom, treadMat, MAX_TREAD_DUST);
   treadMesh.frustumCulled = false;
@@ -123,13 +123,10 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }));
 
   // ── Exhaust Smoke ──
-  const exhaustGeom = new THREE.BoxGeometry(1, 1, 1);
-  const exhaustMat = new THREE.MeshStandardMaterial({
-    color: 0x333333,
-    transparent: true,
-    opacity: 0.4,
-    roughness: 1,
-  });
+  const exhaustGeom = new THREE.PlaneGeometry(1, 1);
+  const exhaustRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_EXHAUST_SMOKE * 4), 4);
+  exhaustGeom.setAttribute('aRgba', exhaustRgbaAttr);
+  const exhaustMat = createSmokeMaterial(smokeTex);
   const exhaustMesh = new THREE.InstancedMesh(exhaustGeom, exhaustMat, MAX_EXHAUST_SMOKE);
   exhaustMesh.frustumCulled = false;
   scene.add(exhaustMesh);
@@ -146,13 +143,10 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   let exhaustSpawnCursor = 0;
 
   // ── Muzzle Smoke ──
-  const msmokeGeom = new THREE.BoxGeometry(1, 1, 1);
-  const msmokeMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.5,
-    roughness: 1,
-  });
+  const msmokeGeom = new THREE.PlaneGeometry(1, 1);
+  const msmokeRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_MUZZLE_SMOKE * 4), 4);
+  msmokeGeom.setAttribute('aRgba', msmokeRgbaAttr);
+  const msmokeMat = createSmokeMaterial(smokeTex);
   const msmokeMesh = new THREE.InstancedMesh(msmokeGeom, msmokeMat, MAX_MUZZLE_SMOKE);
   msmokeMesh.frustumCulled = false;
   scene.add(msmokeMesh);
@@ -617,16 +611,16 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       airDustMesh.instanceMatrix.needsUpdate = true;
 
       // 2. Update Tread Dust
-      let treadActive = false;
+      const treadRgba = treadRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_TREAD_DUST; i++) {
         const s = treadStates[i];
-        if (!s.active) continue;
-        treadActive = true;
+        if (!s.active) { treadRgba[i * 4 + 3] = 0; continue; }
 
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           treadMesh.setMatrixAt(i, hiddenMatrix);
+          treadRgba[i * 4 + 3] = 0;
           continue;
         }
 
@@ -637,27 +631,32 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / TREAD_DUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, s.rz);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5)); // grow even more
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5) * 1.6);
         dummy.updateMatrix();
         treadMesh.setMatrixAt(i, dummy.matrix);
 
+        // Dusty brown tint fading out with remaining life.
+        const o = i * 4;
+        treadRgba[o]     = 0.55;
+        treadRgba[o + 1] = 0.45;
+        treadRgba[o + 2] = 0.33;
+        treadRgba[o + 3] = scale * 0.55;
       }
-      if (treadActive || true) {
-        treadMesh.instanceMatrix.needsUpdate = true;
-      }
+      treadMesh.instanceMatrix.needsUpdate = true;
+      treadRgbaAttr.needsUpdate = true;
 
       // 3. Update Exhaust Smoke
-      let exhaustActive = false;
+      const exhaustRgba = exhaustRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_EXHAUST_SMOKE; i++) {
         const s = exhaustStates[i];
-        if (!s.active) continue;
-        exhaustActive = true;
+        if (!s.active) { exhaustRgba[i * 4 + 3] = 0; continue; }
 
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           exhaustMesh.setMatrixAt(i, hiddenMatrix);
+          exhaustRgba[i * 4 + 3] = 0;
           continue;
         }
 
@@ -668,25 +667,30 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / EXHAUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, s.rz);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3) * 1.8);
         dummy.updateMatrix();
         exhaustMesh.setMatrixAt(i, dummy.matrix);
+
+        const o = i * 4;
+        exhaustRgba[o]     = 0.18;
+        exhaustRgba[o + 1] = 0.17;
+        exhaustRgba[o + 2] = 0.16;
+        exhaustRgba[o + 3] = scale * 0.55;
       }
-      if (exhaustActive || true) {
-        exhaustMesh.instanceMatrix.needsUpdate = true;
-      }
+      exhaustMesh.instanceMatrix.needsUpdate = true;
+      exhaustRgbaAttr.needsUpdate = true;
 
       // 4. Update Muzzle Smoke
-      let msmokeActive = false;
+      const msmokeRgba = msmokeRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_MUZZLE_SMOKE; i++) {
         const s = msmokeStates[i];
-        if (!s.active) continue;
-        msmokeActive = true;
+        if (!s.active) { msmokeRgba[i * 4 + 3] = 0; continue; }
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           msmokeMesh.setMatrixAt(i, hiddenMatrix);
+          msmokeRgba[i * 4 + 3] = 0;
           continue;
         }
         s.px += s.vx * dt; s.py += s.vy * dt; s.pz += s.vz * dt;
@@ -695,12 +699,21 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / MUZZLE_SMOKE_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, 0);
-        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4) * 2.2);
         dummy.updateMatrix();
         msmokeMesh.setMatrixAt(i, dummy.matrix);
+
+        // Starts white-bright (gunpowder flash smoke) then drifts to grey.
+        const warm = scale; // 1 fresh → 0 fading
+        const o = i * 4;
+        msmokeRgba[o]     = 0.55 + 0.35 * warm;
+        msmokeRgba[o + 1] = 0.55 + 0.35 * warm;
+        msmokeRgba[o + 2] = 0.55 + 0.35 * warm;
+        msmokeRgba[o + 3] = scale * 0.55;
       }
-      if (msmokeActive || true) msmokeMesh.instanceMatrix.needsUpdate = true;
+      msmokeMesh.instanceMatrix.needsUpdate = true;
+      msmokeRgbaAttr.needsUpdate = true;
 
       // 5. Update Muzzle Flash
       let flashActive = false;
