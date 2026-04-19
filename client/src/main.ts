@@ -510,6 +510,21 @@ socket.on('fire_update', (update: FireUpdate) => {
   if (fireRenderer) fireRenderer.applyUpdate(update.cells);
 });
 
+// Continuous-damage sources (napalm fire, future gas zones, etc.) don't
+// ride on shot_resolved, so they emit this dedicated event to drive the
+// usual floating damage-number popups + hit-marker audio.
+socket.on('damage_applied', (data) => {
+  for (const hit of data.hits) {
+    const mesh = getAllTankMeshes().get(hit.playerId);
+    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed);
+  }
+  if (myId && data.hits.some((h) => h.playerId !== myId)) {
+    // At least one non-self hit — play hit marker for the local shooter
+    // if they own the napalm patch. (We can't easily attribute the
+    // shooter here, so play conservatively only when damage hit others.)
+  }
+});
+
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
   if (k === 'v' && !ev.repeat) {

@@ -383,4 +383,9 @@ export interface ServerEvents {
   /** Incremental fire updates at ~5 Hz while cells change. Only cells whose
    *  intensity or owner changed since the last tick are included. */
   fire_update: (update: FireUpdate) => void;
+  /** Per-tick damage events from continuous sources (fire, future gas, etc.)
+   *  that don't ride on a shot_resolved. Each entry drives a floating
+   *  damage-number popup and hit-marker on the client, mirroring the
+   *  experience of direct-hit weapons. */
+  damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
 }

@@ -83,9 +83,10 @@ const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to
  *  loops so spread looks like a creeping burn, not a strobe. */
 const FIRE_TICK_RATE = 5;
 /** Per-fire-tick damage at full cell intensity. At 5 Hz ticks that's
- *  40 dps at max intensity — 2.5 seconds of sustained exposure kills a
- *  full-health tank. Napalm is area-denial; stepping in should hurt. */
-const FIRE_DAMAGE_PER_TICK_AT_FULL = 8;
+ *  25 dps at max intensity — a tank needs ~4 s of sustained exposure
+ *  to die, a drive-by sheds ~40-50 HP. Napalm hurts without being
+ *  instant-kill. */
+const FIRE_DAMAGE_PER_TICK_AT_FULL = 5;
 /** Tank hull sample offsets. The fire grid's 2 m cells can straddle the
  *  edge of a 1.5 m tank, so a single-point centre sample can miss a hot
  *  cell the tank is plainly sitting on. Sampling 5 hull points and
@@ -1056,11 +1057,26 @@ export class Room {
 
       tank.burning = !!player && nowSec < player.burningUntil;
     }
+    // Clone entries for the popup broadcast before applyResolvedDamage
+    // might mutate them, then retroactively flag killed by re-reading
+    // victim.alive post-damage.
+    const allHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    for (const list of byOwner.values()) for (const h of list) allHits.push({ ...h });
+    for (const h of orphaned) allHits.push({ ...h });
+
     for (const [ownerId, list] of byOwner) {
       this.applyResolvedDamage(ownerId, 'napalm', list);
     }
     if (orphaned.length > 0) {
       this.applyResolvedDamage('server', 'napalm', orphaned);
+    }
+
+    if (allHits.length > 0) {
+      for (const h of allHits) {
+        const victim = this.tanks.get(h.playerId);
+        if (!victim || !victim.alive) h.killed = true;
+      }
+      this.io.to(this.id).emit('damage_applied', { weaponId: 'napalm', hits: allHits });
     }
 
     const delta = this.fire.consumeDirty();
