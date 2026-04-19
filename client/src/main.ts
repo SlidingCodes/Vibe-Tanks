@@ -23,6 +23,7 @@ import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/k
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
+import { FireRenderer } from './scene/fire';
 import { triggerRecoil } from './entities/tank';
 
 
@@ -46,7 +47,7 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -381,6 +382,8 @@ const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rig
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
+let fireRenderer: FireRenderer | null = null;
+let pendingFireSnapshot: FireGridSnapshot | null = null;
 
 // Minimum horizontal distance a tank must move before a new tread segment is
 // drawn. Prevents stationary tanks from overdrawing the same canvas pixels.
@@ -436,6 +439,11 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
+  // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
+  // snapshot so it binds to the current grid (match reset regenerates it).
+  if (fireRenderer) fireRenderer.dispose(scene);
+  fireRenderer = new FireRenderer(scene, voxelGrid, pendingFireSnapshot ?? undefined);
+  pendingFireSnapshot = null;
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
@@ -468,6 +476,20 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   }
 });
 
+
+socket.on('fire_snapshot', (snap: FireGridSnapshot) => {
+  if (fireRenderer) {
+    fireRenderer.loadSnapshot(snap);
+  } else {
+    // Arrived before voxel_snapshot built the renderer — stash it so the
+    // voxel_snapshot handler can apply it on creation.
+    pendingFireSnapshot = snap;
+  }
+});
+
+socket.on('fire_update', (update: FireUpdate) => {
+  if (fireRenderer) fireRenderer.applyUpdate(update.cells);
+});
 
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
@@ -1214,6 +1236,10 @@ function animate(): void {
     _scratchLocalPos.set(0, 0, 0);
   }
   updateTankNameLabels(camera, _scratchLocalPos, occlusionObjects, myId);
+
+  if (fireRenderer && voxelGrid) {
+    fireRenderer.update(dt, voxelGrid);
+  }
 
   if (atmosphere) {
     atmosphere.update(dt, camera, getAllTankMeshes());

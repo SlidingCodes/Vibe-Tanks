@@ -288,6 +288,33 @@ export interface MatchSnapshot {
   resetsInSeconds: number;
 }
 
+// ── Fire (napalm cellular automaton) ──
+export interface FireCell {
+  /** Cell index within the fire grid (iz * sizeX + ix). */
+  idx: number;
+  /** 0-255 current flame intensity. 0 = dark / extinguished. */
+  intensity: number;
+  /** Owner slot (1-based). 0 = unowned. Resolved via FireGridSnapshot.owners. */
+  ownerSlot: number;
+}
+
+export interface FireOwnerMapping {
+  slot: number;
+  playerId: PlayerId;
+}
+
+export interface FireGridSnapshot {
+  sizeX: number;
+  sizeZ: number;
+  cellSize: number;
+  cells: FireCell[];
+  owners: FireOwnerMapping[];
+}
+
+export interface FireUpdate {
+  cells: FireCell[];
+}
+
 // ── Shot result ──
 export interface ShotStep {
   startDelay: number;
@@ -347,4 +374,10 @@ export interface ServerEvents {
   player_left: (data: { playerId: PlayerId }) => void;
   match_event: (event: MatchEvent) => void;
   game_over: (data: { winnerId: PlayerId; scores: { playerId: PlayerId; score: number }[] }) => void;
+  /** Full fire-grid state sent on join + match reset. Lets late joiners see
+   *  any napalm patches still burning. */
+  fire_snapshot: (snapshot: FireGridSnapshot) => void;
+  /** Incremental fire updates at ~5 Hz while cells change. Only cells whose
+   *  intensity or owner changed since the last tick are included. */
+  fire_update: (update: FireUpdate) => void;
 }

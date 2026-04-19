@@ -43,6 +43,7 @@ import {
 } from '@shared/terrain';
 import { WEAPONS } from '@shared/weapons';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
+import { FireGrid } from '@shared/terrain/FireGrid';
 import { HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import {
   findNearestEnemy as findNearestEnemyFn,
@@ -78,6 +79,12 @@ const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen count
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
+/** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
+ *  loops so spread looks like a creeping burn, not a strobe. */
+const FIRE_TICK_RATE = 5;
+/** Per-fire-tick damage at full cell intensity. At 5 Hz ticks that's
+ *  ~12.5 dps at max intensity, matching the old flat-zone napalm feel. */
+const FIRE_DAMAGE_PER_TICK_AT_FULL = 2.5;
 
 interface PlayerState {
   socket?: Socket;
@@ -143,6 +150,10 @@ export class Room {
    *  on every impact; all physics, simulation and client rendering read from
    *  this single source of truth. */
   voxels: VoxelGrid;
+  /** 2D cellular-automaton fire layer. Napalm ignites patches of cells
+   *  here; the CA burns, spreads downhill, and damages tanks standing
+   *  inside active cells. */
+  fire: FireGrid;
   /** Rolling tread-track sample buffer per player. Appended when a tank
    *  moves ≥ TRACK_SAMPLE_STEP; capped to TRACK_HISTORY_MAX_POINTS so old
    *  trails fade away. Sent to each joining client after voxel_snapshot. */
@@ -160,6 +171,7 @@ export class Room {
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
+  private fireInterval: ReturnType<typeof setInterval> | null = null;
   private simTime = 0;
   private nextProjectileId = 1;
   private nextHazardId = 1;
@@ -187,7 +199,8 @@ export class Room {
       minYCells: -16,
     });
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
-    
+    this.fire = new FireGrid(this.voxels);
+
     // Pick an initial event
     const events: SpecialEvent[] = ['none', 'double_terrain_damage', 'low_gravity', 'dense_fog', 'space_invaders'];
     this.specialEvent = events[Math.floor(Math.random() * events.length)];
@@ -243,6 +256,7 @@ export class Room {
     this.voxels.seedFromNoise(createTerrainHeightSampler(this.terrainSettings, this.terrainSeed));
     this.physics.setGrid(this.voxels);
     this.physics.setGravity(GRAVITY);
+    this.fire.clear();
     this.trackHistory.clear();
     for (const player of this.players.values()) player.lastTrackSampleAt = null;
     for (const [pid, tank] of this.tanks) {
@@ -276,6 +290,7 @@ export class Room {
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
+    this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
@@ -301,6 +316,7 @@ export class Room {
 
     socket.emit('room_snapshot', this.getSnapshot());
     socket.emit('voxel_snapshot', this.getVoxelSnapshot());
+    socket.emit('fire_snapshot', this.fire.snapshot());
     socket.emit('track_history', buildTrackHistoryPayload(this.trackHistory));
 
     const tank = this.tanks.get(playerId)!;
@@ -350,6 +366,7 @@ export class Room {
       this.simTime = 0;
       this.activeProjectiles.clear();
       this.activeHazards.clear();
+      this.fire.clear();
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
       this.pendingShotTimeouts.clear();
@@ -730,28 +747,18 @@ export class Room {
 
     if (segment.reason === 'impact') {
       const radius = weapon.behaviorConfig?.burnRadius ?? 4;
+      // Fuel budget = BURN_RATE (36/s) × duration, so a patch at the centre
+      // burns for roughly the configured burnDuration before going dark.
       const duration = weapon.behaviorConfig?.burnDuration ?? 5;
-      const tickInterval = weapon.behaviorConfig?.burnTickInterval ?? 0.5;
-      const tickDamage = weapon.behaviorConfig?.burnTickDamage ?? 6;
+      const fuelAmount = Math.min(255, Math.round(36 * duration));
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        const hazardId = `hazard_${this.nextHazardId++}`;
-        this.activeHazards.set(hazardId, {
-          hazardId,
-          ownerId: tank.playerId,
-          weaponId: weapon.id,
-          type: 'napalm',
-          position: segment.endPoint,
+        this.fire.ignite(
+          { x: segment.endPoint.x, z: segment.endPoint.z },
           radius,
-          armed: true,
-          timeRemaining: duration,
-          damage: tickDamage,
-          tickInterval,
-          tickTimer: tickInterval,
-          triggerRadius: radius,
-          blastRadius: radius,
-          terrainDamage: 0,
-        });
+          fuelAmount,
+          tank.playerId,
+        );
       }, segment.elapsed * 1000);
       this.pendingShotTimeouts.add(timeout);
     }
@@ -905,6 +912,7 @@ export class Room {
     this.phase = MatchPhase.InProgress;
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
+    this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
     this.startLoop();
   }
 
@@ -929,11 +937,55 @@ export class Room {
     this.broadcastInterval = setInterval(() => {
       this.io.to(this.id).emit('state_update', this.getStateUpdate());
     }, (1 / TICK_RATE) * 1000);
+
+    const fireDt = 1 / FIRE_TICK_RATE;
+    this.fireInterval = setInterval(() => {
+      if (this.phase === MatchPhase.Leaderboard) return;
+      this.tickFire(fireDt);
+    }, fireDt * 1000);
   }
 
   private stopLoop(): void {
     if (this.simInterval) { clearInterval(this.simInterval); this.simInterval = null; }
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
+    if (this.fireInterval) { clearInterval(this.fireInterval); this.fireInterval = null; }
+  }
+
+  /** Advance the napalm CA and apply per-tick damage to any tank standing
+   *  in a burning cell. Runs at FIRE_TICK_RATE, independent of sim/broadcast
+   *  loops. Damage attribution per owner-slot lets a late napalmer still
+   *  get credit for kills on cells they ignited directly. */
+  private tickFire(dt: number): void {
+    this.fire.tick(dt);
+
+    // Group damage by owner so applyResolvedDamage can do kill/score
+    // bookkeeping with the correct attacker per pass.
+    const byOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
+    const orphaned: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    for (const tank of this.tanks.values()) {
+      if (!tank.alive) continue;
+      const sample = this.fire.sampleDamage(tank.position.x, tank.position.z, FIRE_DAMAGE_PER_TICK_AT_FULL);
+      if (sample.damage <= 0) continue;
+      const entry = { playerId: tank.playerId, damage: sample.damage, killed: false };
+      if (sample.ownerId === undefined) {
+        orphaned.push(entry);
+      } else {
+        const list = byOwner.get(sample.ownerId);
+        if (list) list.push(entry);
+        else byOwner.set(sample.ownerId, [entry]);
+      }
+    }
+    for (const [ownerId, list] of byOwner) {
+      this.applyResolvedDamage(ownerId, 'napalm', list);
+    }
+    if (orphaned.length > 0) {
+      this.applyResolvedDamage('server', 'napalm', orphaned);
+    }
+
+    const delta = this.fire.consumeDirty();
+    if (delta.length > 0) {
+      this.io.to(this.id).emit('fire_update', { cells: delta });
+    }
   }
 
   private tickMovement(dt: number): void {
@@ -1184,14 +1236,6 @@ export class Room {
     for (const [hazardId, hazard] of this.activeHazards) {
       hazard.timeRemaining -= dt;
 
-      if (hazard.type === 'napalm') {
-        hazard.tickTimer -= dt;
-        if (hazard.tickTimer <= 0) {
-          hazard.tickTimer += hazard.tickInterval;
-          this.applyFlatZoneDamage(hazard.ownerId, hazard.weaponId, hazard.position, hazard.radius, hazard.damage);
-        }
-      }
-
       if (hazard.type === 'mine') {
         if (!hazard.armed) {
           hazard.tickTimer -= dt;
@@ -1327,22 +1371,6 @@ export class Room {
     for (const tank of this.tanks.values()) {
       if (!tank.alive || tank.airborne) continue;
       this.alignTankTilt(tank, cellSize);
-    }
-  }
-
-  private applyFlatZoneDamage(ownerId: PlayerId, weaponId: string, point: Vec3, radius: number, damage: number): void {
-    if (damage <= 0) return;
-
-    for (const tank of this.tanks.values()) {
-      if (!tank.alive) continue;
-      const dx = tank.position.x - point.x;
-      const dz = tank.position.z - point.z;
-      if (Math.sqrt(dx * dx + dz * dz) > radius) continue;
-      this.applyResolvedDamage(ownerId, weaponId, [{
-        playerId: tank.playerId,
-        damage,
-        killed: false,
-          }]);
     }
   }
 
