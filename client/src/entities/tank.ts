@@ -130,29 +130,44 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   shieldMesh.visible = tank.shieldActive ?? false;
   chassisGroup.add(shieldMesh);
 
-  // Three flame sprites riding on the tank — lit when the tank is
-  // burning (i.e. standing in / just left a napalm patch). Positions
-  // span body so the flames look like they've ignited the whole hull.
+  // Burning VFX: multi-layer billboards riding on the tank. When the
+  // tank is standing in / just left a napalm patch this whole stack
+  // pulses out of phase. Five fire sprites blanket the hull + turret,
+  // two smoke puffs rise above. Additive fire + normal-blend smoke so
+  // the tank reads as actually on fire, not wearing a tinted sticker.
   const burningFlames: THREE.Sprite[] = [];
-  const burnTex = getParticleTextures().fireBurst;
-  const burnOffsets = [
-    { x: 0.0, y: 0.55, z: 0.0, s: 1.25, tint: 0xff8030 },
-    { x: 0.35, y: 0.62, z: 0.3, s: 0.9, tint: 0xffb050 },
-    { x: -0.3, y: 0.58, z: -0.35, s: 0.9, tint: 0xff7020 },
+  const { fireBurst: burnTex, smokePuff: smokeTex } = getParticleTextures();
+  const FIRE_SPRITES = [
+    // y=0.55-0.7 sits just on / above the hull top; hull height is 0.6
+    // (body center 0.3, geom 0.6 tall). Turret centre is around y=0.85.
+    { x:  0.00, y: 1.00, z:  0.00, s: 2.10, tint: 0xffa030, kind: 'fire' as const }, // turret crown
+    { x:  0.00, y: 0.70, z:  0.55, s: 1.65, tint: 0xff7020, kind: 'fire' as const }, // front hood
+    { x:  0.00, y: 0.70, z: -0.55, s: 1.65, tint: 0xff7020, kind: 'fire' as const }, // rear deck
+    { x:  0.55, y: 0.60, z:  0.00, s: 1.55, tint: 0xff8030, kind: 'fire' as const }, // right flank
+    { x: -0.55, y: 0.60, z:  0.00, s: 1.55, tint: 0xff8030, kind: 'fire' as const }, // left flank
+    // Dark smoke rising above — drifts up in the animate loop so it
+    // trails above the moving tank.
+    { x:  0.00, y: 1.80, z:  0.00, s: 2.30, tint: 0x2a2520, kind: 'smoke' as const },
+    { x:  0.00, y: 2.30, z:  0.00, s: 2.70, tint: 0x1a1815, kind: 'smoke' as const },
   ];
-  for (const o of burnOffsets) {
+  for (const o of FIRE_SPRITES) {
     const mat = new THREE.SpriteMaterial({
-      map: burnTex,
+      map: o.kind === 'fire' ? burnTex : smokeTex,
       color: o.tint,
       transparent: true,
       opacity: 0,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      depthTest: true,
+      blending: o.kind === 'fire' ? THREE.AdditiveBlending : THREE.NormalBlending,
     });
     const sp = new THREE.Sprite(mat);
     sp.position.set(o.x, o.y, o.z);
     sp.scale.setScalar(o.s);
     sp.visible = false;
+    sp.userData.kind = o.kind;
+    sp.userData.baseY = o.y;
+    sp.userData.baseScale = o.s;
+    sp.renderOrder = 5;
     chassisGroup.add(sp);
     burningFlames.push(sp);
   }
@@ -294,19 +309,36 @@ export function tickTankEffects(dt: number): void {
       tm.shieldMesh.visible = false;
     }
 
-    // Burning VFX — three additive fire_burst sprites on top of the hull,
-    // pulsing out of phase so the tank reads as actively on fire, not
-    // a static glow.
+    // Burning VFX — 5 additive fire_burst sprites blanket the hull +
+    // turret, 2 dark smoke puffs rise above. Both layers pulse out of
+    // phase so the tank reads as actively on fire, not a static glow.
     if (tm.state.burning) {
       const t = performance.now() * 0.006;
       for (let i = 0; i < tm.burningFlames.length; i++) {
         const sp = tm.burningFlames[i];
         sp.visible = true;
-        const phase = i * 2.094; // 120° per sprite
-        const pulse = 0.75 + 0.25 * Math.sin(t + phase);
-        sp.scale.setScalar((0.9 + 0.3 * pulse) * (1.1 + 0.2 * Math.sin(t * 1.3 + phase)));
-        (sp.material as THREE.SpriteMaterial).opacity = 0.55 + 0.35 * pulse;
-        sp.material.rotation += dt * (1.2 + i * 0.4);
+        const kind = sp.userData.kind as 'fire' | 'smoke';
+        const baseY = sp.userData.baseY as number;
+        const baseScale = sp.userData.baseScale as number;
+        const phase = i * 1.37; // irrational spacing
+
+        if (kind === 'fire') {
+          const pulse = 0.8 + 0.2 * Math.sin(t * 1.2 + phase);
+          const wobble = 1.0 + 0.25 * Math.sin(t * 2.1 + phase * 1.6);
+          sp.scale.setScalar(baseScale * pulse * wobble);
+          (sp.material as THREE.SpriteMaterial).opacity = 0.85 + 0.15 * Math.sin(t * 3 + phase);
+          sp.material.rotation += dt * (1.4 + i * 0.3);
+        } else {
+          // Smoke drifts upward over time, pulsing wider; wraps back to
+          // base every ~1 s so the column looks continuously renewed.
+          const smokeT = (t * 0.6 + phase) % 1.0;
+          sp.position.y = baseY + smokeT * 0.9;
+          const grow = 0.85 + smokeT * 0.5;
+          sp.scale.setScalar(baseScale * grow);
+          const fade = Math.sin(smokeT * Math.PI); // 0→1→0 over cycle
+          (sp.material as THREE.SpriteMaterial).opacity = 0.6 * fade;
+          sp.material.rotation += dt * 0.5;
+        }
       }
     } else if (tm.burningFlames[0]?.visible) {
       for (const sp of tm.burningFlames) {
