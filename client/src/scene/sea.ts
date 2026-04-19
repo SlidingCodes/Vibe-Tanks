@@ -110,13 +110,17 @@ export function createSea(scene: THREE.Scene): SeaHandle {
         vec3 binormal = vec3(0.0, 0.0, 1.0);
         vec3 p = vec3(0.0);
 
-        // 6 waves with irrational/prime coefficients to break tiling
-        Wave w1 = Wave(vec2(1.1, 0.2), 0.32, 37.0);
-        Wave w2 = Wave(vec2(-0.5, 0.8), 0.22, 23.0);
-        Wave w3 = Wave(vec2(0.3, -0.7), 0.18, 13.0);
-        Wave w4 = Wave(vec2(0.9, -0.3), 0.12, 8.5);
-        Wave w5 = Wave(vec2(-0.1, -1.0), 0.08, 5.3);
-        Wave w6 = Wave(vec2(0.6, 0.4), 0.05, 3.1);
+        // 6 waves with irrational/prime coefficients to break tiling.
+        // Steepnesses scaled so the sum of wave amplitudes (a = steepness/k)
+        // peaks at ~1.3m — below the 2m gap between SEA_LEVEL (-10) and
+        // the bedrock surface (-8), so wave crests never poke through the
+        // exposed bedrock floor of a crater.
+        Wave w1 = Wave(vec2(1.1, 0.2), 0.128, 37.0);
+        Wave w2 = Wave(vec2(-0.5, 0.8), 0.088, 23.0);
+        Wave w3 = Wave(vec2(0.3, -0.7), 0.072, 13.0);
+        Wave w4 = Wave(vec2(0.9, -0.3), 0.048, 8.5);
+        Wave w5 = Wave(vec2(-0.1, -1.0), 0.032, 5.3);
+        Wave w6 = Wave(vec2(0.6, 0.4), 0.020, 3.1);
 
         p += gerstnerWave(wPos, w1, uTime, tangent, binormal);
         p += gerstnerWave(wPos, w2, uTime, tangent, binormal);
@@ -125,8 +129,9 @@ export function createSea(scene: THREE.Scene): SeaHandle {
         p += gerstnerWave(wPos, w5, uTime, tangent, binormal);
         p += gerstnerWave(wPos, w6, uTime, tangent, binormal);
 
-        // Subtle noise perturbation to break the analytical "perfection"
-        float n = noise(wPos * 0.15 + uTime * 0.2) * 0.4;
+        // Subtle noise perturbation to break the analytical "perfection".
+        // Amplitude kept small (same reason as the Gerstner rescale above).
+        float n = noise(wPos * 0.15 + uTime * 0.2) * 0.15;
         p.y += n;
         vFoam = p.y;
         vUv = wPos;
