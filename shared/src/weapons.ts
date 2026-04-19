@@ -80,7 +80,8 @@ export const WEAPONS: WeaponDefinition[] = [
     projectileSpeed: 18,
     blastRadius: 2.2,
     damage: 10,
-    terrainDamage: 0.4,
+    // Napalm è un incendiario, non un HE: niente cratere all'impatto.
+    terrainDamage: 0,
     behavior: 'napalm',
     cooldown: 2.6,
     behaviorConfig: {

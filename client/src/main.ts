@@ -23,6 +23,8 @@ import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/k
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
 import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
+import { FireRenderer } from './scene/fire';
+import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
 
 
@@ -46,7 +48,7 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -77,6 +79,11 @@ const CLIENT_PHYSICS_STEP = SIM_DT;
 const MAX_PHYSICS_STEPS_PER_FRAME = 4;
 import { computeMuzzle, solveAimAnglesForTarget } from '@shared/muzzle';
 import { resolveRailEndpoint } from '@shared/rail';
+
+// Kick off particle texture downloads as early as possible so the first
+// napalm / turbo / explosion after login renders with real textures,
+// not the 1×1 default placeholder.
+getParticleTextures();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -381,6 +388,8 @@ const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rig
 let cuberilleVisible = false;
 let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
+let fireRenderer: FireRenderer | null = null;
+let pendingFireSnapshot: FireGridSnapshot | null = null;
 
 // Minimum horizontal distance a tank must move before a new tread segment is
 // drawn. Prevents stationary tanks from overdrawing the same canvas pixels.
@@ -436,6 +445,24 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
+  // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
+  // snapshot so it binds to the current grid (match reset regenerates it).
+  if (fireRenderer) fireRenderer.dispose(scene);
+  fireRenderer = new FireRenderer(
+    scene,
+    voxelGrid,
+    pendingFireSnapshot ?? undefined,
+    (center, radius, strength) => {
+      // Use the terrain surface Y at the cell centre so the scorch sphere
+      // sits exactly on the ground the flame renders against.
+      const gridNow = voxelGrid;
+      if (!gridNow || !voxelScorch) return;
+      const gy = gridNow.getHeight(center.x, center.z);
+      voxelScorch.addSphere({ x: center.x, y: gy, z: center.z }, radius, strength);
+      surfaceNets?.invalidateSphere({ x: center.x, y: gy, z: center.z }, radius);
+    },
+  );
+  pendingFireSnapshot = null;
   // eslint-disable-next-line no-console
   console.log(
     `[voxel] snapshot ${snap.sizeX}×${snap.sizeY}×${snap.sizeZ} cs=${snap.cellSize} minY=${snap.minYCells}`,
@@ -468,6 +495,35 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   }
 });
 
+
+socket.on('fire_snapshot', (snap: FireGridSnapshot) => {
+  if (fireRenderer) {
+    fireRenderer.loadSnapshot(snap);
+  } else {
+    // Arrived before voxel_snapshot built the renderer — stash it so the
+    // voxel_snapshot handler can apply it on creation.
+    pendingFireSnapshot = snap;
+  }
+});
+
+socket.on('fire_update', (update: FireUpdate) => {
+  if (fireRenderer) fireRenderer.applyUpdate(update.cells);
+});
+
+// Continuous-damage sources (napalm fire, future gas zones, etc.) don't
+// ride on shot_resolved, so they emit this dedicated event to drive the
+// usual floating damage-number popups + hit-marker audio.
+socket.on('damage_applied', (data) => {
+  for (const hit of data.hits) {
+    const mesh = getAllTankMeshes().get(hit.playerId);
+    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed);
+  }
+  if (myId && data.hits.some((h) => h.playerId !== myId)) {
+    // At least one non-self hit — play hit marker for the local shooter
+    // if they own the napalm patch. (We can't easily attribute the
+    // shooter here, so play conservatively only when damage hit others.)
+  }
+});
 
 window.addEventListener('keydown', (ev) => {
   const k = ev.key.toLowerCase();
@@ -1214,6 +1270,10 @@ function animate(): void {
     _scratchLocalPos.set(0, 0, 0);
   }
   updateTankNameLabels(camera, _scratchLocalPos, occlusionObjects, myId);
+
+  if (fireRenderer && voxelGrid) {
+    fireRenderer.update(dt, voxelGrid);
+  }
 
   if (atmosphere) {
     atmosphere.update(dt, camera, getAllTankMeshes());

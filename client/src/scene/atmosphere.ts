@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TankMesh } from '../entities/tank';
+import { createSmokeMaterial, getParticleTextures } from './particles';
 
 const MAX_AIR_DUST = 1000;
 const AIR_DUST_RANGE = 40; // Particles within this range of the camera
@@ -98,15 +99,15 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }));
 
 
+  const smokeTex = getParticleTextures().smokePuff;
+
   // ── Tread Dust (Spawned trail) ──
-  const treadGeom = new THREE.BoxGeometry(1, 1, 1);
-  const treadMat = new THREE.MeshStandardMaterial({
-    color: 0x8b7355, // Dust color
-    transparent: true,
-    opacity: 0.45,
-    roughness: 1,
-    metalness: 0,
-  });
+  // Billboarded smoke sprite tinted dusty brown. aRgba attribute carries
+  // the per-instance (tint, opacity) that the shared smoke material reads.
+  const treadGeom = new THREE.PlaneGeometry(1, 1);
+  const treadRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TREAD_DUST * 4), 4);
+  treadGeom.setAttribute('aRgba', treadRgbaAttr);
+  const treadMat = createSmokeMaterial(smokeTex);
 
   const treadMesh = new THREE.InstancedMesh(treadGeom, treadMat, MAX_TREAD_DUST);
   treadMesh.frustumCulled = false;
@@ -122,13 +123,10 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }));
 
   // ── Exhaust Smoke ──
-  const exhaustGeom = new THREE.BoxGeometry(1, 1, 1);
-  const exhaustMat = new THREE.MeshStandardMaterial({
-    color: 0x333333,
-    transparent: true,
-    opacity: 0.4,
-    roughness: 1,
-  });
+  const exhaustGeom = new THREE.PlaneGeometry(1, 1);
+  const exhaustRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_EXHAUST_SMOKE * 4), 4);
+  exhaustGeom.setAttribute('aRgba', exhaustRgbaAttr);
+  const exhaustMat = createSmokeMaterial(smokeTex);
   const exhaustMesh = new THREE.InstancedMesh(exhaustGeom, exhaustMat, MAX_EXHAUST_SMOKE);
   exhaustMesh.frustumCulled = false;
   scene.add(exhaustMesh);
@@ -145,13 +143,10 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   let exhaustSpawnCursor = 0;
 
   // ── Muzzle Smoke ──
-  const msmokeGeom = new THREE.BoxGeometry(1, 1, 1);
-  const msmokeMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.5,
-    roughness: 1,
-  });
+  const msmokeGeom = new THREE.PlaneGeometry(1, 1);
+  const msmokeRgbaAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_MUZZLE_SMOKE * 4), 4);
+  msmokeGeom.setAttribute('aRgba', msmokeRgbaAttr);
+  const msmokeMat = createSmokeMaterial(smokeTex);
   const msmokeMesh = new THREE.InstancedMesh(msmokeGeom, msmokeMat, MAX_MUZZLE_SMOKE);
   msmokeMesh.frustumCulled = false;
   scene.add(msmokeMesh);
@@ -238,12 +233,53 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
 
 
-  // ── Turbo Flame ──
-  const flameGeom = new THREE.SphereGeometry(1, 6, 6);
-  const flameMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true });
+  // ── Turbo Exhaust ──
+  // Full-billboard puffs that always face the camera. Uses the Kenney
+  // fire_burst radial texture (not the tall flame silhouette) so each
+  // puff reads as a round pulse of hot gas, not a flame licking the
+  // tank. Color ramp goes blue-white (fresh, afterburner-hot) → yellow
+  // → orange → dark (dissipating) so the effect reads as jet exhaust,
+  // not "carro in fiamme".
+  const flameTextures = getParticleTextures();
+  const flameGeom = new THREE.PlaneGeometry(1.0, 1.0);
+  const flameTintAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
+  flameGeom.setAttribute('aTint', flameTintAttr);
+  const flameMat = new THREE.ShaderMaterial({
+    uniforms: { uMap: { value: flameTextures.fireBurst } },
+    vertexShader: /* glsl */ `
+      attribute vec3 aTint;
+      varying vec2 vUv;
+      varying vec3 vTint;
+      void main() {
+        vUv = uv;
+        vTint = aTint;
+        // Full spherical billboard — quad vertices are built in view
+        // space, so the puff always faces the camera regardless of angle.
+        vec3 instancePos = vec3(instanceMatrix[3]);
+        float sx = length(vec3(instanceMatrix[0]));
+        float sy = length(vec3(instanceMatrix[1]));
+        vec4 viewInstancePos = modelViewMatrix * vec4(instancePos, 1.0);
+        vec4 viewPos = viewInstancePos + vec4(position.x * sx, position.y * sy, 0.0, 0.0);
+        gl_Position = projectionMatrix * viewPos;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      precision mediump float;
+      uniform sampler2D uMap;
+      varying vec2 vUv;
+      varying vec3 vTint;
+      void main() {
+        float a = texture2D(uMap, vUv).a;
+        if (a < 0.02) discard;
+        gl_FragColor = vec4(vTint * a, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
   const flameMesh = new THREE.InstancedMesh(flameGeom, flameMat, MAX_TURBO_FLAME);
   flameMesh.frustumCulled = false;
-  flameMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_TURBO_FLAME * 3), 3);
   scene.add(flameMesh);
 
   const flameStates: ParticleState[] = Array.from({ length: MAX_TURBO_FLAME }, () => ({
@@ -253,7 +289,6 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     size: 0, life: 0, active: false,
   }));
   let flameSpawnCursor = 0;
-  const _flameColor = new THREE.Color();
 
   let treadSpawnCursor = 0;
   let windTime = 0;
@@ -474,11 +509,12 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       s.py = pos.y + 0.1 + Math.random() * 0.4;
       s.pz = pos.z + (-backDist * cos - sideOff * sin);
 
-      // Shoot backward + slightly upward
-      const backSpeed = 1.5 + Math.random() * 2.5;
-      s.vx = -sin * backSpeed + (Math.random() - 0.5) * 0.6;
-      s.vz = -cos * backSpeed + (Math.random() - 0.5) * 0.6;
-      s.vy = 0.8 + Math.random() * 1.2;
+      // Shoot backward, only a hint of upward drift so the puff trails
+      // behind the tank like jet wash, not smoke rising off a fire.
+      const backSpeed = 2.0 + Math.random() * 2.5;
+      s.vx = -sin * backSpeed + (Math.random() - 0.5) * 0.5;
+      s.vz = -cos * backSpeed + (Math.random() - 0.5) * 0.5;
+      s.vy = 0.15 + Math.random() * 0.3;
 
       s.size = 0.12 + Math.random() * 0.14;
       s.life = TURBO_FLAME_LIFETIME * (0.7 + Math.random() * 0.6);
@@ -575,16 +611,16 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       airDustMesh.instanceMatrix.needsUpdate = true;
 
       // 2. Update Tread Dust
-      let treadActive = false;
+      const treadRgba = treadRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_TREAD_DUST; i++) {
         const s = treadStates[i];
-        if (!s.active) continue;
-        treadActive = true;
+        if (!s.active) { treadRgba[i * 4 + 3] = 0; continue; }
 
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           treadMesh.setMatrixAt(i, hiddenMatrix);
+          treadRgba[i * 4 + 3] = 0;
           continue;
         }
 
@@ -595,27 +631,33 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / TREAD_DUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, s.rz);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5)); // grow even more
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5) * 2.5);
         dummy.updateMatrix();
         treadMesh.setMatrixAt(i, dummy.matrix);
 
+        // Dusty brown tint, fades out with remaining life. Alpha biased
+        // high so the puff is actually visible against the terrain.
+        const o = i * 4;
+        treadRgba[o]     = 0.72;
+        treadRgba[o + 1] = 0.58;
+        treadRgba[o + 2] = 0.42;
+        treadRgba[o + 3] = scale * 0.85;
       }
-      if (treadActive || true) {
-        treadMesh.instanceMatrix.needsUpdate = true;
-      }
+      treadMesh.instanceMatrix.needsUpdate = true;
+      treadRgbaAttr.needsUpdate = true;
 
       // 3. Update Exhaust Smoke
-      let exhaustActive = false;
+      const exhaustRgba = exhaustRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_EXHAUST_SMOKE; i++) {
         const s = exhaustStates[i];
-        if (!s.active) continue;
-        exhaustActive = true;
+        if (!s.active) { exhaustRgba[i * 4 + 3] = 0; continue; }
 
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           exhaustMesh.setMatrixAt(i, hiddenMatrix);
+          exhaustRgba[i * 4 + 3] = 0;
           continue;
         }
 
@@ -626,25 +668,30 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / EXHAUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, s.rz);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3) * 2.8);
         dummy.updateMatrix();
         exhaustMesh.setMatrixAt(i, dummy.matrix);
+
+        const o = i * 4;
+        exhaustRgba[o]     = 0.35;
+        exhaustRgba[o + 1] = 0.33;
+        exhaustRgba[o + 2] = 0.30;
+        exhaustRgba[o + 3] = scale * 0.85;
       }
-      if (exhaustActive || true) {
-        exhaustMesh.instanceMatrix.needsUpdate = true;
-      }
+      exhaustMesh.instanceMatrix.needsUpdate = true;
+      exhaustRgbaAttr.needsUpdate = true;
 
       // 4. Update Muzzle Smoke
-      let msmokeActive = false;
+      const msmokeRgba = msmokeRgbaAttr.array as Float32Array;
       for (let i = 0; i < MAX_MUZZLE_SMOKE; i++) {
         const s = msmokeStates[i];
-        if (!s.active) continue;
-        msmokeActive = true;
+        if (!s.active) { msmokeRgba[i * 4 + 3] = 0; continue; }
         s.life -= dt;
         if (s.life <= 0) {
           s.active = false;
           msmokeMesh.setMatrixAt(i, hiddenMatrix);
+          msmokeRgba[i * 4 + 3] = 0;
           continue;
         }
         s.px += s.vx * dt; s.py += s.vy * dt; s.pz += s.vz * dt;
@@ -653,12 +700,21 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
 
         const scale = s.life / MUZZLE_SMOKE_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.rotation.set(s.rx, s.ry, 0);
-        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4) * 3.2);
         dummy.updateMatrix();
         msmokeMesh.setMatrixAt(i, dummy.matrix);
+
+        // Starts white-bright (gunpowder flash smoke) then drifts to grey.
+        const warm = scale; // 1 fresh → 0 fading
+        const o = i * 4;
+        msmokeRgba[o]     = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 1] = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 2] = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 3] = scale * 0.9;
       }
-      if (msmokeActive || true) msmokeMesh.instanceMatrix.needsUpdate = true;
+      msmokeMesh.instanceMatrix.needsUpdate = true;
+      msmokeRgbaAttr.needsUpdate = true;
 
       // 5. Update Muzzle Flash
       let flashActive = false;
@@ -749,6 +805,7 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
       if (sparkActive || true) sparkMesh.instanceMatrix.needsUpdate = true;
 
       // 8. Update Turbo Flame
+      const tintArr = flameTintAttr.array as Float32Array;
       for (let i = 0; i < MAX_TURBO_FLAME; i++) {
         const s = flameStates[i];
         if (!s.active) { flameMesh.setMatrixAt(i, hiddenMatrix); continue; }
@@ -761,29 +818,46 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         s.px += s.vx * dt;
         s.py += s.vy * dt;
         s.pz += s.vz * dt;
-        s.vy += dt * 0.5; // slight buoyancy
-        s.vx *= Math.pow(0.7, dt);
-        s.vz *= Math.pow(0.7, dt);
+        s.vy += dt * 0.15; // very slight buoyancy — keeps the trail low
+        s.vx *= Math.pow(0.5, dt); // faster horizontal drag so puffs stack
+        s.vz *= Math.pow(0.5, dt);
 
         const t = s.life / TURBO_FLAME_LIFETIME; // 1=fresh, 0=fading
-        // Color: yellow (#ffd700) → orange (#ff6600) → red (#cc0000) as t decreases
-        if (t > 0.5) {
-          const u = (t - 0.5) * 2; // 1→0 as t goes 1→0.5
-          _flameColor.setRGB(1, 0.84 * u + 0.4 * (1 - u), 0);
+        // Fully blue afterburner ramp — no yellow/orange at any point,
+        // so the effect reads unambiguously as "jet exhaust" and never
+        // as fire on the tank. White-blue tip → electric cyan-blue →
+        // deep blue → near-black dissipation.
+        let r: number, g: number, b: number;
+        if (t > 0.7) {
+          const u = (t - 0.7) / 0.3; // 1→0 as t goes 1→0.7
+          r = 0.85 * u + 0.40 * (1 - u);
+          g = 0.95 * u + 0.75 * (1 - u);
+          b = 1.00;
+        } else if (t > 0.35) {
+          const u = (t - 0.35) / 0.35; // 1→0 as t goes 0.7→0.35
+          r = 0.40 * u + 0.12 * (1 - u);
+          g = 0.75 * u + 0.38 * (1 - u);
+          b = 1.00 * u + 0.90 * (1 - u);
         } else {
-          const u = t * 2; // 1→0 as t goes 0.5→0
-          _flameColor.setRGB(1, 0.4 * u, 0);
+          const u = t / 0.35; // 1→0 as t goes 0.35→0
+          r = 0.12 * u + 0.03 * (1 - u);
+          g = 0.38 * u + 0.08 * (1 - u);
+          b = 0.90 * u + 0.25 * (1 - u);
         }
-        flameMesh.setColorAt(i, _flameColor);
+        const ti = i * 3;
+        tintArr[ti] = r;
+        tintArr[ti + 1] = g;
+        tintArr[ti + 2] = b;
 
-        const scale = s.size * (1 + (1 - t) * 1.5); // puff up as it fades
+        // Short puff: starts tight, expands as it fades.
+        const scale = s.size * (1.2 + (1 - t) * 1.3);
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.scale.setScalar(scale);
+        dummy.scale.setScalar(scale * 2.4);
         dummy.updateMatrix();
         flameMesh.setMatrixAt(i, dummy.matrix);
       }
       flameMesh.instanceMatrix.needsUpdate = true;
-      if (flameMesh.instanceColor) flameMesh.instanceColor.needsUpdate = true;
+      flameTintAttr.needsUpdate = true;
     },
     dispose(): void {
       scene.remove(airDustMesh);
