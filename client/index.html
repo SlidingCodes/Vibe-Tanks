@@ -256,6 +256,81 @@
       background: rgba(154,19,19,0.15); color: #c22;
       border-color: rgba(194,34,34,0.9);
     }
+    /* Kill Overlay — same letterbox style as death, but with a vibrant
+       cyan/white "victory" palette. */
+    #kill-overlay {
+      position: fixed; inset: 0; display: none; z-index: 25;
+      pointer-events: none;
+      font-family: 'Times New Roman', serif; color: #4af;
+      text-shadow: 0 0 18px rgba(64,170,255,0.6), 0 0 4px #000;
+    }
+    #kill-top, #kill-bottom {
+      position: absolute; left: 0; right: 0;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    #kill-top {
+      top: 0; padding: 48px 16px 64px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      animation: kill-slide-down 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+    }
+    #kill-bottom {
+      bottom: 0; padding: 64px 16px 48px;
+      background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      animation: kill-slide-up 0.5s cubic-bezier(0.19, 1, 0.22, 1);
+    }
+    @keyframes kill-slide-down { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+    @keyframes kill-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes kill-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    #kill-overlay.fade-out { animation: kill-fade-out 0.4s ease-in forwards; }
+
+    #kill-title {
+      font-size: 52px; letter-spacing: 12px; font-style: italic;
+      font-weight: bold; border-top: 1px solid rgba(64,170,255,0.5);
+      border-bottom: 1px solid rgba(64,170,255,0.5); padding: 12px 40px;
+      color: #fff; text-shadow: 0 0 20px #4af, 0 0 4px #000;
+    }
+    #kill-victim .kill-victim-name { font-weight: bold; }
+
+    /* Leaderboard Overlay — full screen table style with a premium "post-match" feel */
+    #leaderboard-overlay {
+      position: fixed; inset: 0; display: none; z-index: 30;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(8px);
+      flex-direction: column; align-items: center; justify-content: center;
+      color: #fff; font-family: 'Times New Roman', serif;
+    }
+    #leaderboard-title {
+      font-size: 52px; letter-spacing: 16px; font-weight: bold;
+      text-transform: uppercase; margin-bottom: 40px;
+      text-shadow: 0 0 20px rgba(255,215,0,0.4);
+      color: #ffd700;
+    }
+    #leaderboard-table {
+      width: 80%; max-width: 800px;
+      border-collapse: collapse; font-family: monospace;
+      font-size: 18px;
+    }
+    #leaderboard-table th {
+      text-align: left; padding: 12px; border-bottom: 2px solid rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 2px;
+      font-size: 14px;
+    }
+    #leaderboard-table td {
+      padding: 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    #leaderboard-table tr:first-child { color: #ffd700; font-size: 24px; }
+    #leaderboard-table tr:first-child td { border-bottom: 2px solid rgba(255,215,0,0.3); }
+    
+    .lb-rank { width: 60px; opacity: 0.5; }
+    .lb-name { font-weight: bold; letter-spacing: 1px; }
+    .lb-kills { color: #4af; text-align: center; width: 80px; }
+    .lb-deaths { color: #f44; text-align: center; width: 80px; }
+    .lb-score { color: #fff; text-align: right; width: 100px; font-weight: bold; }
+    
+    #leaderboard-timer {
+      margin-top: 40px; font-size: 14px; opacity: 0.5;
+      letter-spacing: 4px; text-transform: uppercase;
+    }
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
     #fullscreen-btn {
@@ -387,6 +462,77 @@
       100% { transform: translate(var(--tx), var(--ty)) scale(0); opacity: 0; }
     }
 
+    /* ── Left-side stat bars (shield above boost) ── */
+    #left-bars {
+      position: absolute; bottom: 74px; left: 12px;
+      display: flex; flex-direction: column; gap: 7px;
+      pointer-events: none;
+    }
+    #shield-wrap, #turbo-wrap {
+      display: flex; flex-direction: row; align-items: center; gap: 8px;
+    }
+    #shield-label, #turbo-label {
+      font-family: monospace; font-size: 9px; letter-spacing: 2px;
+      color: rgba(255,255,255,0.7); text-shadow: 0 0 6px #000, 0 1px 2px #000;
+      width: 38px; text-align: right; flex-shrink: 0;
+    }
+    #shield-track, #turbo-track {
+      width: 148px; height: 9px; border-radius: 5px;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: inset 0 1px 4px rgba(0,0,0,0.7);
+      overflow: hidden; flex-shrink: 0;
+    }
+    #shield-bar {
+      height: 100%; border-radius: 5px;
+      transform-origin: left center;
+      transform: scaleX(var(--sh-scale, 1));
+      background: linear-gradient(to right, #1a5fff, #00d4ff);
+      box-shadow: 0 0 8px rgba(40,160,255,0.7);
+      transition: transform 0.12s linear, box-shadow 0.15s linear;
+    }
+    #shield-bar.active {
+      box-shadow: 0 0 16px rgba(80,210,255,1), 0 0 5px #aef;
+      animation: shield-active-pulse 1.2s ease-in-out infinite alternate;
+    }
+    @keyframes shield-active-pulse {
+      from { opacity: 0.82; }
+      to   { opacity: 1; }
+    }
+    #turbo-bar {
+      height: 100%; border-radius: 5px;
+      transform-origin: left center;
+      transform: scaleX(var(--tb-scale, 0));
+      background: linear-gradient(to right, #e09000, #ff3300);
+      box-shadow: 0 0 8px rgba(255,130,0,0.6);
+      transition: transform 0.1s linear, box-shadow 0.15s linear;
+    }
+    #turbo-bar.active {
+      box-shadow: 0 0 16px rgba(255,180,0,0.95), 0 0 5px #ffe;
+    }
+    #turbo-bar.ready-ping {
+      animation: turbo-ready-ping 0.55s ease-out forwards;
+    }
+    @keyframes turbo-ready-ping {
+      0%   { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
+      25%  { box-shadow: 0 0 26px rgba(255,220,0,1), 0 0 8px #fff; }
+      60%  { box-shadow: 0 0 14px rgba(255,150,0,0.9); }
+      100% { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
+    }
+
+    /* ── Turbo boost screen VFX ── */
+    #turbo-vfx {
+      position: fixed; inset: 0; pointer-events: none; z-index: 5;
+      box-shadow: inset 0 0 0 rgba(255,140,0,0);
+      transition: box-shadow 0.15s ease-out;
+    }
+    #turbo-vfx.active {
+      animation: turbo-vfx-pulse 0.4s ease-in-out infinite alternate;
+    }
+    @keyframes turbo-vfx-pulse {
+      from { box-shadow: inset 0 0 60px rgba(255,160,0,0.30), inset 0 0 20px rgba(255,80,0,0.15); }
+      to   { box-shadow: inset 0 0 100px rgba(255,180,0,0.45), inset 0 0 40px rgba(255,100,0,0.25); }
+    }
 
 
   </style>
@@ -404,6 +550,7 @@
       <button id="login-submit">Join battle</button>
     </div>
   </div>
+  <div id="turbo-vfx"></div>
   <div id="hit-flash"></div>
   <div id="hit-marker">
     <div class="hit-line"></div>
@@ -414,12 +561,30 @@
   <div id="hud">
     <div id="cooldown-ring"></div>
 
+    <div id="left-bars">
+      <div id="shield-wrap" style="display:none">
+        <div id="shield-label">SHIELD</div>
+        <div id="shield-track"><div id="shield-bar"></div></div>
+      </div>
+      <div id="turbo-wrap">
+        <div id="turbo-label">BOOST</div>
+        <div id="turbo-track"><div id="turbo-bar"></div></div>
+      </div>
+    </div>
+
     <div id="health-bar"><div id="health-fill"></div><div id="health-label"></div></div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
-    <div id="controls-hint">1-9 / 0 switch weapon | WASD move | Mouse aim | Click shoot</div>
+    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch weapon</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
     <div id="special-event-banner">NEW EVENT: DOUBLE DAMAGE</div>
+  </div>
+  <div id="kill-overlay">
+    <div id="kill-top">
+      <div id="kill-title">TANK DESTROYED</div>
+      <div id="kill-victim"></div>
+    </div>
+    <div id="kill-bottom"></div>
   </div>
   <div id="death-overlay">
     <div id="death-top">
@@ -434,6 +599,25 @@
       </button>
     </div>
   </div>
+  <div id="leaderboard-overlay">
+    <div id="leaderboard-title">Leaderboard</div>
+    <table id="leaderboard-table">
+      <thead>
+        <tr>
+          <th class="lb-rank">#</th>
+          <th>Player</th>
+          <th class="lb-kills">Kills</th>
+          <th class="lb-deaths">Deaths</th>
+          <th class="lb-score">Score</th>
+        </tr>
+      </thead>
+      <tbody id="leaderboard-body">
+        <!-- populated by js -->
+      </tbody>
+    </table>
+    <div id="leaderboard-timer">Next round starts in <span id="leaderboard-countdown">10</span>s</div>
+  </div>
+
   <div id="mobile-controls">
     <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>
     <div id="mc-aim-bar">

@@ -39,6 +39,9 @@ export const TANK_COAST_DECEL = 20;
  *  and tread-track painting on client + server so both sides mark the same
  *  voxel columns. */
 export const TANK_TREAD_HALF_WIDTH = 0.7;
+export const TURBO_SPEED_MULTIPLIER = 2.2;
+export const TURBO_DURATION = 2.0;    // seconds of active boost
+export const TURBO_COOLDOWN = 10.0;   // seconds recharge after turbo ends
 export const MIN_PLAYERS_TO_START = 1;
 export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;

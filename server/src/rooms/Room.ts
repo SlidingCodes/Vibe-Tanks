@@ -17,6 +17,7 @@ import {
   TrackHistory,
   TrackHistoryPoint,
   Vec3,
+  WeaponDefinition,
 } from '@shared/types/index';
 import {
   TANK_MAX_HP,
@@ -27,7 +28,10 @@ import {
   DEFAULT_GRAVITY,
   GRAVITY,
   setGravity,
+  TURBO_DURATION,
+  TURBO_COOLDOWN,
 } from '@shared/constants';
+import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
   DEFAULT_TERRAIN_PRESET_ID,
   TERRAIN_PRESETS,
@@ -69,11 +73,14 @@ import {
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
+const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
+const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 
 interface PlayerState {
-  socket: Socket;
+  socket?: Socket;
   input: MovementInput;
   lastFireTime: number;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
@@ -83,6 +90,14 @@ interface PlayerState {
   /** Last tank XZ at which a track history sample was appended. null before
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
+  isBot: boolean;
+  botWeaponIndex?: number;
+  /** Epoch seconds until which the turbo boost is active. */
+  turboActiveUntil: number;
+  /** Epoch seconds before which turbo cannot be re-activated (recharge). */
+  turboCooldownUntil: number;
+  /** Epoch seconds at which the shield auto-expires (0 = not active). */
+  shieldExpiresAt: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -181,19 +196,35 @@ export class Room {
     this.physics = new RapierVoxelWorld(this.voxels);
     this.physics.setGravity(GRAVITY);
     this.scheduleReset();
+    this.ensureFourTanks();
+  }
+
+  private scheduleReset(): void {
+    if (this.resetTimeout) clearTimeout(this.resetTimeout);
+    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
+    this.resetTimeout = setTimeout(() => this.startLeaderboard(), MATCH_DURATION_SECONDS * 1000);
+  }
+
+  private startLeaderboard(): void {
+    const LEADERBOARD_DURATION_SECONDS = 10;
+    this.phase = MatchPhase.Leaderboard;
+    // Set matchResetAt so clients see a 10s countdown
+    this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
+    
+    // Broadcast the room snapshot so clients see the Leaderboard phase
+    // and the final scores/kills/deaths.
+    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+
+    // Schedule the actual terrain/score reset after a delay
+    setTimeout(() => this.resetMatch(), LEADERBOARD_DURATION_SECONDS * 1000);
   }
 
   private getVoxelSnapshot() {
     return this.voxels.toSnapshot();
   }
 
-  private scheduleReset(): void {
-    if (this.resetTimeout) clearTimeout(this.resetTimeout);
-    this.matchResetAt = Date.now() / 1000 + MATCH_DURATION_SECONDS;
-    this.resetTimeout = setTimeout(() => this.resetMatch(), MATCH_DURATION_SECONDS * 1000);
-  }
-
   private resetMatch(): void {
+    this.phase = MatchPhase.InProgress;
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     this.activeProjectiles.clear();
@@ -220,6 +251,8 @@ export class Room {
       tank.hp = TANK_MAX_HP;
       tank.alive = true;
       tank.score = 0;
+      tank.kills = 0;
+      tank.deaths = 0;
       tank.bodyRotation = 0;
       tank.bodyPitch = 0;
       tank.bodyRoll = 0;
@@ -238,6 +271,7 @@ export class Room {
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
+    this.ensureFourTanks();
     this.scheduleReset();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
@@ -256,6 +290,10 @@ export class Room {
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
+      isBot: false,
+      turboActiveUntil: 0,
+      turboCooldownUntil: 0,
+      shieldExpiresAt: 0,
     });
 
     this.spawnTank(playerId, playerName, color);
@@ -270,6 +308,8 @@ export class Room {
     this.io.to(this.id).emit('match_event', {
       kind: 'join', name: tank.playerName, color: tank.color,
     });
+
+    this.ensureFourTanks();
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
       this.startMatch();
@@ -302,6 +342,8 @@ export class Room {
       });
     }
 
+    this.ensureFourTanks();
+
     if (this.players.size === 0) {
       this.stopLoop();
       this.phase = MatchPhase.WaitingForPlayers;
@@ -316,8 +358,15 @@ export class Room {
 
   private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
     const pos = this.findSpawnPosition();
-    const fallback = TANK_COLORS[this.tanks.size % TANK_COLORS.length];
-    const safeColor = isValidHex(color) ? color! : fallback;
+    let safeColor: string;
+    if (isValidHex(color)) {
+      safeColor = color!;
+    } else {
+      // Pick first unused color from TANK_COLORS to ensure variety
+      const usedColors = Array.from(this.tanks.values()).map(t => t.color.toLowerCase());
+      const unusedColor = TANK_COLORS.find(c => !usedColors.includes(c.toLowerCase()));
+      safeColor = unusedColor || TANK_COLORS[this.tanks.size % TANK_COLORS.length];
+    }
     const safeName = sanitizeName(playerName);
     const tank: TankState = {
       playerId,
@@ -332,11 +381,16 @@ export class Room {
       maxHp: TANK_MAX_HP,
       alive: true,
       score: 0,
+      kills: 0,
+      deaths: 0,
       airborne: false,
       linVel: { x: 0, y: 0, z: 0 },
       angVel: { x: 0, y: 0, z: 0 },
       color: safeColor,
       lastAppliedSeq: 0,
+      shieldActive: false,
+      shieldAvailable: true,
+      shieldTimeRemaining: 0,
     };
     this.tanks.set(playerId, tank);
     this.physics.addTank(tank);
@@ -373,33 +427,7 @@ export class Room {
       if (now - player.lastFireTime < weapon.cooldown) return;
       player.lastFireTime = now;
 
-      switch (weapon.behavior) {
-        case 'drill':
-          this.fireDrill(tank, weapon);
-          break;
-        case 'napalm':
-          this.fireNapalm(tank, weapon);
-          break;
-        case 'seeker':
-          this.fireSeeker(tank, weapon);
-          break;
-        case 'mortar':
-          this.fireMortar(tank, weapon, data.aimPoint ?? null);
-          break;
-        case 'mine':
-          this.fireMine(tank, weapon);
-          break;
-        default: {
-          const result = simulateShot(
-            tank,
-            weapon,
-            this.voxels,
-            Array.from(this.tanks.values()),
-          );
-          this.scheduleShotResult(result, tank.playerId, weapon.id);
-          break;
-        }
-      }
+      this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
     socket.on('respawn_request', () => {
@@ -411,6 +439,17 @@ export class Room {
       this.respawnTank(socket.id);
     });
 
+    socket.on('shield_activate', () => {
+      const tank = this.tanks.get(socket.id);
+      const player = this.players.get(socket.id);
+      if (!tank || !player || !tank.alive || !tank.shieldAvailable || tank.shieldActive) return;
+      const nowSec = Date.now() / 1000;
+      tank.shieldActive = true;
+      tank.shieldAvailable = false;
+      tank.shieldTimeRemaining = SHIELD_DURATION;
+      player.shieldExpiresAt = nowSec + SHIELD_DURATION;
+    });
+
     socket.on('force_reset_match', () => {
       this.resetMatch();
     });
@@ -418,6 +457,94 @@ export class Room {
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
+    player.lastFireTime = Date.now() / 1000;
+
+    switch (weapon.behavior) {
+      case 'drill':
+        this.fireDrill(tank, weapon);
+        break;
+      case 'napalm':
+        this.fireNapalm(tank, weapon);
+        break;
+      case 'seeker':
+        this.fireSeeker(tank, weapon);
+        break;
+      case 'mortar':
+        this.fireMortar(tank, weapon, aimPoint);
+        break;
+      case 'mine':
+        this.fireMine(tank, weapon);
+        break;
+      default: {
+        const result = precomputedResult || simulateShot(
+          tank,
+          weapon,
+          this.voxels,
+          Array.from(this.tanks.values()),
+        );
+        this.scheduleShotResult(result, tank.playerId, weapon.id);
+        break;
+      }
+    }
+  }
+
+  private ensureFourTanks(): void {
+    const TARGET_TANKS = 4;
+    
+    // Remove bots if we have too many tanks
+    if (this.players.size > TARGET_TANKS) {
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      const toRemove = this.players.size - TARGET_TANKS;
+      for (let i = 0; i < Math.min(toRemove, bots.length); i++) {
+        this.removeBot(bots[i][0]);
+      }
+    }
+
+    // Add bots if we have too few tanks
+    while (this.players.size < TARGET_TANKS) {
+      this.addBot();
+    }
+  }
+
+  private addBot(): void {
+    const botId = `bot_${Math.random().toString(36).substr(2, 9)}`;
+    const botNames = ['Bit', 'Byte', 'Kernel', 'Shell', 'Buffer', 'Pointer', 'Array', 'Struct'];
+    const playerName = botNames[Math.floor(Math.random() * botNames.length)];
+
+    this.players.set(botId, {
+      input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastFireTime: 0,
+      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      respawnAllowedAt: 0,
+      lastTrackSampleAt: null,
+      isBot: true,
+      turboActiveUntil: 0,
+      turboCooldownUntil: 0,
+      shieldExpiresAt: 0,
+    });
+
+    this.spawnTank(botId, playerName);
+    const tank = this.tanks.get(botId)!;
+    this.io.to(this.id).emit('player_spawned', tank);
+    this.io.to(this.id).emit('match_event', {
+      kind: 'join', name: tank.playerName, color: tank.color,
+    });
+  }
+
+  private removeBot(botId: string): void {
+    const tank = this.tanks.get(botId);
+    this.physics.removeTank(botId);
+    this.players.delete(botId);
+    this.tanks.delete(botId);
+    this.io.to(this.id).emit('player_left', { playerId: botId });
+    if (tank) {
+      this.io.to(this.id).emit('match_event', {
+        kind: 'leave', name: tank.playerName, color: tank.color,
+      });
+    }
   }
 
   private getStepFlightSeconds(step: ShotResult['steps'][number]): number {
@@ -477,21 +604,37 @@ export class Room {
     const owner = this.tanks.get(ownerId);
     const nowSec = Date.now() / 1000;
 
+    // Collect which players have their shield absorb this shot, so we can
+    // skip their impulse too.
+    const shieldAbsorbed = new Set<PlayerId>();
+
     for (const dmg of damageDealt) {
       const victim = this.tanks.get(dmg.playerId);
       const victimPlayer = this.players.get(dmg.playerId);
       if (!victim || !victim.alive) continue;
       if (victimPlayer && nowSec < victimPlayer.spawnProtectionUntil) continue;
 
+      if (victim.shieldActive) {
+        victim.shieldActive = false;
+        victim.shieldTimeRemaining = 0;
+        const vPlayer = this.players.get(dmg.playerId);
+        if (vPlayer) vPlayer.shieldExpiresAt = 0;
+        shieldAbsorbed.add(dmg.playerId);
+        continue;
+      }
+
       victim.hp = Math.max(0, victim.hp - dmg.damage);
       const killed = victim.hp <= 0;
       if (killed) {
         victim.alive = false;
+        victim.deaths++;
         if (victimPlayer) {
           victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
         }
         if (owner) {
           if (dmg.playerId === ownerId) {
+            // Suicide doesn't count as a kill for the owner, 
+            // but we already incremented victim.deaths above.
             this.io.to(this.id).emit('match_event', {
               kind: 'suicide',
               victimId: victim.playerId,
@@ -500,6 +643,7 @@ export class Room {
               weaponId,
             });
           } else {
+            owner.kills++;
             this.io.to(this.id).emit('match_event', {
               kind: 'kill',
               killerId: owner.playerId,
@@ -523,6 +667,7 @@ export class Room {
 
     if (impulses && impulses.length > 0) {
       for (const entry of impulses) {
+        if (shieldAbsorbed.has(entry.playerId)) continue;
         const victim = this.tanks.get(entry.playerId);
         const victimPlayer = this.players.get(entry.playerId);
         if (!victim || !victim.alive) continue;
@@ -747,6 +892,10 @@ export class Room {
     // anchor to the respawn transform. Input seq also resets on the
     // client side when the justRespawned branch fires.
     tank.lastAppliedSeq = 0;
+    tank.shieldActive = false;
+    tank.shieldAvailable = true;
+    tank.shieldTimeRemaining = 0;
+    player.shieldExpiresAt = 0;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     this.physics.resetTank(playerId, tank.position, 0);
@@ -765,7 +914,11 @@ export class Room {
     const simDt = 1 / SIM_TICK_RATE;
 
     this.simInterval = setInterval(() => {
+      // Pause simulation during leaderboard to let players admire the results
+      if (this.phase === MatchPhase.Leaderboard) return;
+
       this.simTime += simDt;
+      this.tickBots(simDt);
       this.tickMovement(simDt);
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
@@ -794,11 +947,43 @@ export class Room {
     const mapW = this.voxels.sizeX * cellSize;
     const mapH = this.voxels.sizeZ * cellSize;
     const EMPTY: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
+    const nowSec = Date.now() / 1000;
 
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
       if (!tank) continue;
-      this.physics.setTankInput(pid, tank.alive ? player.input : EMPTY);
+
+      if (tank.alive) {
+        // Shield auto-expiry after SHIELD_DURATION seconds.
+        if (tank.shieldActive && player.shieldExpiresAt > 0) {
+          const remaining = player.shieldExpiresAt - nowSec;
+          if (remaining <= 0) {
+            tank.shieldActive = false;
+            tank.shieldTimeRemaining = 0;
+            player.shieldExpiresAt = 0;
+          } else {
+            tank.shieldTimeRemaining = remaining;
+          }
+        }
+
+        // Server-authoritative turbo: activate only when not on cooldown.
+        if (player.input.turbo) {
+          if (nowSec < player.turboActiveUntil) {
+            // already active — keep going
+          } else if (nowSec >= player.turboCooldownUntil) {
+            // start a new turbo burst
+            player.turboActiveUntil = nowSec + TURBO_DURATION;
+            player.turboCooldownUntil = player.turboActiveUntil + TURBO_COOLDOWN;
+          }
+        }
+        const effectiveTurbo = nowSec < player.turboActiveUntil;
+        const effectiveInput: MovementInput = effectiveTurbo
+          ? { ...player.input, turbo: true }
+          : { ...player.input, turbo: false };
+        this.physics.setTankInput(pid, effectiveInput);
+      } else {
+        this.physics.setTankInput(pid, EMPTY);
+      }
     }
 
     this.physics.applyTankInputs(dt);
@@ -1157,7 +1342,92 @@ export class Room {
         playerId: tank.playerId,
         damage,
         killed: false,
-      }]);
+          }]);
+    }
+  }
+
+  private tickBots(dt: number): void {
+    const now = Date.now() / 1000;
+    const allTanks = Array.from(this.tanks.values());
+
+    for (const [pid, player] of this.players) {
+      if (!player.isBot) continue;
+
+      const tank = this.tanks.get(pid);
+      if (!tank) continue;
+
+      if (!tank.alive) {
+        if (now >= player.respawnAllowedAt) this.respawnTank(pid);
+        continue;
+      }
+
+      // TARGETING - very large radius to ensure they always find an enemy
+      const targetId = findNearestEnemyFn(tank.position, pid, 5000, allTanks);
+      const targetTank = targetId ? this.tanks.get(targetId) : null;
+
+      // Default state: Always move forward!
+      player.input.forward = true;
+      player.input.backward = false;
+      player.input.left = false;
+      player.input.right = false;
+
+      if (targetTank) {
+        const dx = targetTank.position.x - tank.position.x;
+        const dz = targetTank.position.z - tank.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        const targetRotation = Math.atan2(dx, dz);
+        const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+
+        // Steering follows actual target
+        if (angleDiff < -0.05) player.input.right = true;
+        else if (angleDiff > 0.05) player.input.left = true;
+
+        // --- BRAIN: Accuracy Logic ---
+        // Roll to see if the bot aims accurately or intentionally misses.
+        const isHitAttempt = Math.random() < BOT_HIT_RATE;
+        const currentJitter = isHitAttempt ? 0.4 : BOT_MISS_JITTER;
+        const jitteredPos = {
+          x: targetTank.position.x + (Math.random() - 0.5) * currentJitter,
+          y: targetTank.position.y + (Math.random() - 0.5) * currentJitter * 0.5,
+          z: targetTank.position.z + (Math.random() - 0.5) * currentJitter,
+        };
+
+        const solution = solveAimAnglesForTarget(tank, jitteredPos);
+        tank.turretRotation = solution.turretRotation;
+        tank.barrelPitch = solution.barrelPitch;
+
+        // Stop only when very close to target
+        if (dist < 3) player.input.forward = false;
+
+        // Simple water avoidance
+        const lookAheadDist = 5;
+        const lookX = tank.position.x + Math.sin(tank.bodyRotation) * lookAheadDist;
+        const lookZ = tank.position.z + Math.cos(tank.bodyRotation) * lookAheadDist;
+        const groundHeight = this.physics.getHeight(lookX, lookZ);
+        if (groundHeight < 0.2) {
+          player.input.forward = false;
+          player.input.backward = true;
+          player.input.left = true; // Spin away from water
+        }
+
+        // Predictive Firing Logic - Initiative Enhancement
+        const weaponIndex = player.botWeaponIndex ?? 0;
+        const weapon = WEAPONS[weaponIndex];
+        
+        // Only run simulation if cooldown is ready to save performance
+        if (now - player.lastFireTime >= weapon.cooldown) {
+          // Dry-run simulation using the current (jittered) aim
+          const result = simulateShot(tank, weapon, this.voxels, allTanks);
+          
+          // Fire! The jitter ensures they only hit 40-60% of the time.
+          this.performFire(tank, player, weapon, targetTank.position, result);
+          player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
+        }
+      } else {
+        // No target? Roam the map.
+        player.input.forward = true;
+        player.input.left = true;
+      }
     }
   }
 
@@ -1200,7 +1470,7 @@ export class Room {
       projectiles: state.projectiles,
       hazards: state.hazards,
       specialEvent: this.specialEvent,
-      resetsInSeconds: Math.max(0, this.matchResetAt - Date.now() / 1000),
+      resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
     };
   }
 }

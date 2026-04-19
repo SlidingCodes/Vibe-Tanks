@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY } from '@shared/constants';
+import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
@@ -34,6 +34,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
+  isShiftHeld, consumeRightClick,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -43,16 +44,17 @@ import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
 
-// Matches HULL_RADIUS on the server — shared between Rapier collider sizing
 // and client-side airborne integration so ground contact lines up.
 const LOCAL_HULL_RADIUS = HULL_RADIUS;
+let previousPhase: MatchPhase | null = null;
+
 /** Emergency snap threshold. Under normal operation the client Rapier
  *  mirror stays within a few cm of the server (same inputs, same TriMesh,
  *  same fixed-dt stepping), so reconciliation does nothing and the local
@@ -127,8 +129,26 @@ let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
+
+// ── Shield client state ───────────────────────────────────────────────────
+let shieldWasPreviouslyActive = false;
+
+// ── Turbo boost client state ──────────────────────────────────────────────
+let turboActiveUntil = 0;
+let turboCooldownUntil = 0;
+let turboPreviouslyReady = true;   // tracks charging→ready edge for ping animation
+let turboPreviouslyActive = false; // tracks inactive→active edge for sound + vfx
+
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
+
+const SPECIAL_EVENT_NAMES: Record<SpecialEvent, string> = {
+  none: 'No Special Event',
+  double_terrain_damage: 'Double Terrain Damage',
+  low_gravity: 'Low Gravity',
+  dense_fog: 'Dense Fog',
+  space_invaders: 'Space Invaders',
+};
 
 // ── Killcam ─────────────────────────────────────────────────────────
 // When I die to another player, the camera spectates the killer (with a
@@ -192,8 +212,8 @@ if (isMobileDevice()) {
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
 const login = await showLogin();
-playAnnouncer();
-// Start music after the announcer voice has time to land.
+// playAnnouncer is now handled in the first room_snapshot to include the event name
+// Start music after a short delay
 setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
@@ -216,11 +236,42 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   if (!hasReceivedInitialEvent || activeSpecialEvent !== previousEvent) {
     hud.triggerSpecialEventBanner(activeSpecialEvent);
+    
+    const eventName = SPECIAL_EVENT_NAMES[activeSpecialEvent];
+    if (!hasReceivedInitialEvent) {
+      // First announcement: "Vibe Tanks! [Event Name]"
+      const welcome = eventName ? `VIBE TANKS! ${eventName}` : 'VIBE TANKS!';
+      playAnnouncer(welcome);
+    } else if (eventName) {
+      // Mid-game event change: "[Event Name]!"
+      playSpeech(eventName);
+    }
+    
     hasReceivedInitialEvent = true;
   }
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
+
+  if (snap.phase === MatchPhase.Leaderboard) {
+    hud.showLeaderboard(snap.tanks, snap.resetsInSeconds);
+    
+    if (previousPhase !== MatchPhase.Leaderboard) {
+      // Transition START: find winner and announce after 3s delay
+      const winner = [...snap.tanks].sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+      if (winner) {
+        setTimeout(() => {
+          // Re-verify we are still in leaderboard phase before speaking
+          if (snapshot?.phase === MatchPhase.Leaderboard) {
+            playSpeech(`Winner is ${winner.playerName}`);
+          }
+        }, 3000);
+      }
+    }
+  } else {
+    hud.hideLeaderboard();
+  }
+  previousPhase = snap.phase;
 
   const existingIds = new Set(getAllTankMeshes().keys());
   for (const tankState of snap.tanks) {
@@ -254,6 +305,12 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
+  if (myTank) {
+    const shFraction = myTank.shieldActive
+      ? (myTank.shieldTimeRemaining ?? 0) / 5
+      : myTank.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shFraction, myTank.shieldActive ?? false);
+  }
 
   if (snap.phase === MatchPhase.WaitingForPlayers) {
     hud.showWaiting(true);
@@ -554,6 +611,26 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
 
+  if (myTank) {
+    const shFraction = myTank.shieldActive
+      ? (myTank.shieldTimeRemaining ?? 0) / 5
+      : myTank.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shFraction, myTank.shieldActive ?? false);
+
+    // Sound: shield was active last frame but isn't now → absorbed or expired.
+    if (shieldWasPreviouslyActive && !myTank.shieldActive) {
+      playShieldBreak();
+    }
+    shieldWasPreviouslyActive = myTank.shieldActive ?? false;
+
+    // Sync optimistic predicted state with server-authoritative shield fields.
+    if (predictedState) {
+      predictedState.shieldActive = myTank.shieldActive ?? false;
+      predictedState.shieldAvailable = myTank.shieldAvailable ?? true;
+      predictedState.shieldTimeRemaining = myTank.shieldTimeRemaining ?? 0;
+    }
+  }
+
   // Toggle the Dark-Souls-style death screen based on the alive flag edge.
   if (myTank) {
     if (!myTank.alive && !wasDead) {
@@ -722,6 +799,12 @@ socket.on('match_event', (ev) => {
       timeSec: Date.now() / 1000,
     };
   }
+  
+  if (ev.kind === 'kill' && ev.killerId === myId && ev.victimId !== myId) {
+    // I killed someone! Show the indicator and announce it.
+    hud.showKillIndicator(ev.victimName, ev.victimColor);
+    playSpeech(`Enemy Destroyed: ${ev.victimName}`);
+  }
 });
 
 socket.on('game_over', ({ winnerId }) => {
@@ -825,10 +908,61 @@ function animate(): void {
 
   const myTankMesh = getAllTankMeshes().get(myId);
 
+  // ── Turbo state + HUD ────────────────────────────────────────────────────
+  if (predictedState && predictedState.alive) {
+    const shiftDown = isShiftHeld();
+    if (shiftDown && now >= turboCooldownUntil && now >= turboActiveUntil) {
+      turboActiveUntil = now + TURBO_DURATION;
+      turboCooldownUntil = turboActiveUntil + TURBO_COOLDOWN;
+    }
+    const turboActive = now < turboActiveUntil;
+    const turboCharging = !turboActive && now < turboCooldownUntil;
+    const turboReady = !turboActive && !turboCharging;
+
+    let turboFraction: number;
+    if (turboActive) {
+      turboFraction = 1 - (turboActiveUntil - now) / TURBO_DURATION;
+    } else if (turboCharging) {
+      turboFraction = 1 - (turboCooldownUntil - now) / TURBO_COOLDOWN;
+    } else {
+      turboFraction = 1;
+    }
+
+    // Shield: right-click activates once per life (server-authoritative).
+    if (consumeRightClick() && predictedState.shieldAvailable && !predictedState.shieldActive) {
+      socket.emit('shield_activate');
+      predictedState.shieldActive = true;
+      predictedState.shieldAvailable = false;
+      predictedState.shieldTimeRemaining = 5;
+      shieldWasPreviouslyActive = true;
+      playShieldActivate();
+      hud.setShieldBar(1, true);
+    }
+
+    // Shield bar: drain locally each frame for smooth animation; server confirms.
+    if (predictedState.shieldActive && predictedState.shieldTimeRemaining > 0) {
+      predictedState.shieldTimeRemaining = Math.max(0, predictedState.shieldTimeRemaining - dt);
+    }
+    const shieldFraction = predictedState.shieldActive
+      ? predictedState.shieldTimeRemaining / 5
+      : predictedState.shieldAvailable ? 1 : 0;
+    hud.setShieldBar(shieldFraction, predictedState.shieldActive);
+
+    const justActivated = turboActive && !turboPreviouslyActive;
+    if (justActivated) playTurbo();
+    hud.setTurboVfx(turboActive);
+
+    const justReady = turboReady && !turboPreviouslyReady;
+    hud.setTurboBar(turboFraction, turboActive, justReady);
+    turboPreviouslyReady = turboReady;
+    turboPreviouslyActive = turboActive;
+  }
+
   if (myTankMesh && predictedState && predictedState.alive) {
     const selectedWeapon = getSelectedWeapon();
+    const turboActive = now < turboActiveUntil;
 
-    const rawInput = getMovementInput();
+    const rawInput = { ...getMovementInput(), turbo: turboActive };
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1106,6 +1240,11 @@ function animate(): void {
           accelerating = speed > 2.0;
         }
         atmosphere.spawnExhaustSmoke(tm.group.position, tm.group.rotation.y, accelerating);
+      }
+
+      // Turbo flame — only for local player while turbo is active
+      if (pid === myId && now < turboActiveUntil && tm.state.alive) {
+        atmosphere.spawnTurboFlame(tm.group.position, tm.group.rotation.y);
       }
     }
   }

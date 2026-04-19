@@ -14,6 +14,15 @@ const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonEl
 const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
 const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
 const specialEventBanner = document.getElementById('special-event-banner') as HTMLDivElement;
+const turboBar = document.getElementById('turbo-bar') as HTMLDivElement;
+const turboVfx = document.getElementById('turbo-vfx') as HTMLDivElement;
+const shieldBar = document.getElementById('shield-bar') as HTMLDivElement;
+const shieldWrap = document.getElementById('shield-wrap') as HTMLDivElement;
+const killOverlay = document.getElementById('kill-overlay') as HTMLDivElement;
+const killVictim = document.getElementById('kill-victim')!;
+const leaderboardOverlay = document.getElementById('leaderboard-overlay')!;
+const leaderboardBody = document.getElementById('leaderboard-body')!;
+const leaderboardCountdown = document.getElementById('leaderboard-countdown')!;
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -81,6 +90,57 @@ export function hideDeathScreen(): void {
   activeRespawnCallback = null;
 }
 
+let killIndicatorTimeout: ReturnType<typeof setTimeout> | null = null;
+const KILL_INDICATOR_DURATION_MS = 3200;
+
+export function showKillIndicator(victimName: string, color: string): void {
+  if (killIndicatorTimeout) {
+    clearTimeout(killIndicatorTimeout);
+    killIndicatorTimeout = null;
+  }
+
+  killOverlay.style.display = 'block';
+  killOverlay.classList.remove('fade-out');
+  
+  const safeName = escapeHtml(victimName);
+  const safeColor = /^#[0-9a-f]{3,6}$/i.test(color) ? color : '#fff';
+  killVictim.innerHTML = `ENEMY: <span class="kill-victim-name" style="color:${safeColor}">${safeName}</span>`;
+
+  killIndicatorTimeout = setTimeout(() => {
+    killOverlay.classList.add('fade-out');
+    killIndicatorTimeout = setTimeout(() => {
+      killOverlay.style.display = 'none';
+      killIndicatorTimeout = null;
+    }, 400); // Wait for fade-out animation
+  }, KILL_INDICATOR_DURATION_MS);
+}
+
+export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): void {
+  leaderboardOverlay.style.display = 'flex';
+  
+  const sorted = [...tanks].sort((a, b) => b.score - a.score);
+  leaderboardBody.innerHTML = sorted
+    .map((t, i) => {
+      const name = escapeHtml(t.playerName ?? t.playerId.slice(0, 6));
+      return `
+        <tr>
+          <td class="lb-rank">#${i + 1}</td>
+          <td class="lb-name" style="color:${t.color}">${name}</td>
+          <td class="lb-kills">${t.kills || 0}</td>
+          <td class="lb-deaths">${t.deaths || 0}</td>
+          <td class="lb-score">${Math.round(t.score)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  leaderboardCountdown.textContent = Math.ceil(resetsInSeconds).toString();
+}
+
+export function hideLeaderboard(): void {
+  leaderboardOverlay.style.display = 'none';
+}
+
 export function setHealth(tank: TankState | undefined): void {
   if (!tank) {
     healthBar.style.display = 'none';
@@ -115,6 +175,42 @@ export function updateScoreboard(tanks: TankState[]): void {
       return `<div style="color:${t.color}">${name}: ${t.score}${status}</div>`;
     })
     .join('');
+}
+
+/**
+ * Update the turbo boost bar.
+ * @param fraction 0–1 charge level (1 = fully charged / active)
+ * @param active   true while the boost is burning
+ * @param justReady true on the single frame the bar hits 1 and becomes available
+ */
+export function setTurboBar(fraction: number, active: boolean, justReady: boolean): void {
+  const f = Math.min(1, Math.max(0, fraction));
+  turboBar.style.setProperty('--tb-scale', f.toFixed(3));
+  turboBar.classList.toggle('active', active);
+  if (justReady) {
+    turboBar.classList.remove('ready-ping');
+    void turboBar.offsetWidth; // force reflow to restart animation
+    turboBar.classList.add('ready-ping');
+  } else if (!active && f < 1) {
+    turboBar.classList.remove('ready-ping');
+  }
+}
+
+const SHIELD_DURATION = 5;
+
+/**
+ * @param fraction 0–1 fill level (1 = full/ready, drains while active, 0 = used)
+ * @param active   true while the shield bubble is burning down
+ */
+export function setShieldBar(fraction: number, active: boolean): void {
+  if (shieldWrap.style.display === 'none') shieldWrap.style.display = '';
+  const f = Math.min(1, Math.max(0, fraction));
+  shieldBar.style.setProperty('--sh-scale', f.toFixed(3));
+  shieldBar.classList.toggle('active', active);
+}
+
+export function setTurboVfx(active: boolean): void {
+  turboVfx.classList.toggle('active', active);
 }
 
 export function setCooldown(fraction: number): void {

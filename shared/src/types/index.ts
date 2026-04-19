@@ -7,6 +7,7 @@ export enum MatchPhase {
   WaitingForPlayers = 'waiting',
   InProgress = 'in_progress',
   GameOver = 'game_over',
+  Leaderboard = 'leaderboard',
 }
 
 // ── Special Events ──
@@ -25,6 +26,8 @@ export interface MovementInput {
   backward: boolean;
   left: boolean;
   right: boolean;
+  /** True while the turbo boost is active (Shift held + server-validated). */
+  turbo?: boolean;
   /** Monotonic client-side tick counter stamped when the input was applied
    *  locally. The server echoes the highest seq it has applied back to the
    *  client via `TankState.lastAppliedSeq`, letting the client rewind to
@@ -47,6 +50,8 @@ export interface TankState {
   maxHp: number;
   alive: boolean;
   score: number;
+  kills: number;
+  deaths: number;
   color: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the
@@ -67,6 +72,12 @@ export interface TankState {
    *  inputBuffer to replay from (lastAppliedSeq + 1) forward to the
    *  current client seq. */
   lastAppliedSeq: number;
+  /** True while the shield bubble is active. */
+  shieldActive: boolean;
+  /** True if the shield has not yet been used this life. Resets on respawn. */
+  shieldAvailable: boolean;
+  /** Seconds of shield time remaining (counts down from 5 while active, 0 otherwise). */
+  shieldTimeRemaining: number;
 }
 
 // ── Weapons ──
@@ -311,6 +322,7 @@ export interface ClientEvents {
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   force_reset_match: () => void;
+  shield_activate: () => void;
 }
 
 // ── Match events (server → client feed) ──

@@ -19,6 +19,7 @@ export interface TankMesh {
   barrel: THREE.Mesh;
   leftTread: THREE.Mesh;
   rightTread: THREE.Mesh;
+  shieldMesh: THREE.Mesh;
   nameLabel: CSS2DObject | null;  // floating label for remote tanks
   state: TankState;
   // Interpolation state for remote tanks
@@ -109,6 +110,22 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   chassisGroup.add(rightTread);
 
 
+  // Shield bubble — shown only when shieldActive, absorbs the next hit.
+  const shieldGeo = new THREE.SphereGeometry(1.8, 20, 14);
+  const shieldMat = new THREE.MeshStandardMaterial({
+    color: 0x44ccff,
+    emissive: 0x0088ff,
+    emissiveIntensity: 0.6,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.FrontSide,
+    depthWrite: false,
+  });
+  const shieldMesh = new THREE.Mesh(shieldGeo, shieldMat);
+  shieldMesh.position.y = 0.4;
+  shieldMesh.visible = tank.shieldActive ?? false;
+  chassisGroup.add(shieldMesh);
+
   const pos = new THREE.Vector3(tank.position.x, tank.position.y, tank.position.z);
   group.position.copy(pos);
   scene.add(group);
@@ -126,7 +143,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 
   const tm: TankMesh = {
     group, chassisGroup, body, turretGroup, turret, barrel,
-    leftTread, rightTread,
+    leftTread, rightTread, shieldMesh,
 
     nameLabel,
     state: tank,
@@ -235,6 +252,16 @@ export function tickTankEffects(dt: number): void {
     tm.barrel.position.z = -tm.barrelRecoil * 0.9;
     // Chassis tilts around X (Whole tank visuals: body + turret + treads)
     tm.chassisGroup.rotation.x = tm.chassisTilt;
+
+    // Shield bubble: show when active, slow rotation + opacity pulse for flair.
+    if (tm.state.shieldActive) {
+      tm.shieldMesh.visible = true;
+      tm.shieldMesh.rotation.y += dt * 0.8;
+      const mat = tm.shieldMesh.material as THREE.MeshStandardMaterial;
+      mat.opacity = 0.28 + Math.sin(performance.now() * 0.004) * 0.10;
+    } else {
+      tm.shieldMesh.visible = false;
+    }
   }
 }
 

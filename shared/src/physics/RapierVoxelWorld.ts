@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { MovementInput, PlayerId, TankState, Vec3 } from '../types/index';
 import { VoxelGrid } from '../terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE } from '../terrain/surfaceNetsMesher';
-import { GRAVITY, TANK_ACCEL, TANK_COAST_DECEL, TANK_SPEED, TANK_TURN_SPEED } from '../constants';
+import { GRAVITY, TANK_ACCEL, TANK_COAST_DECEL, TANK_SPEED, TANK_TURN_SPEED, TURBO_SPEED_MULTIPLIER } from '../constants';
 
 /** Sphere collider for the tank hull. Ball keeps the bottom from catching
  *  on crater lips / voxel stair-steps the way a cuboid did. Under a
@@ -89,7 +89,7 @@ let rapierReady: Promise<void> | null = null;
 export function initRapier(): Promise<void> {
   if (rapierReady) return rapierReady;
   rapierReady = RAPIER.init();
-  return rapierReady;
+  return rapierReady!;
 }
 
 const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
@@ -164,6 +164,10 @@ export class RapierVoxelWorld {
    *  system (e.g. `low_gravity` halves gravity for one match). */
   setGravity(y: number): void {
     this.world.gravity = { x: 0, y, z: 0 };
+  }
+
+  getHeight(x: number, z: number): number {
+    return this.grid.getHeight(x, z);
   }
 
   private setChunkCollider(cx: number, cy: number, cz: number): boolean {
@@ -343,13 +347,14 @@ export class RapierVoxelWorld {
       // Horizontal target from the authoritative yaw.
       const fwdX = Math.sin(entry.yaw);
       const fwdZ = Math.cos(entry.yaw);
+      const turboMult = input.turbo ? TURBO_SPEED_MULTIPLIER : 1;
       let targetX = 0, targetZ = 0;
       if (moveDir > 0) {
-        targetX = fwdX * FORWARD_SPEED;
-        targetZ = fwdZ * FORWARD_SPEED;
+        targetX = fwdX * FORWARD_SPEED * turboMult;
+        targetZ = fwdZ * FORWARD_SPEED * turboMult;
       } else if (moveDir < 0) {
-        targetX = -fwdX * BACKWARD_SPEED;
-        targetZ = -fwdZ * BACKWARD_SPEED;
+        targetX = -fwdX * BACKWARD_SPEED * turboMult;
+        targetZ = -fwdZ * BACKWARD_SPEED * turboMult;
       }
 
       // Ramp drivenVel toward target at TANK_ACCEL (or TANK_COAST_DECEL
