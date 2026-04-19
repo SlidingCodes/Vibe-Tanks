@@ -632,16 +632,17 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         const scale = s.life / TREAD_DUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
         dummy.rotation.set(0, 0, 0);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5) * 1.6);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 2.5) * 2.5);
         dummy.updateMatrix();
         treadMesh.setMatrixAt(i, dummy.matrix);
 
-        // Dusty brown tint fading out with remaining life.
+        // Dusty brown tint, fades out with remaining life. Alpha biased
+        // high so the puff is actually visible against the terrain.
         const o = i * 4;
-        treadRgba[o]     = 0.55;
-        treadRgba[o + 1] = 0.45;
-        treadRgba[o + 2] = 0.33;
-        treadRgba[o + 3] = scale * 0.55;
+        treadRgba[o]     = 0.72;
+        treadRgba[o + 1] = 0.58;
+        treadRgba[o + 2] = 0.42;
+        treadRgba[o + 3] = scale * 0.85;
       }
       treadMesh.instanceMatrix.needsUpdate = true;
       treadRgbaAttr.needsUpdate = true;
@@ -668,15 +669,15 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         const scale = s.life / EXHAUST_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
         dummy.rotation.set(0, 0, 0);
-        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3) * 1.8);
+        dummy.scale.setScalar(s.size * scale * (1 + (1 - scale) * 3) * 2.8);
         dummy.updateMatrix();
         exhaustMesh.setMatrixAt(i, dummy.matrix);
 
         const o = i * 4;
-        exhaustRgba[o]     = 0.18;
-        exhaustRgba[o + 1] = 0.17;
-        exhaustRgba[o + 2] = 0.16;
-        exhaustRgba[o + 3] = scale * 0.55;
+        exhaustRgba[o]     = 0.35;
+        exhaustRgba[o + 1] = 0.33;
+        exhaustRgba[o + 2] = 0.30;
+        exhaustRgba[o + 3] = scale * 0.85;
       }
       exhaustMesh.instanceMatrix.needsUpdate = true;
       exhaustRgbaAttr.needsUpdate = true;
@@ -700,17 +701,17 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         const scale = s.life / MUZZLE_SMOKE_LIFETIME;
         dummy.position.set(s.px, s.py, s.pz);
         dummy.rotation.set(0, 0, 0);
-        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4) * 2.2);
+        dummy.scale.setScalar(s.size * (1 + (1 - scale) * 4) * 3.2);
         dummy.updateMatrix();
         msmokeMesh.setMatrixAt(i, dummy.matrix);
 
         // Starts white-bright (gunpowder flash smoke) then drifts to grey.
         const warm = scale; // 1 fresh → 0 fading
         const o = i * 4;
-        msmokeRgba[o]     = 0.55 + 0.35 * warm;
-        msmokeRgba[o + 1] = 0.55 + 0.35 * warm;
-        msmokeRgba[o + 2] = 0.55 + 0.35 * warm;
-        msmokeRgba[o + 3] = scale * 0.55;
+        msmokeRgba[o]     = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 1] = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 2] = 0.72 + 0.23 * warm;
+        msmokeRgba[o + 3] = scale * 0.9;
       }
       msmokeMesh.instanceMatrix.needsUpdate = true;
       msmokeRgbaAttr.needsUpdate = true;

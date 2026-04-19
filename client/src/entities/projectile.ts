@@ -437,51 +437,68 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
 
   const back = new THREE.Sprite(fireMat(spec.explosionColor, 0.75, 0.6));
   const front = new THREE.Sprite(fireMat(0xffd07a, 0.95, -0.4));
-  const smoke = new THREE.Sprite(smokeMat(0, 0.2));
+  // Two overlapping smoke sprites at different scales so the aftermath
+  // reads as a real mushroom plume, not a single thin sheet.
+  const smoke1 = new THREE.Sprite(smokeMat(0, 0.2));
+  const smoke2 = new THREE.Sprite(smokeMat(0, -0.3));
 
   back.position.set(step.endPoint.x, step.endPoint.y + baseRadius * 0.35, step.endPoint.z);
   front.position.copy(back.position);
-  smoke.position.copy(back.position);
+  smoke1.position.copy(back.position);
+  smoke2.position.copy(back.position);
   back.scale.setScalar(baseRadius * 2.0 * 1.15);
   front.scale.setScalar(baseRadius * 2.0 * 0.85);
-  smoke.scale.setScalar(baseRadius * 1.4);
+  smoke1.scale.setScalar(baseRadius * 2.4);
+  smoke2.scale.setScalar(baseRadius * 1.8);
   scene.add(back);
   scene.add(front);
-  scene.add(smoke);
+  scene.add(smoke1);
+  scene.add(smoke2);
 
   let frame = 0;
   const animate = () => {
     frame++;
     const grow = 1 + frame * 0.06;
-    const smokeGrow = 1 + frame * 0.035;
+    const smokeGrow = 1 + frame * 0.04;
     back.scale.setScalar(baseRadius * 2.0 * 1.15 * grow);
     front.scale.setScalar(baseRadius * 2.0 * 0.85 * grow);
-    smoke.scale.setScalar(baseRadius * 1.4 * smokeGrow);
-    smoke.position.y += 0.03; // slow rise
+    smoke1.scale.setScalar(baseRadius * 2.4 * smokeGrow);
+    smoke2.scale.setScalar(baseRadius * 1.8 * smokeGrow * 1.15);
+    smoke1.position.y += 0.05;
+    smoke2.position.y += 0.04;
 
     const backMat = back.material as THREE.SpriteMaterial;
     const frontMat = front.material as THREE.SpriteMaterial;
-    const smokeM = smoke.material as THREE.SpriteMaterial;
+    const sM1 = smoke1.material as THREE.SpriteMaterial;
+    const sM2 = smoke2.material as THREE.SpriteMaterial;
 
     backMat.opacity = Math.max(0, 0.75 - frame * 0.032);
     frontMat.opacity = Math.max(0, 0.95 - frame * 0.045);
-    // Smoke fades IN as the fire fades OUT, then slowly fades OUT over
-    // the tail of the animation.
-    if (frame < 12) smokeM.opacity = frame / 12 * 0.55;
-    else smokeM.opacity = Math.max(0, 0.55 - (frame - 12) * 0.014);
+    // Smoke fades IN as the fire fades OUT, peaks around frame 15, then
+    // slowly fades OUT over the tail.
+    if (frame < 15) {
+      sM1.opacity = frame / 15 * 0.85;
+      sM2.opacity = frame / 15 * 0.65;
+    } else {
+      sM1.opacity = Math.max(0, 0.85 - (frame - 15) * 0.018);
+      sM2.opacity = Math.max(0, 0.65 - (frame - 15) * 0.014);
+    }
 
     back.material.rotation += 0.01;
     front.material.rotation -= 0.015;
-    smoke.material.rotation += 0.004;
-    if (frame < 55) {
+    smoke1.material.rotation += 0.004;
+    smoke2.material.rotation -= 0.006;
+    if (frame < 65) {
       requestAnimationFrame(animate);
     } else {
       scene.remove(back);
       scene.remove(front);
-      scene.remove(smoke);
+      scene.remove(smoke1);
+      scene.remove(smoke2);
       backMat.dispose();
       frontMat.dispose();
-      smokeM.dispose();
+      sM1.dispose();
+      sM2.dispose();
     }
   };
   animate();
