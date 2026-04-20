@@ -47,16 +47,25 @@ const TEX_TILE_FREQ = 0.3;
 const TRIPLANAR_BLEND_POW = 4.0;
 // Strength of the triplanar normal-map perturbation (0 = flat, 1 = full).
 const TEXTURE_BUMP_STRENGTH = 0.85;
-// Brightness multiplier on the baked vertex-color tint once textures take
-// over as the base albedo. The palette was tuned to be the whole color,
-// averaging ~0.15 in linear space; gain=7 maps that average to ~1.0 so
-// normal terrain doesn't darken the texture. Scorched (near-black) regions
-// push below 1.0 to darken, sand/highlights push above to warm up.
-const VERTEX_TINT_GAIN = 7.0;
+// Vertex-color tint is applied as `tint = 1 + (vertex - ref) * gain` —
+// i.e. a SHIFT from neutral, not an absolute multiplier. This keeps the
+// texture's natural brightness and only biases warmer/cooler/darker where
+// the palette says to. A plain multiplicative tint turned brown palette
+// regions into flat orange because the baked RGB channels are heavily
+// unequal (R >> G >> B for dirt).
+const VERTEX_TINT_REF = 0.15; // linear-space palette average
+const VERTEX_TINT_GAIN = 2.5;
 // Clamp floor keeps scorch/bedrock from going fully black.
-const VERTEX_TINT_MIN = 0.4;
+const VERTEX_TINT_MIN = 0.5;
 // Clamp ceiling keeps sand from blowing out.
-const VERTEX_TINT_MAX = 1.6;
+const VERTEX_TINT_MAX = 1.4;
+
+// Low-frequency UV rotation on the triplanar albedo sampling. Breaks the
+// obvious texture repetition without adding extra samples: one noise call
+// + a 2×2 rotation per fragment. Normal maps intentionally stay unrotated
+// so the whiteout blend's world-aligned tangent axes remain valid.
+const UV_ROT_FREQ = 0.022; // rotation field fully varies over ~45 world units
+const UV_ROT_TURNS = 2.5;  // total angular range across [min,max] of the noise field
 
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
@@ -179,9 +188,12 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uTexTileFreq = { value: TEX_TILE_FREQ };
     shader.uniforms.uTriplanarBlendPow = { value: TRIPLANAR_BLEND_POW };
     shader.uniforms.uTextureBumpStrength = { value: TEXTURE_BUMP_STRENGTH };
+    shader.uniforms.uVertexTintRef = { value: VERTEX_TINT_REF };
     shader.uniforms.uVertexTintGain = { value: VERTEX_TINT_GAIN };
     shader.uniforms.uVertexTintMin = { value: VERTEX_TINT_MIN };
     shader.uniforms.uVertexTintMax = { value: VERTEX_TINT_MAX };
+    shader.uniforms.uUvRotFreq = { value: UV_ROT_FREQ };
+    shader.uniforms.uUvRotTurns = { value: UV_ROT_TURNS };
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -226,9 +238,12 @@ uniform sampler2D uRockNormal;
 uniform float uTexTileFreq;
 uniform float uTriplanarBlendPow;
 uniform float uTextureBumpStrength;
+uniform float uVertexTintRef;
 uniform float uVertexTintGain;
 uniform float uVertexTintMin;
 uniform float uVertexTintMax;
+uniform float uUvRotFreq;
+uniform float uUvRotTurns;
 
 float vt_hash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
@@ -274,6 +289,15 @@ vec3 vt_triplanarAlbedo(sampler2D tex, vec3 p, vec3 w) {
   return cx * w.x + cy * w.y + cz * w.z;
 }
 
+// Same as vt_triplanarAlbedo but with UVs supplied explicitly, so the caller
+// can pre-rotate them to break the visible tile pattern.
+vec3 vt_triplanarAlbedoUv(sampler2D tex, vec2 uvX, vec2 uvY, vec2 uvZ, vec3 w) {
+  vec3 cx = texture2D(tex, uvX).rgb;
+  vec3 cy = texture2D(tex, uvY).rgb;
+  vec3 cz = texture2D(tex, uvZ).rgb;
+  return cx * w.x + cy * w.y + cz * w.z;
+}
+
 // Whiteout-blend triplanar normal mapping (Ben Golus). Each tangent-space
 // sample gets lifted to a world-space normal by adding the matching world
 // component, then blended with the same triplanar weights.
@@ -302,14 +326,27 @@ vt_rockMixShared = smoothstep(uRockSlopeEdge0, uRockSlopeEdge1, vt_slope) * uRoc
 
 if (uUseTextures > 0.5) {
   // Textured path: triplanar ground + rock, blended by slope. The baked
-  // vertex color (elevation palette, sand, scorch, bedrock) is multiplied
-  // back in as a tint so scorch rings and beaches still read.
+  // vertex color acts as a shift from a neutral reference — warmer in
+  // brown/sand bands, darker in scorch/bedrock — not a full multiplier.
   vec3 vt_tp = vWorldPos * uTexTileFreq;
   vec3 vt_w = vt_triWeights(vt_wn);
-  vec3 vt_ground = vt_triplanarAlbedo(uGroundAlbedo, vt_tp, vt_w);
-  vec3 vt_rock = vt_triplanarAlbedo(uRockAlbedo, vt_tp, vt_w);
+
+  // Low-freq rotation of the albedo UVs (normals stay unrotated for the
+  // whiteout blend to remain basis-correct). Breaks visible tile repetition.
+  float vt_rotAngle = vt_vnoise(vec3(vWorldPos.xz * uUvRotFreq, 0.0)) * uUvRotTurns * 6.2831853;
+  float vt_ca = cos(vt_rotAngle);
+  float vt_sa = sin(vt_rotAngle);
+  mat2 vt_rot = mat2(vt_ca, -vt_sa, vt_sa, vt_ca);
+  vec2 vt_uvX = vt_rot * vt_tp.zy;
+  vec2 vt_uvY = vt_rot * vt_tp.xz;
+  vec2 vt_uvZ = vt_rot * vt_tp.xy;
+
+  vec3 vt_ground = vt_triplanarAlbedoUv(uGroundAlbedo, vt_uvX, vt_uvY, vt_uvZ, vt_w);
+  vec3 vt_rock = vt_triplanarAlbedoUv(uRockAlbedo, vt_uvX, vt_uvY, vt_uvZ, vt_w);
   vec3 vt_texAlbedo = mix(vt_ground, vt_rock, vt_rockMixShared);
-  vec3 vt_tint = clamp(diffuseColor.rgb * uVertexTintGain, vec3(uVertexTintMin), vec3(uVertexTintMax));
+
+  vec3 vt_tint = vec3(1.0) + (diffuseColor.rgb - vec3(uVertexTintRef)) * uVertexTintGain;
+  vt_tint = clamp(vt_tint, vec3(uVertexTintMin), vec3(uVertexTintMax));
   diffuseColor.rgb = vt_texAlbedo * vt_tint;
 
   // A very subtle noise modulation to kill any residual tiling feel.

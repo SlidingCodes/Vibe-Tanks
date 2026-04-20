@@ -95,7 +95,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // filmic S-curve instead of clipping at 1.0. Exposure > 1 lifts midtones so
 // the terrain doesn't read as muddy under the existing directional sun.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.0;
 document.body.prepend(renderer.domElement);
 
 // CSS2D renderer overlays DOM elements (name labels) onto the 3D scene.

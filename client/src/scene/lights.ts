@@ -5,12 +5,13 @@ export interface TerrainLightingControls {
 }
 
 export function createLights(scene: THREE.Scene): TerrainLightingControls {
-  const ambient = new THREE.AmbientLight(0x8899bb, 0.75);
+  const ambient = new THREE.AmbientLight(0x8899bb, 0.65);
   scene.add(ambient);
 
-  // Warm directional sun — slight yellow-white to match a mid-morning feel,
-  // and intense enough to carry readable shading under ACES tone mapping.
-  const sun = new THREE.DirectionalLight(0xfff2d6, 2.4);
+  // Warm directional sun — slight yellow-white for a mid-morning feel,
+  // intense enough to carry readable shading under ACES tone mapping but
+  // dialed down so textured terrain doesn't blow out.
+  const sun = new THREE.DirectionalLight(0xfff2d6, 1.6);
   sun.position.set(30, 40, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.width = 2048;
@@ -24,7 +25,7 @@ export function createLights(scene: THREE.Scene): TerrainLightingControls {
 
   // Hemisphere fills sky/ground bounce so cliff faces under the sun's far
   // side don't go flat-grey black.
-  const hemi = new THREE.HemisphereLight(0x9ec8ff, 0x6a5a3f, 0.5);
+  const hemi = new THREE.HemisphereLight(0x9ec8ff, 0x6a5a3f, 0.4);
   scene.add(hemi);
 
   const updateForTerrain = (terrainWidth: number, terrainHeight: number): void => {
