@@ -60,6 +60,11 @@ const VERTEX_TINT_MIN = 0.5;
 // Clamp ceiling keeps sand from blowing out.
 const VERTEX_TINT_MAX = 1.4;
 
+// Brightness multiplier applied to the rock albedo below the bedrock top —
+// reads as "exposed, darker stone" on crater floors that have dug through
+// the surface layer.
+const BEDROCK_DARKEN = 0.45;
+
 // Low-frequency UV rotation on the triplanar albedo sampling. Breaks the
 // obvious texture repetition without adding extra samples: one noise call
 // + a 2×2 rotation per fragment. Normal maps intentionally stay unrotated
@@ -160,6 +165,8 @@ export function createSurfaceNetsTerrain(
   };
   let loadedTextures = 0;
   const uUseTextures: { value: number } = { value: 0 };
+  const uBedrockTopY: { value: number } = { value: grid.bedrockSurfaceY };
+  const uBedrockDarken: { value: number } = { value: BEDROCK_DARKEN };
   const uGroundAlbedo = { value: loadTexture('/textures/terrain/ground_albedo.jpg', THREE.SRGBColorSpace) };
   const uGroundNormal = { value: loadTexture('/textures/terrain/ground_normal.jpg', THREE.NoColorSpace) };
   const uRockAlbedo = { value: loadTexture('/textures/terrain/rock_albedo.jpg', THREE.SRGBColorSpace) };
@@ -194,6 +201,8 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uVertexTintMax = { value: VERTEX_TINT_MAX };
     shader.uniforms.uUvRotFreq = { value: UV_ROT_FREQ };
     shader.uniforms.uUvRotTurns = { value: UV_ROT_TURNS };
+    shader.uniforms.uBedrockTopY = uBedrockTopY;
+    shader.uniforms.uBedrockDarken = uBedrockDarken;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -244,6 +253,8 @@ uniform float uVertexTintMin;
 uniform float uVertexTintMax;
 uniform float uUvRotFreq;
 uniform float uUvRotTurns;
+uniform float uBedrockTopY;
+uniform float uBedrockDarken;
 
 float vt_hash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
@@ -331,6 +342,14 @@ if (uUseTextures > 0.5) {
   vec3 vt_tp = vWorldPos * uTexTileFreq;
   vec3 vt_w = vt_triWeights(vt_wn);
 
+  // Bedrock factor: 1 at or below the bedrock top, ramps to 0 over a 0.5m
+  // band above it — same profile the mesher uses for its vertex-color grey
+  // bias, so the textured override lands on exactly the same vertices.
+  float vt_bedrock = 1.0 - smoothstep(uBedrockTopY, uBedrockTopY + 0.5, vWorldPos.y);
+  // Below bedrock top the rock texture takes over completely, regardless
+  // of slope — exposed stone on crater floors, not ground atop stone.
+  vt_rockMixShared = max(vt_rockMixShared, vt_bedrock);
+
   // Low-freq rotation of the albedo UVs (normals stay unrotated for the
   // whiteout blend to remain basis-correct). Breaks visible tile repetition.
   float vt_rotAngle = vt_vnoise(vec3(vWorldPos.xz * uUvRotFreq, 0.0)) * uUvRotTurns * 6.2831853;
@@ -348,6 +367,9 @@ if (uUseTextures > 0.5) {
   vec3 vt_tint = vec3(1.0) + (diffuseColor.rgb - vec3(uVertexTintRef)) * uVertexTintGain;
   vt_tint = clamp(vt_tint, vec3(uVertexTintMin), vec3(uVertexTintMax));
   diffuseColor.rgb = vt_texAlbedo * vt_tint;
+
+  // Darken rock further in bedrock regions — reads as recessed, shaded stone.
+  diffuseColor.rgb *= mix(1.0, uBedrockDarken, vt_bedrock);
 
   // A very subtle noise modulation to kill any residual tiling feel.
   vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
@@ -468,6 +490,7 @@ if (uUseTextures > 0.5) {
     // drifts very slightly as deep craters appear, but never enough to be
     // visible mid-match.
     activeElevation = computeElevationRange(g);
+    uBedrockTopY.value = g.bedrockSurfaceY;
     wipeChunks();
     const nx = Math.ceil(g.sizeX / CHUNK_SIZE);
     const ny = Math.ceil(g.sizeY / CHUNK_SIZE);
