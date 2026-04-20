@@ -65,12 +65,12 @@ const VERTEX_TINT_MAX = 1.4;
 // the surface layer.
 const BEDROCK_DARKEN = 0.45;
 
-// Low-frequency UV rotation on the triplanar albedo sampling. Breaks the
-// obvious texture repetition without adding extra samples: one noise call
-// + a 2×2 rotation per fragment. Normal maps intentionally stay unrotated
-// so the whiteout blend's world-aligned tangent axes remain valid.
-const UV_ROT_FREQ = 0.022; // rotation field fully varies over ~45 world units
-const UV_ROT_TURNS = 2.5;  // total angular range across [min,max] of the noise field
+// Macro colour variation frequency (world-units^-1). A slow-varying fbm
+// shifts the whole albedo cool↔warm across regions so the same texture
+// tile doesn't read as identical across the map. No extra texture fetches.
+const MACRO_COLOR_FREQ = 0.014; // pattern fully varies over ~70 world units
+const MACRO_COLOR_COOL = new THREE.Vector3(0.82, 0.88, 0.95); // bluish, darker
+const MACRO_COLOR_WARM = new THREE.Vector3(1.16, 1.08, 1.00); // warmer, lighter
 
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
@@ -199,8 +199,9 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uVertexTintGain = { value: VERTEX_TINT_GAIN };
     shader.uniforms.uVertexTintMin = { value: VERTEX_TINT_MIN };
     shader.uniforms.uVertexTintMax = { value: VERTEX_TINT_MAX };
-    shader.uniforms.uUvRotFreq = { value: UV_ROT_FREQ };
-    shader.uniforms.uUvRotTurns = { value: UV_ROT_TURNS };
+    shader.uniforms.uMacroColorFreq = { value: MACRO_COLOR_FREQ };
+    shader.uniforms.uMacroColorCool = { value: MACRO_COLOR_COOL };
+    shader.uniforms.uMacroColorWarm = { value: MACRO_COLOR_WARM };
     shader.uniforms.uBedrockTopY = uBedrockTopY;
     shader.uniforms.uBedrockDarken = uBedrockDarken;
 
@@ -251,8 +252,9 @@ uniform float uVertexTintRef;
 uniform float uVertexTintGain;
 uniform float uVertexTintMin;
 uniform float uVertexTintMax;
-uniform float uUvRotFreq;
-uniform float uUvRotTurns;
+uniform float uMacroColorFreq;
+uniform vec3 uMacroColorCool;
+uniform vec3 uMacroColorWarm;
 uniform float uBedrockTopY;
 uniform float uBedrockDarken;
 
@@ -300,15 +302,6 @@ vec3 vt_triplanarAlbedo(sampler2D tex, vec3 p, vec3 w) {
   return cx * w.x + cy * w.y + cz * w.z;
 }
 
-// Same as vt_triplanarAlbedo but with UVs supplied explicitly, so the caller
-// can pre-rotate them to break the visible tile pattern.
-vec3 vt_triplanarAlbedoUv(sampler2D tex, vec2 uvX, vec2 uvY, vec2 uvZ, vec3 w) {
-  vec3 cx = texture2D(tex, uvX).rgb;
-  vec3 cy = texture2D(tex, uvY).rgb;
-  vec3 cz = texture2D(tex, uvZ).rgb;
-  return cx * w.x + cy * w.y + cz * w.z;
-}
-
 // Whiteout-blend triplanar normal mapping (Ben Golus). Each tangent-space
 // sample gets lifted to a world-space normal by adding the matching world
 // component, then blended with the same triplanar weights.
@@ -350,23 +343,20 @@ if (uUseTextures > 0.5) {
   // of slope — exposed stone on crater floors, not ground atop stone.
   vt_rockMixShared = max(vt_rockMixShared, vt_bedrock);
 
-  // Low-freq rotation of the albedo UVs (normals stay unrotated for the
-  // whiteout blend to remain basis-correct). Breaks visible tile repetition.
-  float vt_rotAngle = vt_vnoise(vec3(vWorldPos.xz * uUvRotFreq, 0.0)) * uUvRotTurns * 6.2831853;
-  float vt_ca = cos(vt_rotAngle);
-  float vt_sa = sin(vt_rotAngle);
-  mat2 vt_rot = mat2(vt_ca, -vt_sa, vt_sa, vt_ca);
-  vec2 vt_uvX = vt_rot * vt_tp.zy;
-  vec2 vt_uvY = vt_rot * vt_tp.xz;
-  vec2 vt_uvZ = vt_rot * vt_tp.xy;
-
-  vec3 vt_ground = vt_triplanarAlbedoUv(uGroundAlbedo, vt_uvX, vt_uvY, vt_uvZ, vt_w);
-  vec3 vt_rock = vt_triplanarAlbedoUv(uRockAlbedo, vt_uvX, vt_uvY, vt_uvZ, vt_w);
+  vec3 vt_ground = vt_triplanarAlbedo(uGroundAlbedo, vt_tp, vt_w);
+  vec3 vt_rock = vt_triplanarAlbedo(uRockAlbedo, vt_tp, vt_w);
   vec3 vt_texAlbedo = mix(vt_ground, vt_rock, vt_rockMixShared);
 
   vec3 vt_tint = vec3(1.0) + (diffuseColor.rgb - vec3(uVertexTintRef)) * uVertexTintGain;
   vt_tint = clamp(vt_tint, vec3(uVertexTintMin), vec3(uVertexTintMax));
   diffuseColor.rgb = vt_texAlbedo * vt_tint;
+
+  // Macro-scale region colour: a slow-varying fbm shifts the overall tint
+  // cool↔warm so neighbouring repetitions of the same tile read slightly
+  // different. No extra texture fetches — much cheaper than UV rotation
+  // and doesn't produce the concentric swirl artefact.
+  float vt_macro = vt_fbm(vec3(vWorldPos.xz * uMacroColorFreq, 0.0));
+  diffuseColor.rgb *= mix(uMacroColorCool, uMacroColorWarm, vt_macro);
 
   // Darken rock further in bedrock regions — reads as recessed, shaded stone.
   diffuseColor.rgb *= mix(1.0, uBedrockDarken, vt_bedrock);
