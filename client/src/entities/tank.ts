@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { TankState } from '@shared/types/index';
 import { getParticleTextures } from '../scene/particles';
-import { getTankTextures } from './tankTextures';
+import { getTankTextures, configureHullMaterial } from './tankTextures';
 
 const TILT_SMOOTH = 0.25;
 
@@ -76,7 +76,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   // tint via material.color.
   const tankTex = getTankTextures();
 
-  // Body — hull material tints the grey panel albedo with the team colour.
+  // Body — hull material tints the luma-only metal map with the team colour.
   const bodyGeo = new THREE.BoxGeometry(1.2, 0.6, 1.6);
   const bodyMat = new THREE.MeshStandardMaterial({
     color: tank.color,
@@ -86,6 +86,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     roughness: 0.75,
     metalness: 0.25,
   });
+  configureHullMaterial(bodyMat);
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.position.y = 0.3;
   body.castShadow = true;
@@ -104,6 +105,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     roughness: 0.75,
     metalness: 0.25,
   });
+  configureHullMaterial(turretMat);
   const turret = new THREE.Mesh(turretGeo, turretMat);
   turret.position.y = 0.2;
   turret.castShadow = true;

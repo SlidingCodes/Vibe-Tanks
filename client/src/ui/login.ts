@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import randomNames from './randomNames.json';
-import { getTankTextures } from '../entities/tankTextures';
+import { getTankTextures, configureHullMaterial } from '../entities/tankTextures';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -45,6 +45,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     roughness: 0.75,
     metalness: 0.25,
   });
+  configureHullMaterial(bodyMat);
   const turretMat = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     map: tankTex.hullAlbedo,
@@ -53,6 +54,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     roughness: 0.75,
     metalness: 0.25,
   });
+  configureHullMaterial(turretMat);
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 1.6), bodyMat);
   body.position.y = 0.3;

@@ -24,6 +24,35 @@ export function getTankTextures(): TankTextureSet {
   return cached;
 }
 
+/**
+ * Wire a luma-only map hook on a hull material. The Polyhaven metal base
+ * carries an orange-rust tint; multiplying material.color against that tint
+ * crushes cool/purple team colours into the same dark red as warm ones
+ * (blue channel gets killed). Stripping the hue to pure luminance and then
+ * letting material.color drive the colour keeps reds, purples, blues and
+ * pinks all visibly distinct.
+ *
+ * A constant customProgramCacheKey ensures every tank shares one compiled
+ * program rather than recompiling the shader per material instance.
+ */
+export function configureHullMaterial(mat: THREE.MeshStandardMaterial): void {
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D(map, vMapUv);
+  // Rec.709 luminance — the metal map is sRGB-decoded already, so this
+  // runs in linear space. Scale and clamp so the team-colour multiply
+  // doesn't crush into near-black where the map is dark.
+  float _hullLum = dot(sampledDiffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  float _hullBoost = clamp(_hullLum * 2.2, 0.35, 1.2);
+  diffuseColor *= vec4(vec3(_hullBoost), sampledDiffuseColor.a);
+#endif`,
+    );
+  };
+  mat.customProgramCacheKey = () => 'vt-hull-desaturate-v1';
+}
+
 const TREAD_SIZE = 256;
 
 function buildAll(): TankTextureSet {
