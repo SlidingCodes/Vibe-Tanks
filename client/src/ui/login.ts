@@ -22,8 +22,12 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // No hard shadows here — the tank sits still in world space while the
+  // ground texture scrolls past, so a real cast shadow anchors to the
+  // world (= stays put under the tank) while the texture moves through
+  // it, producing a "stationary dark patch" artefact. A soft blob disc
+  // attached to the tank (below) handles grounding without that issue.
+  renderer.shadowMap.enabled = false;
 
   const scene = new THREE.Scene();
   // Warm horizon fog so the ground plane fades into the CSS gradient sky.
@@ -46,15 +50,6 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   scene.add(new THREE.AmbientLight(0xa8b5d0, 0.55));
   const sun = new THREE.DirectionalLight(0xfff2d6, 2.0);
   sun.position.set(4, 6, 3);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.left = -6;
-  sun.shadow.camera.right = 6;
-  sun.shadow.camera.top = 6;
-  sun.shadow.camera.bottom = -6;
-  sun.shadow.camera.near = 0.5;
-  sun.shadow.camera.far = 20;
-  sun.shadow.bias = -0.0005;
   scene.add(sun);
   scene.add(new THREE.HemisphereLight(0x9ec8ff, 0x4a3f2a, 0.45));
 
@@ -81,14 +76,47 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     }),
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
   scene.add(ground);
 
-  // Tank meshes — shared with the in-game factory. Scaled up a touch so the
-  // detailing reads from this camera distance.
+  // Tank meshes — shared with the in-game factory. Rotated toward +X so the
+  // barrel points to the right of the screen, and scaled up so detailing
+  // reads from this camera distance.
   const tankTex = getTankTextures();
+  const TANK_YAW = Math.PI / 3; // 60° — strongly right-facing, ground flow reads as diagonal
   const group = new THREE.Group();
+  // YXZ matches the in-game tank: yaw first (around world Y), then pitch
+  // (around tank-local X post-yaw). Without this, the wobble pitch would
+  // rotate around the world X axis even while the tank is yawed.
+  group.rotation.order = 'YXZ';
+  group.rotation.y = TANK_YAW;
   group.scale.setScalar(1.25);
+
+  // Soft blob shadow disc, parented to the tank group so it rotates with the
+  // hull (aligned to the tank's own forward axis) and stays under it while
+  // the ground texture scrolls beneath. Replaces the cast shadow we disabled
+  // above to avoid the "stationary dark patch" artefact.
+  const blobCanvas = document.createElement('canvas');
+  blobCanvas.width = blobCanvas.height = 128;
+  const blobCtx = blobCanvas.getContext('2d')!;
+  const blobGrad = blobCtx.createRadialGradient(64, 64, 6, 64, 64, 62);
+  blobGrad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
+  blobGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.22)');
+  blobGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  blobCtx.fillStyle = blobGrad;
+  blobCtx.fillRect(0, 0, 128, 128);
+  const blobTex = new THREE.CanvasTexture(blobCanvas);
+  blobTex.colorSpace = THREE.SRGBColorSpace;
+  const blob = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.2, 3.4),
+    new THREE.MeshBasicMaterial({
+      map: blobTex,
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.015; // sit just above the ground plane, no z-fight
+  group.add(blob);
 
   const bodyMat = new THREE.MeshStandardMaterial({
     color: '#ffffff',
@@ -170,19 +198,26 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   let raf = 0;
   let last = performance.now();
   const SCROLL_SPEED = 0.32;
+  // Ground flow direction is −fwd (texture streams backward relative to a
+  // stationary tank). Plane UV → world mapping: u=1→+X, v=0→+Z. Flow in −X
+  // ⇒ offset.x += k; flow in −Z ⇒ offset.y -= k. Combining: offset.x rate
+  // = sin(yaw), offset.y rate = −cos(yaw).
+  const flowX = Math.sin(TANK_YAW);
+  const flowY = -Math.cos(TANK_YAW);
   const loop = (t: number): void => {
     const dt = Math.min(0.05, (t - last) / 1000);
     last = t;
-    // Ground crawls backward (negative V) beneath the tank. Treads scroll at
-    // the same surface speed so the link bars appear synced with the
-    // terrain.
-    groundTex.offset.y -= dt * SCROLL_SPEED;
+    groundTex.offset.x += dt * SCROLL_SPEED * flowX;
+    groundTex.offset.y += dt * SCROLL_SPEED * flowY;
+    groundNormal.offset.x = groundTex.offset.x;
+    groundNormal.offset.y = groundTex.offset.y;
+    // Treads scroll along their own local V axis (tank-forward), so they
+    // stay correct regardless of the group's yaw.
     treadAlbedo.offset.y -= dt * SCROLL_SPEED * 1.9;
     treadNormal.offset.y = treadAlbedo.offset.y;
     treadRough.offset.y = treadAlbedo.offset.y;
     // Faint suspension wobble so the hull doesn't feel glued to the ground.
-    const wobble = Math.sin(t * 0.0035) * 0.015;
-    group.position.y = wobble;
+    group.position.y = Math.sin(t * 0.0035) * 0.015;
     group.rotation.x = Math.sin(t * 0.0022) * 0.006;
     renderer.render(scene, camera);
     raf = requestAnimationFrame(loop);
