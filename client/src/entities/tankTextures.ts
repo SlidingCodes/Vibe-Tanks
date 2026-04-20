@@ -1,15 +1,17 @@
 import * as THREE from 'three';
 
-// Procedural PBR texture set for the tank hull. Built once at init time
-// and shared across every tank mesh — the team colour is applied as a
-// multiplicative tint via material.color, so the greyscale albedo plus
-// normal+roughness maps give each tank readable armour detail without
-// tying us to any downloaded asset.
+// PBR texture set for the tank meshes:
+// - Hull (body + turret) uses Polyhaven's rusty_metal_02 weathered-metal set
+//   as albedo / normal / roughness. Base grey passes the team colour tint
+//   multiplied from material.color without fighting the hue.
+// - Treads keep a procedural canvas heightmap — link-bar pattern with a
+//   centre drive-pin groove, since no generic online asset reads as tank
+//   track and the canvas version looks correct with the geometry.
 
 export interface TankTextureSet {
-  hullAlbedo: THREE.CanvasTexture;
-  hullNormal: THREE.CanvasTexture;
-  hullRoughness: THREE.CanvasTexture;
+  hullAlbedo: THREE.Texture;
+  hullNormal: THREE.Texture;
+  hullRoughness: THREE.Texture;
   treadAlbedo: THREE.CanvasTexture;
   treadNormal: THREE.CanvasTexture;
   treadRoughness: THREE.CanvasTexture;
@@ -22,161 +24,82 @@ export function getTankTextures(): TankTextureSet {
   return cached;
 }
 
-const SIZE = 256;
+const TREAD_SIZE = 256;
 
 function buildAll(): TankTextureSet {
-  const hullH = buildHullHeightmap();
+  const loader = new THREE.TextureLoader();
+  const loadFile = (path: string, colorSpace: THREE.ColorSpace): THREE.Texture => {
+    const t = loader.load(path);
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = colorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+
   const treadH = buildTreadHeightmap();
   return {
-    hullAlbedo: albedoFromHeight(hullH, 0xd0, 0.35, 'hull'),
-    hullNormal: normalFromHeight(hullH, 3.2),
-    hullRoughness: roughnessFromHeight(hullH, 0.55, 0.35),
-    treadAlbedo: albedoFromHeight(treadH, 0x40, 0.5, 'tread'),
+    hullAlbedo: loadFile('/textures/tank/hull_albedo.jpg', THREE.SRGBColorSpace),
+    hullNormal: loadFile('/textures/tank/hull_normal.jpg', THREE.NoColorSpace),
+    hullRoughness: loadFile('/textures/tank/hull_roughness.jpg', THREE.NoColorSpace),
+    treadAlbedo: albedoFromHeight(treadH, 0x40, 0.5),
     treadNormal: normalFromHeight(treadH, 4.5),
     treadRoughness: roughnessFromHeight(treadH, 0.85, 0.15),
   };
 }
 
-// ─────────────── hull heightmap ───────────────
-
-function buildHullHeightmap(): Uint8ClampedArray {
-  const h = new Uint8ClampedArray(SIZE * SIZE);
-  h.fill(148);
-
-  // 4×4 armour-panel grid: grooves at x,y = 32, 96, 160, 224 split the face
-  // into 4 plates, each ~64 px. Inside each plate the base surface is
-  // slightly uneven from the weathering pass below.
-  const GRID_LINES = [32, 96, 160, 224];
-  for (const y of GRID_LINES) {
-    drawHorizontalGroove(h, y, 82, 112);
-  }
-  for (const x of GRID_LINES) {
-    drawVerticalGroove(h, x, 82, 112);
-  }
-
-  // Rivets clustered near panel intersections — 4 rivets per corner, inside
-  // the plate rather than right on the groove so they don't blur together.
-  for (const gy of GRID_LINES) {
-    for (const gx of GRID_LINES) {
-      stampDome(h, gx - 10, gy - 10, 3, 58);
-      stampDome(h, gx + 10, gy - 10, 3, 58);
-      stampDome(h, gx - 10, gy + 10, 3, 58);
-      stampDome(h, gx + 10, gy + 10, 3, 58);
-    }
-  }
-
-  // A pair of wider bolts mid-panel on the horizontal centre line of each
-  // plate — breaks up the strict 4-rivet corner pattern.
-  for (let py = 64; py < SIZE; py += 64) {
-    for (let px = 64; px < SIZE; px += 64) {
-      stampDome(h, px, py, 4, 45);
-    }
-  }
-
-  // Low-frequency weathering noise: subtle brightness variation across each
-  // plate so armour doesn't look airbrush-flat.
-  weatherNoise(h, 3500, 14);
-
-  return h;
-}
-
 // ─────────────── tread heightmap ───────────────
 
 function buildTreadHeightmap(): Uint8ClampedArray {
-  const h = new Uint8ClampedArray(SIZE * SIZE);
+  const h = new Uint8ClampedArray(TREAD_SIZE * TREAD_SIZE);
   h.fill(90);
 
-  // Horizontal tread links every 16 px. Each link is a raised bar 6 px tall
-  // with soft shoulders so the normal map reads as a rounded rubber block
-  // rather than a sharp ridge.
-  for (let cy = 8; cy < SIZE; cy += 16) {
+  for (let cy = 8; cy < TREAD_SIZE; cy += 16) {
     for (let dy = -4; dy <= 4; dy++) {
       const y = cy + dy;
-      if (y < 0 || y >= SIZE) continue;
+      if (y < 0 || y >= TREAD_SIZE) continue;
       const falloff = 1 - Math.abs(dy) / 5;
       const rise = Math.max(0, falloff) * 75;
-      for (let x = 0; x < SIZE; x++) {
-        h[y * SIZE + x] = Math.min(255, h[y * SIZE + x] + rise);
+      for (let x = 0; x < TREAD_SIZE; x++) {
+        h[y * TREAD_SIZE + x] = Math.min(255, h[y * TREAD_SIZE + x] + rise);
       }
     }
   }
 
-  // Central drive-pin groove along the length (vertical in UV space).
-  drawVerticalGroove(h, SIZE / 2, 70, 100);
+  // Centre drive-pin groove along the length.
+  const cx = Math.round(TREAD_SIZE / 2);
+  for (let y = 0; y < TREAD_SIZE; y++) {
+    h[y * TREAD_SIZE + cx] = Math.min(h[y * TREAD_SIZE + cx], 70);
+    h[y * TREAD_SIZE + (cx - 1)] = Math.min(h[y * TREAD_SIZE + (cx - 1)], 100);
+    h[y * TREAD_SIZE + (cx + 1)] = Math.min(h[y * TREAD_SIZE + (cx + 1)], 100);
+  }
 
-  weatherNoise(h, 1500, 18);
+  for (let i = 0; i < 1500; i++) {
+    const x = Math.floor(Math.random() * TREAD_SIZE);
+    const y = Math.floor(Math.random() * TREAD_SIZE);
+    const v = (Math.random() - 0.5) * 18;
+    h[y * TREAD_SIZE + x] = Math.max(0, Math.min(255, h[y * TREAD_SIZE + x] + v));
+  }
   return h;
 }
 
-// ─────────────── primitives ───────────────
+// ─────────────── canvas-texture builders (treads only) ───────────────
 
-function drawHorizontalGroove(h: Uint8ClampedArray, cy: number, depth: number, shoulder: number): void {
-  for (let x = 0; x < SIZE; x++) {
-    h[cy * SIZE + x] = Math.min(h[cy * SIZE + x], depth);
-    if (cy > 0) h[(cy - 1) * SIZE + x] = Math.min(h[(cy - 1) * SIZE + x], shoulder);
-    if (cy < SIZE - 1) h[(cy + 1) * SIZE + x] = Math.min(h[(cy + 1) * SIZE + x], shoulder);
-  }
-}
-
-function drawVerticalGroove(h: Uint8ClampedArray, cx: number, depth: number, shoulder: number): void {
-  const cxi = Math.round(cx);
-  for (let y = 0; y < SIZE; y++) {
-    h[y * SIZE + cxi] = Math.min(h[y * SIZE + cxi], depth);
-    if (cxi > 0) h[y * SIZE + (cxi - 1)] = Math.min(h[y * SIZE + (cxi - 1)], shoulder);
-    if (cxi < SIZE - 1) h[y * SIZE + (cxi + 1)] = Math.min(h[y * SIZE + (cxi + 1)], shoulder);
-  }
-}
-
-function stampDome(h: Uint8ClampedArray, cx: number, cy: number, r: number, peak: number): void {
-  const R = Math.ceil(r);
-  for (let dy = -R; dy <= R; dy++) {
-    for (let dx = -R; dx <= R; dx++) {
-      const x = cx + dx;
-      const y = cy + dy;
-      if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) continue;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > r * r) continue;
-      const bump = peak * Math.sqrt(1 - d2 / (r * r));
-      h[y * SIZE + x] = Math.min(255, h[y * SIZE + x] + bump);
-    }
-  }
-}
-
-function weatherNoise(h: Uint8ClampedArray, count: number, amp: number): void {
-  for (let i = 0; i < count; i++) {
-    const x = Math.floor(Math.random() * SIZE);
-    const y = Math.floor(Math.random() * SIZE);
-    const v = (Math.random() - 0.5) * amp;
-    h[y * SIZE + x] = Math.max(0, Math.min(255, h[y * SIZE + x] + v));
-  }
-}
-
-// ─────────────── canvas-texture builders ───────────────
-
-function albedoFromHeight(
-  h: Uint8ClampedArray,
-  baseSrgb: number,
-  contrast: number,
-  kind: 'hull' | 'tread',
-): THREE.CanvasTexture {
+function albedoFromHeight(h: Uint8ClampedArray, baseSrgb: number, contrast: number): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
+  canvas.width = canvas.height = TREAD_SIZE;
   const ctx = canvas.getContext('2d')!;
-  const imgData = ctx.createImageData(SIZE, SIZE);
+  const imgData = ctx.createImageData(TREAD_SIZE, TREAD_SIZE);
   const data = imgData.data;
 
-  // Per-pixel RGB noise provides a slight hue wobble so the surface doesn't
-  // read as pure grey under the team-colour multiply.
-  for (let i = 0; i < SIZE * SIZE; i++) {
-    const hn = h[i] / 255; // 0..1 relative height
+  for (let i = 0; i < TREAD_SIZE * TREAD_SIZE; i++) {
+    const hn = h[i] / 255;
     const brightness = 1 + (hn - 0.58) * contrast;
     const v = Math.max(12, Math.min(255, Math.round(baseSrgb * brightness)));
-    const rJitter = kind === 'hull' ? (Math.random() - 0.5) * 10 : (Math.random() - 0.5) * 6;
-    const gJitter = kind === 'hull' ? (Math.random() - 0.5) * 10 : (Math.random() - 0.5) * 6;
-    const bJitter = kind === 'hull' ? (Math.random() - 0.5) * 10 : (Math.random() - 0.5) * 6;
-    data[i * 4]     = Math.max(0, Math.min(255, v + rJitter));
-    data[i * 4 + 1] = Math.max(0, Math.min(255, v + gJitter));
-    data[i * 4 + 2] = Math.max(0, Math.min(255, v + bJitter));
+    const jitter = (Math.random() - 0.5) * 6;
+    data[i * 4]     = Math.max(0, Math.min(255, v + jitter));
+    data[i * 4 + 1] = Math.max(0, Math.min(255, v + jitter));
+    data[i * 4 + 2] = Math.max(0, Math.min(255, v + jitter));
     data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imgData, 0, 0);
@@ -190,26 +113,26 @@ function albedoFromHeight(
 
 function normalFromHeight(h: Uint8ClampedArray, strength: number): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
+  canvas.width = canvas.height = TREAD_SIZE;
   const ctx = canvas.getContext('2d')!;
-  const imgData = ctx.createImageData(SIZE, SIZE);
+  const imgData = ctx.createImageData(TREAD_SIZE, TREAD_SIZE);
   const data = imgData.data;
 
   const sample = (x: number, y: number): number => {
-    const xx = ((x % SIZE) + SIZE) % SIZE;
-    const yy = ((y % SIZE) + SIZE) % SIZE;
-    return h[yy * SIZE + xx];
+    const xx = ((x % TREAD_SIZE) + TREAD_SIZE) % TREAD_SIZE;
+    const yy = ((y % TREAD_SIZE) + TREAD_SIZE) % TREAD_SIZE;
+    return h[yy * TREAD_SIZE + xx];
   };
 
-  for (let y = 0; y < SIZE; y++) {
-    for (let x = 0; x < SIZE; x++) {
+  for (let y = 0; y < TREAD_SIZE; y++) {
+    for (let x = 0; x < TREAD_SIZE; x++) {
       const hx = ((sample(x + 1, y) - sample(x - 1, y)) / 255) * strength;
       const hy = ((sample(x, y + 1) - sample(x, y - 1)) / 255) * strength;
       const nx = -hx;
       const ny = -hy;
       const nz = 1.0;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      const idx = (y * SIZE + x) * 4;
+      const idx = (y * TREAD_SIZE + x) * 4;
       data[idx] = Math.round(((nx / len) * 0.5 + 0.5) * 255);
       data[idx + 1] = Math.round(((ny / len) * 0.5 + 0.5) * 255);
       data[idx + 2] = Math.round(((nz / len) * 0.5 + 0.5) * 255);
@@ -226,15 +149,12 @@ function normalFromHeight(h: Uint8ClampedArray, strength: number): THREE.CanvasT
 
 function roughnessFromHeight(h: Uint8ClampedArray, base: number, range: number): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = SIZE;
+  canvas.width = canvas.height = TREAD_SIZE;
   const ctx = canvas.getContext('2d')!;
-  const imgData = ctx.createImageData(SIZE, SIZE);
+  const imgData = ctx.createImageData(TREAD_SIZE, TREAD_SIZE);
   const data = imgData.data;
 
-  // Raised features (rivets, ridges) read slightly smoother than recessed
-  // grooves, so specular highlights catch on the bumps rather than the
-  // cracks. Jitter adds fine-grained wear that breaks up anisotropic sheen.
-  for (let i = 0; i < SIZE * SIZE; i++) {
+  for (let i = 0; i < TREAD_SIZE * TREAD_SIZE; i++) {
     const hn = h[i] / 255;
     const r = base - (hn - 0.5) * range + (Math.random() - 0.5) * 0.05;
     const v = Math.max(0, Math.min(255, Math.round(r * 255)));

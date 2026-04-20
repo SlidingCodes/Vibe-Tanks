@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import randomNames from './randomNames.json';
+import { getTankTextures } from '../entities/tankTextures';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -11,6 +12,10 @@ function createTankPreview(canvas: HTMLCanvasElement): {
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // Match the in-game renderer's tone-mapping so the preview reads the same
+  // brightness/roughness as the live tank mesh.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
   const resize = () => {
     const w = canvas.clientWidth || 280;
     const h = canvas.clientHeight || 140;
@@ -30,9 +35,24 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   scene.add(dir);
   scene.add(new THREE.HemisphereLight(0x88aaff, 0x222233, 0.35));
 
+  const tankTex = getTankTextures();
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: '#ffffff' });
-  const turretMat = new THREE.MeshStandardMaterial({ color: '#ffffff' });
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    map: tankTex.hullAlbedo,
+    normalMap: tankTex.hullNormal,
+    roughnessMap: tankTex.hullRoughness,
+    roughness: 0.75,
+    metalness: 0.25,
+  });
+  const turretMat = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    map: tankTex.hullAlbedo,
+    normalMap: tankTex.hullNormal,
+    roughnessMap: tankTex.hullRoughness,
+    roughness: 0.75,
+    metalness: 0.25,
+  });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 1.6), bodyMat);
   body.position.y = 0.3;
@@ -44,15 +64,25 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   turret.position.y = 0.2;
   turretGroup.add(turret);
 
-  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 8);
+  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 16);
   barrelGeo.translate(0, 0.7, 0);
   barrelGeo.rotateX(Math.PI / 2);
-  const barrel = new THREE.Mesh(barrelGeo, new THREE.MeshStandardMaterial({ color: 0x333333 }));
+  const barrel = new THREE.Mesh(
+    barrelGeo,
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.45, metalness: 0.7 }),
+  );
   barrel.position.y = 0.2;
   turretGroup.add(barrel);
   group.add(turretGroup);
 
-  const treadMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.95 });
+  const treadMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    map: tankTex.treadAlbedo,
+    normalMap: tankTex.treadNormal,
+    roughnessMap: tankTex.treadRoughness,
+    roughness: 0.9,
+    metalness: 0.15,
+  });
   const treadGeo = new THREE.BoxGeometry(0.35, 0.5, 2.0);
   const leftT = new THREE.Mesh(treadGeo, treadMat);
   leftT.position.set(-0.7, 0.25, 0);
