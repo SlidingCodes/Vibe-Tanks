@@ -91,32 +91,9 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   group.rotation.y = TANK_YAW;
   group.scale.setScalar(1.25);
 
-  // Soft blob shadow disc, parented to the tank group so it rotates with the
-  // hull (aligned to the tank's own forward axis) and stays under it while
-  // the ground texture scrolls beneath. Replaces the cast shadow we disabled
-  // above to avoid the "stationary dark patch" artefact.
-  const blobCanvas = document.createElement('canvas');
-  blobCanvas.width = blobCanvas.height = 128;
-  const blobCtx = blobCanvas.getContext('2d')!;
-  const blobGrad = blobCtx.createRadialGradient(64, 64, 6, 64, 64, 62);
-  blobGrad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
-  blobGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.22)');
-  blobGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  blobCtx.fillStyle = blobGrad;
-  blobCtx.fillRect(0, 0, 128, 128);
-  const blobTex = new THREE.CanvasTexture(blobCanvas);
-  blobTex.colorSpace = THREE.SRGBColorSpace;
-  const blob = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.2, 3.4),
-    new THREE.MeshBasicMaterial({
-      map: blobTex,
-      transparent: true,
-      depthWrite: false,
-    }),
-  );
-  blob.rotation.x = -Math.PI / 2;
-  blob.position.y = 0.015; // sit just above the ground plane, no z-fight
-  group.add(blob);
+  // (No ground blob — the rectangular plane was reading as a visible dark
+  // footprint around the tank. The tank floats slightly without any
+  // grounding shadow, which is less jarring than a fake blob.)
 
   const bodyMat = new THREE.MeshStandardMaterial({
     color: '#ffffff',
