@@ -969,8 +969,27 @@ export class Room {
     if (this.simInterval) return;
 
     const simDt = 1 / SIM_TICK_RATE;
+    const targetTickMs = simDt * 1000;
+
+    // Temporary instrumentation: measure sim-tick jitter on the Pi. Logs
+    // once every 10 s with the worst slip/duration and how many ticks went
+    // over a threshold. Remove once we've decided the mitigation.
+    let lastTickWallMs = performance.now();
+    let windowStartMs = lastTickWallMs;
+    let windowTickCount = 0;
+    let windowWorstSlipMs = 0;
+    let windowWorstDurationMs = 0;
+    let windowSlipOverCount = 0;
+    let windowDurOverCount = 0;
+    const SLIP_THRESHOLD_MS = 10;
+    const DURATION_THRESHOLD_MS = 20;
+    const REPORT_EVERY_MS = 10_000;
 
     this.simInterval = setInterval(() => {
+      const now = performance.now();
+      const slipMs = Math.max(0, now - lastTickWallMs - targetTickMs);
+      lastTickWallMs = now;
+
       // Pause simulation during leaderboard to let players admire the results
       if (this.phase === MatchPhase.Leaderboard) return;
 
@@ -981,7 +1000,30 @@ export class Room {
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
       this.tickSpaceInvaders(simDt);
-    }, simDt * 1000);
+
+      const durationMs = performance.now() - now;
+      windowTickCount++;
+      if (slipMs > windowWorstSlipMs) windowWorstSlipMs = slipMs;
+      if (durationMs > windowWorstDurationMs) windowWorstDurationMs = durationMs;
+      if (slipMs > SLIP_THRESHOLD_MS) windowSlipOverCount++;
+      if (durationMs > DURATION_THRESHOLD_MS) windowDurOverCount++;
+
+      if (now - windowStartMs >= REPORT_EVERY_MS && this.players.size > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[tick-jitter] ${windowTickCount} ticks, ` +
+          `worstSlip=${windowWorstSlipMs.toFixed(1)}ms over${SLIP_THRESHOLD_MS}=${windowSlipOverCount}, ` +
+          `worstDur=${windowWorstDurationMs.toFixed(1)}ms over${DURATION_THRESHOLD_MS}=${windowDurOverCount}, ` +
+          `players=${this.players.size}`,
+        );
+        windowStartMs = now;
+        windowTickCount = 0;
+        windowWorstSlipMs = 0;
+        windowWorstDurationMs = 0;
+        windowSlipOverCount = 0;
+        windowDurOverCount = 0;
+      }
+    }, targetTickMs);
 
     this.broadcastInterval = setInterval(() => {
       this.io.to(this.id).emit('state_update', this.getStateUpdate());
