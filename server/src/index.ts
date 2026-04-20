@@ -7,6 +7,19 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { JoinRoomSchema, onValidated } from './validation';
 
+// Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
+// swallowed by default — the process stays alive but the tick is dead,
+// leaving systemd unaware that anything needs restarting. Crash loudly so
+// the Restart=always unit flips us back within RestartSec.
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[fatal] unhandledRejection:', err);
+  process.exit(1);
+});
+
 async function main(): Promise<void> {
   // Rapier wasm must be loaded before any RapierVoxelWorld is constructed.
   await initRapier();
