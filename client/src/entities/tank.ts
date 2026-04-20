@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { TankState } from '@shared/types/index';
 import { getParticleTextures } from '../scene/particles';
+import { getTankTextures } from './tankTextures';
 
 const TILT_SMOOTH = 0.25;
 
@@ -70,9 +71,21 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const chassisGroup = new THREE.Group();
   group.add(chassisGroup);
 
-  // Body
+  // Procedural PBR hull textures (panels, rivets, weathering). Built once
+  // and shared across every tank mesh; team colour is the multiplicative
+  // tint via material.color.
+  const tankTex = getTankTextures();
+
+  // Body — hull material tints the grey panel albedo with the team colour.
   const bodyGeo = new THREE.BoxGeometry(1.2, 0.6, 1.6);
-  const bodyMat = new THREE.MeshStandardMaterial({ color: tank.color });
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: tank.color,
+    map: tankTex.hullAlbedo,
+    normalMap: tankTex.hullNormal,
+    roughnessMap: tankTex.hullRoughness,
+    roughness: 0.75,
+    metalness: 0.25,
+  });
   const body = new THREE.Mesh(bodyGeo, bodyMat);
   body.position.y = 0.3;
   body.castShadow = true;
@@ -83,17 +96,28 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   turretGroup.position.y = 0.6;
 
   const turretGeo = new THREE.BoxGeometry(0.8, 0.4, 0.8);
-  const turretMat = new THREE.MeshStandardMaterial({ color: tank.color });
+  const turretMat = new THREE.MeshStandardMaterial({
+    color: tank.color,
+    map: tankTex.hullAlbedo,
+    normalMap: tankTex.hullNormal,
+    roughnessMap: tankTex.hullRoughness,
+    roughness: 0.75,
+    metalness: 0.25,
+  });
   const turret = new THREE.Mesh(turretGeo, turretMat);
   turret.position.y = 0.2;
   turret.castShadow = true;
   turretGroup.add(turret);
 
   // Barrel - pivot at turret center
-  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 8);
+  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 16);
   barrelGeo.translate(0, 0.7, 0);
   barrelGeo.rotateX(Math.PI / 2); // point along +Z
-  const barrelMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+  const barrelMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2a2a,
+    roughness: 0.45,
+    metalness: 0.7,
+  });
   const barrel = new THREE.Mesh(barrelGeo, barrelMat);
   barrel.position.y = 0.2;
   barrel.castShadow = true;
@@ -101,9 +125,20 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 
   chassisGroup.add(turretGroup);
 
-  // Treads: chunky black boxes on either side of the body, slightly longer.
+  // Treads: track links + centre drive-pin groove from the tread texture.
+  // Anisotropic side-face UV repeats pack more tread blocks along the 2 m
+  // length; the narrow textures on top/bottom/ends use the default single
+  // repeat (box geometry shares UVs per face, so cloning gets per-tank tile
+  // scaling without fighting the hull texture).
   const treadGeo = new THREE.BoxGeometry(0.35, 0.5, 2.0);
-  const treadMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.95 });
+  const treadMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1a,
+    map: tankTex.treadAlbedo,
+    normalMap: tankTex.treadNormal,
+    roughnessMap: tankTex.treadRoughness,
+    roughness: 0.9,
+    metalness: 0.15,
+  });
   const leftTread = new THREE.Mesh(treadGeo, treadMat);
   leftTread.position.set(-TREAD_HALF_WIDTH, 0.25, 0);
   leftTread.castShadow = true;
