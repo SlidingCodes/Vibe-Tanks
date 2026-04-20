@@ -89,6 +89,13 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// ACES filmic tone mapping gives a natural daylight response — the linear
+// albedo × light product gets compressed into displayable range with a
+// filmic S-curve instead of clipping at 1.0. Exposure > 1 lifts midtones so
+// the terrain doesn't read as muddy under the existing directional sun.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 document.body.prepend(renderer.domElement);
 
 // CSS2D renderer overlays DOM elements (name labels) onto the 3D scene.

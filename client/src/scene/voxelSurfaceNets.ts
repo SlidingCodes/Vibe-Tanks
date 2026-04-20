@@ -16,15 +16,18 @@ const TRACK_COLOR = new THREE.Color(0x3a281a).convertSRGBToLinear();
 // alpha blending, so tall mix values still leave the palette visible.
 const TRACK_MAX_MIX = 0.85;
 
-// Cool dark-brown rock tone for steep slopes — visually distinct from the
-// bedrock grey (0x6a6a6a) and the elevation palette so cliff faces read as
-// exposed rock rather than just darker dirt.
+// Cool dark-brown rock tone for steep slopes — used only by the procedural
+// fallback; the textured path swaps to the rock_face albedo/normal set.
 const ROCK_COLOR = new THREE.Color(0x4a4038).convertSRGBToLinear();
-// Slope exponent: higher values keep flat ground free of rock tone and only
-// surface it on near-vertical walls. 2.5 gives a visible band on ~45° slopes.
-const ROCK_BLEND_POWER = 2.5;
+// Slope ramp edges, measured as sin(angle-from-vertical-axis). This is much
+// more generous than the old `1 - n.y` power curve: craters bottom out
+// around 25–40° so we want significant rock starting in that band. At 30°
+// slope sin=0.5, which smoothsteps to ~0.5 rock; a near-vertical face
+// (60°+) saturates to full rock.
+const ROCK_SLOPE_EDGE0 = 0.30; // ~17° — below, pure ground
+const ROCK_SLOPE_EDGE1 = 0.80; // ~53° — above, pure rock
 // Max amount of rock tint applied on a fully vertical wall.
-const ROCK_MAX_MIX = 0.8;
+const ROCK_MAX_MIX = 1.0;
 // How much the procedural detail noise modulates brightness (±, around 1).
 const DETAIL_STRENGTH = 0.22;
 // How much the noise-gradient perturbs the shading normal. 0 = off, 1 = strong.
@@ -45,9 +48,15 @@ const TRIPLANAR_BLEND_POW = 4.0;
 // Strength of the triplanar normal-map perturbation (0 = flat, 1 = full).
 const TEXTURE_BUMP_STRENGTH = 0.85;
 // Brightness multiplier on the baked vertex-color tint once textures take
-// over as the base albedo — compensates for the fact that the palette was
-// tuned to be the full color, not a modulator on a grey texture.
-const VERTEX_TINT_GAIN = 2.6;
+// over as the base albedo. The palette was tuned to be the whole color,
+// averaging ~0.15 in linear space; gain=7 maps that average to ~1.0 so
+// normal terrain doesn't darken the texture. Scorched (near-black) regions
+// push below 1.0 to darken, sand/highlights push above to warm up.
+const VERTEX_TINT_GAIN = 7.0;
+// Clamp floor keeps scorch/bedrock from going fully black.
+const VERTEX_TINT_MIN = 0.4;
+// Clamp ceiling keeps sand from blowing out.
+const VERTEX_TINT_MAX = 1.6;
 
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
@@ -155,7 +164,8 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uTrackMaxMix = { value: TRACK_MAX_MIX };
     shader.uniforms.uTrackEnabled = uTrackEnabled;
     shader.uniforms.uRockColor = { value: ROCK_COLOR };
-    shader.uniforms.uRockBlendPower = { value: ROCK_BLEND_POWER };
+    shader.uniforms.uRockSlopeEdge0 = { value: ROCK_SLOPE_EDGE0 };
+    shader.uniforms.uRockSlopeEdge1 = { value: ROCK_SLOPE_EDGE1 };
     shader.uniforms.uRockMaxMix = { value: ROCK_MAX_MIX };
     shader.uniforms.uDetailStrength = { value: DETAIL_STRENGTH };
     shader.uniforms.uDetailFreq = { value: DETAIL_FREQ };
@@ -170,6 +180,8 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uTriplanarBlendPow = { value: TRIPLANAR_BLEND_POW };
     shader.uniforms.uTextureBumpStrength = { value: TEXTURE_BUMP_STRENGTH };
     shader.uniforms.uVertexTintGain = { value: VERTEX_TINT_GAIN };
+    shader.uniforms.uVertexTintMin = { value: VERTEX_TINT_MIN };
+    shader.uniforms.uVertexTintMax = { value: VERTEX_TINT_MAX };
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -199,7 +211,8 @@ uniform vec3 uTrackColor;
 uniform float uTrackMaxMix;
 uniform float uTrackEnabled;
 uniform vec3 uRockColor;
-uniform float uRockBlendPower;
+uniform float uRockSlopeEdge0;
+uniform float uRockSlopeEdge1;
 uniform float uRockMaxMix;
 uniform float uDetailStrength;
 uniform float uDetailFreq;
@@ -214,6 +227,8 @@ uniform float uTexTileFreq;
 uniform float uTriplanarBlendPow;
 uniform float uTextureBumpStrength;
 uniform float uVertexTintGain;
+uniform float uVertexTintMin;
+uniform float uVertexTintMax;
 
 float vt_hash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
@@ -278,10 +293,12 @@ float vt_rockMixShared = 0.0;`,
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-// --- slope-based rock mix used by both the procedural and textured paths. ---
+// --- slope-based rock mix used by both the procedural and textured paths.
+//     Slope = sin(angle from vertical-up), so a 30° crater rim already
+//     reads as half-rock rather than nearly pure ground. ---
 vec3 vt_wn = normalize(vWorldNormal);
-float vt_slope = 1.0 - clamp(vt_wn.y, 0.0, 1.0);
-vt_rockMixShared = pow(vt_slope, uRockBlendPower) * uRockMaxMix;
+float vt_slope = length(vec2(vt_wn.x, vt_wn.z));
+vt_rockMixShared = smoothstep(uRockSlopeEdge0, uRockSlopeEdge1, vt_slope) * uRockMaxMix;
 
 if (uUseTextures > 0.5) {
   // Textured path: triplanar ground + rock, blended by slope. The baked
@@ -292,7 +309,7 @@ if (uUseTextures > 0.5) {
   vec3 vt_ground = vt_triplanarAlbedo(uGroundAlbedo, vt_tp, vt_w);
   vec3 vt_rock = vt_triplanarAlbedo(uRockAlbedo, vt_tp, vt_w);
   vec3 vt_texAlbedo = mix(vt_ground, vt_rock, vt_rockMixShared);
-  vec3 vt_tint = clamp(diffuseColor.rgb * uVertexTintGain, vec3(0.25), vec3(1.8));
+  vec3 vt_tint = clamp(diffuseColor.rgb * uVertexTintGain, vec3(uVertexTintMin), vec3(uVertexTintMax));
   diffuseColor.rgb = vt_texAlbedo * vt_tint;
 
   // A very subtle noise modulation to kill any residual tiling feel.
