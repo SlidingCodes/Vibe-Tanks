@@ -3,6 +3,12 @@ import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { TankState } from '@shared/types/index';
 import { getParticleTextures } from '../scene/particles';
 import { getTankTextures, configureHullMaterial } from './tankTextures';
+import {
+  buildHullGeometry,
+  buildTurretGeometry,
+  buildBarrelGeometry,
+  buildRoadWheelsGeometry,
+} from './tankGeometry';
 
 const TILT_SMOOTH = 0.25;
 
@@ -76,8 +82,9 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   // tint via material.color.
   const tankTex = getTankTextures();
 
-  // Body — hull material tints the luma-only metal map with the team colour.
-  const bodyGeo = new THREE.BoxGeometry(1.2, 0.6, 1.6);
+  // Body — merged hull: main chassis + sloped glacis + fender plates +
+  // vertical exhaust stack. Hull material luma-tints to the team colour.
+  const bodyGeo = buildHullGeometry();
   const bodyMat = new THREE.MeshStandardMaterial({
     color: tank.color,
     map: tankTex.hullAlbedo,
@@ -88,15 +95,27 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   });
   configureHullMaterial(bodyMat);
   const body = new THREE.Mesh(bodyGeo, bodyMat);
-  body.position.y = 0.3;
   body.castShadow = true;
   chassisGroup.add(body);
+
+  // Road wheels — merged across both sides into a single mesh. Dark-metal
+  // material without a PBR texture, since the hull albedo's panel pattern
+  // UV-stretches badly on narrow cylinders.
+  const wheelsGeo = buildRoadWheelsGeometry();
+  const wheelMat = new THREE.MeshStandardMaterial({
+    color: 0x1c1c1c,
+    roughness: 0.55,
+    metalness: 0.65,
+  });
+  const wheels = new THREE.Mesh(wheelsGeo, wheelMat);
+  wheels.castShadow = true;
+  chassisGroup.add(wheels);
 
   // Turret group (rotates independently for aiming)
   const turretGroup = new THREE.Group();
   turretGroup.position.y = 0.6;
 
-  const turretGeo = new THREE.BoxGeometry(0.8, 0.4, 0.8);
+  const turretGeo = buildTurretGeometry();
   const turretMat = new THREE.MeshStandardMaterial({
     color: tank.color,
     map: tankTex.hullAlbedo,
@@ -107,14 +126,13 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   });
   configureHullMaterial(turretMat);
   const turret = new THREE.Mesh(turretGeo, turretMat);
-  turret.position.y = 0.2;
   turret.castShadow = true;
   turretGroup.add(turret);
 
-  // Barrel - pivot at turret center
-  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 16);
-  barrelGeo.translate(0, 0.7, 0);
-  barrelGeo.rotateX(Math.PI / 2); // point along +Z
+  // Barrel — tube + muzzle brake + end flare. Pivot at origin, extends
+  // along +Z so `barrel.position.z = -recoil * k` still slides it back
+  // into the mantlet during the recoil animation.
+  const barrelGeo = buildBarrelGeometry();
   const barrelMat = new THREE.MeshStandardMaterial({
     color: 0x2a2a2a,
     roughness: 0.45,
@@ -331,8 +349,9 @@ export function tickTankEffects(dt: number): void {
     }
 
     // Apply to mesh
-    // Barrel moves BACK in its local Z
-    tm.barrel.position.z = -tm.barrelRecoil * 0.9;
+    // Barrel moves BACK in its local Z. 0.7 (was 0.9) keeps the muzzle brake
+    // from slamming all the way through the mantlet plate at max recoil.
+    tm.barrel.position.z = -tm.barrelRecoil * 0.7;
     // Chassis tilts around X (Whole tank visuals: body + turret + treads)
     tm.chassisGroup.rotation.x = tm.chassisTilt;
 

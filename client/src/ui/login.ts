@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import randomNames from './randomNames.json';
 import { getTankTextures, configureHullMaterial } from '../entities/tankTextures';
+import {
+  buildHullGeometry,
+  buildTurretGeometry,
+  buildBarrelGeometry,
+  buildRoadWheelsGeometry,
+} from '../entities/tankGeometry';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -56,21 +62,22 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   });
   configureHullMaterial(turretMat);
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 1.6), bodyMat);
-  body.position.y = 0.3;
+  const body = new THREE.Mesh(buildHullGeometry(), bodyMat);
   group.add(body);
+
+  const wheels = new THREE.Mesh(
+    buildRoadWheelsGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.55, metalness: 0.65 }),
+  );
+  group.add(wheels);
 
   const turretGroup = new THREE.Group();
   turretGroup.position.y = 0.6;
-  const turret = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.4, 0.8), turretMat);
-  turret.position.y = 0.2;
+  const turret = new THREE.Mesh(buildTurretGeometry(), turretMat);
   turretGroup.add(turret);
 
-  const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 1.4, 16);
-  barrelGeo.translate(0, 0.7, 0);
-  barrelGeo.rotateX(Math.PI / 2);
   const barrel = new THREE.Mesh(
-    barrelGeo,
+    buildBarrelGeometry(),
     new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.45, metalness: 0.7 }),
   );
   barrel.position.y = 0.2;
