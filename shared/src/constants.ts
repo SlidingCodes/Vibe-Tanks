@@ -7,7 +7,7 @@ export {
 } from './terrain';
 
 // ── Gameplay constants ──
-export const TICK_RATE = 15;             // server state broadcasts per second
+export const TICK_RATE = 20;             // server state broadcasts per second
 export const SIM_TICK_RATE = 60;         // physics sim ticks per second
 /** Fixed timestep for the deterministic shot simulator + client-side
  *  trajectory preview. Shared so both sides integrate at the same dt. */
