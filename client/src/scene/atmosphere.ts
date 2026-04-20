@@ -2,8 +2,12 @@ import * as THREE from 'three';
 import { TankMesh } from '../entities/tank';
 import { createSmokeMaterial, getParticleTextures } from './particles';
 
-const MAX_AIR_DUST = 1000;
+const MAX_AIR_DUST = 500;
 const AIR_DUST_RANGE = 40; // Particles within this range of the camera
+/** Upper bound on how many tanks the air-dust repulsion pass considers. A
+ *  pre-allocated flat buffer is filled once per frame so the hot per-particle
+ *  loop reads from contiguous memory instead of re-iterating the Map. */
+const MAX_REPULSION_TANKS = 16;
 const AIR_DUST_SIZE_W = 0.04;
 const AIR_DUST_SIZE_H = 0.04;
 const AIR_DUST_SIZE_L = 0.15;
@@ -294,6 +298,13 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   let windTime = 0;
   const dummy = new THREE.Object3D();
 
+  // Reusable buffer for the air-dust repulsion pass. Filled once per frame
+  // from the tanks Map so the inner per-particle loop never allocates a
+  // Map iterator (1000 particles × 60 fps used to produce ~60k iterator
+  // objects/s on Pi).
+  const tankRepulsionBuf = new Float32Array(MAX_REPULSION_TANKS * 3);
+  let tankRepulsionCount = 0;
+
   const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
 
   // Init tread instances as hidden
@@ -534,10 +545,24 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
     update(dt: number, camera: THREE.Camera, tanks: Map<string, TankMesh>): void {
       const camPos = camera.position;
 
+      // Snapshot alive tank positions into the reusable flat buffer so the
+      // air-dust loop below doesn't re-iterate the Map per particle.
+      tankRepulsionCount = 0;
+      for (const tm of tanks.values()) {
+        if (!tm.state.alive) continue;
+        if (tankRepulsionCount >= MAX_REPULSION_TANKS) break;
+        const base = tankRepulsionCount * 3;
+        tankRepulsionBuf[base] = tm.group.position.x;
+        tankRepulsionBuf[base + 1] = tm.group.position.y;
+        tankRepulsionBuf[base + 2] = tm.group.position.z;
+        tankRepulsionCount++;
+      }
+      const repulsionRadiusSq = REPULSION_RADIUS * REPULSION_RADIUS;
+
       // 1. Update Air Dust
       for (let i = 0; i < MAX_AIR_DUST; i++) {
         const s = airStates[i];
-        
+
         // Wrapping logic around camera
         let dx = s.px - camPos.x;
         let dy = s.py - camPos.y;
@@ -546,9 +571,9 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         const halfRange = AIR_DUST_RANGE;
         if (dx > halfRange) s.px -= halfRange * 2;
         if (dx < -halfRange) s.px += halfRange * 2;
-        
+
         // Wrap Y lower to be in reach of tanks (centered around camera but shifted down)
-        const yOffset = -12; 
+        const yOffset = -12;
         const yRange = 20;
         if (s.py < camPos.y + yOffset) s.py += yRange;
         if (s.py > camPos.y + yOffset + yRange) s.py -= yRange;
@@ -556,20 +581,15 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         if (dz > halfRange) s.pz -= halfRange * 2;
         if (dz < -halfRange) s.pz += halfRange * 2;
 
-        // Repulsion from tanks
-        for (const tm of tanks.values()) {
-          if (!tm.state.alive) continue;
-
-          const tx = tm.group.position.x;
-          const ty = tm.group.position.y;
-          const tz = tm.group.position.z;
-          
-          const rdx = s.px - tx;
-          const rdy = s.py - ty;
-          const rdz = s.pz - tz;
+        // Repulsion from tanks — iterate the pre-extracted flat buffer.
+        for (let t = 0; t < tankRepulsionCount; t++) {
+          const base = t * 3;
+          const rdx = s.px - tankRepulsionBuf[base];
+          const rdy = s.py - tankRepulsionBuf[base + 1];
+          const rdz = s.pz - tankRepulsionBuf[base + 2];
           const distSq = rdx * rdx + rdy * rdy + rdz * rdz;
-          
-          if (distSq < REPULSION_RADIUS * REPULSION_RADIUS) {
+
+          if (distSq < repulsionRadiusSq) {
             const dist = Math.sqrt(distSq) || 0.001;
             const force = (1.0 - dist / REPULSION_RADIUS) * REPULSION_STRENGTH;
             s.vx += (rdx / dist) * force * dt;
