@@ -136,6 +136,11 @@ interface ActiveProjectileRuntime extends ActiveProjectileState {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
+  /** Pre-allocated wire view kept in sync with the mutable public fields.
+   *  Broadcast reuses this reference every tick instead of mapping a fresh
+   *  object per projectile — critical on Pi where 20 Hz × N .map() allocs
+   *  dominate GC pressure. */
+  wire: ActiveProjectileState;
 }
 
 interface ActiveHazardRuntime extends HazardState {
@@ -146,6 +151,7 @@ interface ActiveHazardRuntime extends HazardState {
   triggerRadius: number;
   blastRadius: number;
   terrainDamage: number;
+  wire: HazardState;
 }
 
 interface ScheduledStrike {
@@ -189,6 +195,12 @@ export class Room {
   players: Map<PlayerId, PlayerState> = new Map();
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
+  /** Cached public views rebuilt only on insert/delete (not per tick). The
+   *  broadcast path reuses these arrays as-is, and per-tick tank/projectile/
+   *  hazard updates sync fields into the matching wire object in place. */
+  private tankList: TankState[] = [];
+  private wireProjectiles: ActiveProjectileState[] = [];
+  private wireHazards: HazardState[] = [];
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
@@ -261,8 +273,7 @@ export class Room {
     this.phase = MatchPhase.InProgress;
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
-    this.activeProjectiles.clear();
-    this.activeHazards.clear();
+    this.clearCombatState();
     this.scheduledStrikes = [];
     this.simTime = 0;
     this.terrainPresetId = getRandomTerrainPresetId();
@@ -363,16 +374,17 @@ export class Room {
     this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
+    this.refreshTankList();
 
     for (const [projectileId, projectile] of this.activeProjectiles) {
       if (projectile.ownerId === playerId) {
-        this.activeProjectiles.delete(projectileId);
+        this.unregisterProjectile(projectileId);
       }
     }
 
     for (const [hazardId, hazard] of this.activeHazards) {
       if (hazard.ownerId === playerId) {
-        this.activeHazards.delete(hazardId);
+        this.unregisterHazard(hazardId);
       }
     }
 
@@ -390,8 +402,7 @@ export class Room {
       this.stopLoop();
       this.phase = MatchPhase.WaitingForPlayers;
       this.simTime = 0;
-      this.activeProjectiles.clear();
-      this.activeHazards.clear();
+      this.clearCombatState();
       this.fire.clear();
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
@@ -437,6 +448,7 @@ export class Room {
       burning: false,
     };
     this.tanks.set(playerId, tank);
+    this.refreshTankList();
     this.physics.addTank(tank);
   }
 
@@ -527,7 +539,7 @@ export class Room {
           tank,
           weapon,
           this.voxels,
-          Array.from(this.tanks.values()),
+          this.tankList,
         );
         this.scheduleShotResult(result, tank.playerId, weapon.id);
         break;
@@ -585,6 +597,7 @@ export class Room {
     this.physics.removeTank(botId);
     this.players.delete(botId);
     this.tanks.delete(botId);
+    this.refreshTankList();
     this.io.to(this.id).emit('player_left', { playerId: botId });
     if (tank) {
       this.io.to(this.id).emit('match_event', {
@@ -802,7 +815,7 @@ export class Room {
     const projectileId = `proj_${this.nextProjectileId++}`;
     const position = createMuzzlePosition(tank);
     const velocity = createInitialVelocity(tank, weapon.projectileSpeed);
-    const projectile: ActiveProjectileRuntime = {
+    this.registerProjectile({
       projectileId,
       ownerId: tank.playerId,
       weaponId: weapon.id,
@@ -817,8 +830,7 @@ export class Room {
       blastRadius: weapon.blastRadius,
       damage: weapon.damage,
       terrainDamage: weapon.terrainDamage,
-    };
-    this.activeProjectiles.set(projectileId, projectile);
+    });
   }
 
   private fireMortar(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
@@ -838,7 +850,7 @@ export class Room {
     const terrainDamage = weapon.behaviorConfig?.mortarTerrainDamage ?? weapon.terrainDamage;
 
     const markerId = `hazard_${this.nextHazardId++}`;
-    this.activeHazards.set(markerId, {
+    this.registerHazard({
       hazardId: markerId,
       ownerId: tank.playerId,
       weaponId: weapon.id,
@@ -892,7 +904,7 @@ export class Room {
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
         const hazardId = `hazard_${this.nextHazardId++}`;
-        this.activeHazards.set(hazardId, {
+        this.registerHazard({
           hazardId,
           ownerId: tank.playerId,
           weaponId: weapon.id,
@@ -1219,6 +1231,7 @@ export class Room {
 
       if (!projectile.targetId || !isTargetValidFn(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position, this.tanks)) {
         projectile.targetId = findNearestEnemyFn(projectile.position, projectile.ownerId, projectile.targetRadius, this.tanks.values());
+        projectile.wire.targetId = projectile.targetId;
       }
 
       const speed = Math.sqrt(
@@ -1270,6 +1283,7 @@ export class Room {
         y: direction.y * speed,
         z: direction.z * speed,
       };
+      projectile.wire.velocity = projectile.velocity;
 
       const prevPos = { ...projectile.position };
       projectile.position = {
@@ -1277,6 +1291,7 @@ export class Room {
         y: projectile.position.y + projectile.velocity.y * dt,
         z: projectile.position.z + projectile.velocity.z * dt,
       };
+      projectile.wire.position = projectile.position;
 
       let impactPoint: Vec3 | null = null;
       // Voxel surface is the authoritative collision target — same surface
@@ -1306,7 +1321,7 @@ export class Room {
           projectile.position.z < -10 || projectile.position.z > this.voxels.sizeZ * this.voxels.cellSize + 10 ||
           projectile.position.y < -10;
         if (outOfBounds || projectile.age >= projectile.lifetime) {
-          this.activeProjectiles.delete(projectileId);
+          this.unregisterProjectile(projectileId);
           continue;
         }
       }
@@ -1323,7 +1338,7 @@ export class Room {
         const result = createShotResult(projectile.ownerId, projectile.weaponId, [
           makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', carveTerrain, projectile.blastRadius, 'seeker'),
         ], damageTotals);
-        this.activeProjectiles.delete(projectileId);
+        this.unregisterProjectile(projectileId);
         this.emitShotResultNow(result, projectile.ownerId, projectile.weaponId);
       }
     }
@@ -1332,12 +1347,14 @@ export class Room {
   private tickHazards(dt: number): void {
     for (const [hazardId, hazard] of this.activeHazards) {
       hazard.timeRemaining -= dt;
+      hazard.wire.timeRemaining = hazard.timeRemaining;
 
       if (hazard.type === 'mine') {
         if (!hazard.armed) {
           hazard.tickTimer -= dt;
           if (hazard.tickTimer <= 0) {
             hazard.armed = true;
+            hazard.wire.armed = true;
           }
         } else {
           const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
@@ -1350,7 +1367,7 @@ export class Room {
               terrainDamage: hazard.terrainDamage,
             }, this.getTankList(), damageTotals);
             const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', carveTerrain, damageTotals);
-            this.activeHazards.delete(hazardId);
+            this.unregisterHazard(hazardId);
             this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
             continue;
           }
@@ -1358,7 +1375,7 @@ export class Room {
       }
 
       if (hazard.timeRemaining <= 0) {
-        this.activeHazards.delete(hazardId);
+        this.unregisterHazard(hazardId);
       }
     }
   }
@@ -1391,7 +1408,7 @@ export class Room {
       // Warning ring — reuse mortar_marker hazard type so clients
       // render the existing glowing ring indicator.
       const markerId = `hazard_${this.nextHazardId++}`;
-      this.activeHazards.set(markerId, {
+      this.registerHazard({
         hazardId: markerId,
         ownerId: 'server',
         weaponId: 'space_invaders',
@@ -1473,7 +1490,7 @@ export class Room {
 
   private tickBots(dt: number): void {
     const now = Date.now() / 1000;
-    const allTanks = Array.from(this.tanks.values());
+    const allTanks = this.tankList;
 
     for (const [pid, player] of this.players) {
       if (!player.isBot) continue;
@@ -1557,30 +1574,78 @@ export class Room {
   }
 
   private getTankList(): TankState[] {
-    return Array.from(this.tanks.values());
+    return this.tankList;
+  }
+
+  /** Rebuild the cached tankList. Called only when this.tanks is mutated, not
+   *  on the 20 Hz broadcast path. */
+  private refreshTankList(): void {
+    this.tankList.length = 0;
+    for (const tank of this.tanks.values()) this.tankList.push(tank);
+  }
+
+  private registerProjectile(projectile: Omit<ActiveProjectileRuntime, 'wire'>): ActiveProjectileRuntime {
+    const wire: ActiveProjectileState = {
+      projectileId: projectile.projectileId,
+      ownerId: projectile.ownerId,
+      weaponId: projectile.weaponId,
+      position: projectile.position,
+      velocity: projectile.velocity,
+      visualStyle: projectile.visualStyle,
+      targetId: projectile.targetId,
+    };
+    const runtime = projectile as ActiveProjectileRuntime;
+    runtime.wire = wire;
+    this.activeProjectiles.set(runtime.projectileId, runtime);
+    this.wireProjectiles.push(wire);
+    return runtime;
+  }
+
+  private unregisterProjectile(projectileId: string): void {
+    const runtime = this.activeProjectiles.get(projectileId);
+    if (!runtime) return;
+    this.activeProjectiles.delete(projectileId);
+    const idx = this.wireProjectiles.indexOf(runtime.wire);
+    if (idx >= 0) this.wireProjectiles.splice(idx, 1);
+  }
+
+  private registerHazard(hazard: Omit<ActiveHazardRuntime, 'wire'>): ActiveHazardRuntime {
+    const wire: HazardState = {
+      hazardId: hazard.hazardId,
+      ownerId: hazard.ownerId,
+      type: hazard.type,
+      position: hazard.position,
+      radius: hazard.radius,
+      armed: hazard.armed,
+      timeRemaining: hazard.timeRemaining,
+    };
+    const runtime = hazard as ActiveHazardRuntime;
+    runtime.wire = wire;
+    this.activeHazards.set(runtime.hazardId, runtime);
+    this.wireHazards.push(wire);
+    return runtime;
+  }
+
+  private unregisterHazard(hazardId: string): void {
+    const runtime = this.activeHazards.get(hazardId);
+    if (!runtime) return;
+    this.activeHazards.delete(hazardId);
+    const idx = this.wireHazards.indexOf(runtime.wire);
+    if (idx >= 0) this.wireHazards.splice(idx, 1);
+  }
+
+  private clearCombatState(): void {
+    this.activeProjectiles.clear();
+    this.activeHazards.clear();
+    this.wireProjectiles.length = 0;
+    this.wireHazards.length = 0;
   }
 
   private getStateUpdate(): RoomStateUpdate {
     return {
-      tanks: this.getTankList(),
-      projectiles: Array.from(this.activeProjectiles.values()).map((projectile) => ({
-        projectileId: projectile.projectileId,
-        ownerId: projectile.ownerId,
-        weaponId: projectile.weaponId,
-        position: projectile.position,
-        velocity: projectile.velocity,
-        visualStyle: projectile.visualStyle,
-        targetId: projectile.targetId,
-      })),
-      hazards: Array.from(this.activeHazards.values()).map((hazard) => ({
-        hazardId: hazard.hazardId,
-        ownerId: hazard.ownerId,
-        type: hazard.type,
-        position: hazard.position,
-        radius: hazard.radius,
-        armed: hazard.armed,
-        timeRemaining: hazard.timeRemaining,
-      })),
+      tanks: this.tankList,
+      projectiles: this.wireProjectiles,
+      hazards: this.wireHazards,
     };
   }
 
