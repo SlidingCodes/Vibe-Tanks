@@ -1147,6 +1147,10 @@ export class Room {
       }
     }
 
+    // Rebuild any chunk colliders dirtied since the last tick in one pass,
+    // before KCC queries the terrain. Overlapping carves in the same tick
+    // (splitter, simultaneous shots) collapse to one rebuild per chunk.
+    this.physics.flushDirtyChunks();
     this.physics.applyTankInputs(dt);
     this.physics.step(dt);
 

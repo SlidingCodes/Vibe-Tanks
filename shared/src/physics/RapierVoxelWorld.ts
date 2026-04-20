@@ -131,6 +131,11 @@ export class RapierVoxelWorld {
   private colliders: Map<string, RAPIER.Collider> = new Map();
   private tanks: Map<PlayerId, TankEntry> = new Map();
   private charController: RAPIER.KinematicCharacterController;
+  /** Chunks marked dirty by invalidateSphere since the last flush. Building
+   *  one TriMesh collider is 5-10 ms on a Pi, so we batch overlapping carves
+   *  (splitter = 3 blasts, multiple players firing in the same tick) and
+   *  rebuild each unique chunk once per sim tick. */
+  private dirtyChunks: Set<string> = new Set();
 
   constructor(grid: VoxelGrid) {
     this.grid = grid;
@@ -190,6 +195,7 @@ export class RapierVoxelWorld {
       this.world.removeCollider(collider, false);
     }
     this.colliders.clear();
+    this.dirtyChunks.clear();
     const nx = Math.ceil(this.grid.sizeX / SURFACE_NETS_CHUNK_SIZE);
     const ny = Math.ceil(this.grid.sizeY / SURFACE_NETS_CHUNK_SIZE);
     const nz = Math.ceil(this.grid.sizeZ / SURFACE_NETS_CHUNK_SIZE);
@@ -205,7 +211,10 @@ export class RapierVoxelWorld {
     console.log(`[rapier] built ${built} chunk colliders`);
   }
 
-  /** Rebuild only the chunks touched by a sphere (same logic as the client mesher). */
+  /** Mark all chunks touched by a sphere as dirty. Rebuild is deferred to
+   *  the next `flushDirtyChunks()` — the sim tick calls it once before
+   *  physics.step(), so overlapping carves in the same tick (splitter +
+   *  anything, simultaneous shots) collapse to one rebuild per chunk. */
   invalidateSphere(center: Vec3, radius: number): void {
     const cs = this.grid.cellSize;
     const ixMin = Math.floor((center.x - radius) / cs) - 1;
@@ -228,10 +237,26 @@ export class RapierVoxelWorld {
     for (let cx = cixMin; cx <= cixMax; cx++) {
       for (let cy = ciyMin; cy <= ciyMax; cy++) {
         for (let cz = cizMin; cz <= cizMax; cz++) {
-          this.setChunkCollider(cx, cy, cz);
+          this.dirtyChunks.add(chunkKey(cx, cy, cz));
         }
       }
     }
+  }
+
+  /** Rebuild every chunk marked dirty since the last flush. Returns the
+   *  number of chunks rebuilt — 0 on an idle tick, N on a carve tick. The
+   *  sim loop calls this before physics.step() so the next KCC pass sees
+   *  up-to-date colliders. */
+  flushDirtyChunks(): number {
+    if (this.dirtyChunks.size === 0) return 0;
+    let count = 0;
+    for (const key of this.dirtyChunks) {
+      const [cxStr, cyStr, czStr] = key.split(',');
+      this.setChunkCollider(Number(cxStr), Number(cyStr), Number(czStr));
+      count++;
+    }
+    this.dirtyChunks.clear();
+    return count;
   }
 
   // ── Tank management ─────────────────────────────────────────────

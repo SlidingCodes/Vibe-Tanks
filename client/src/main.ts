@@ -631,6 +631,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // inputs the player has already issued — no rubber-band, no
             // soft lerp, and correct under caves / overhangs because the
             // replay runs the real KCC against the real TriMesh.
+            clientPhysics.flushDirtyChunks();
             clientPhysics.restoreTankState(
               myId,
               tankState.position,
@@ -1040,6 +1041,7 @@ function animate(): void {
       // integrates gravity + residual momentum without a separate
       // ragdoll code path. Each step advances clientSeq, buffers its
       // input for replay, and ships the input with seq to the server.
+      clientPhysics.flushDirtyChunks();
       physicsAccumulator = Math.min(
         physicsAccumulator + dt,
         CLIENT_PHYSICS_STEP * MAX_PHYSICS_STEPS_PER_FRAME,
