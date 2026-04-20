@@ -35,6 +35,20 @@ const DETAIL_FREQ = 0.22;
 // each can be tuned without affecting the other).
 const BUMP_FREQ = 0.55;
 
+// Triplanar texture tile frequency: world-space repeats per unit. The source
+// Polyhaven JPGs cover ~2m each, so 0.3 gives a repeat every ~3.3m — fine
+// enough to read as surface detail, coarse enough to hide obvious tiling.
+const TEX_TILE_FREQ = 0.3;
+// Power for the triplanar blend weights. Higher values give sharper plane
+// transitions; 4 keeps edges tight without visible seams on 45° slopes.
+const TRIPLANAR_BLEND_POW = 4.0;
+// Strength of the triplanar normal-map perturbation (0 = flat, 1 = full).
+const TEXTURE_BUMP_STRENGTH = 0.85;
+// Brightness multiplier on the baked vertex-color tint once textures take
+// over as the base albedo — compensates for the fact that the palette was
+// tuned to be the full color, not a modulator on a grey texture.
+const VERTEX_TINT_GAIN = 2.6;
+
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
   const geom = new THREE.BufferGeometry();
@@ -110,6 +124,29 @@ export function createSurfaceNetsTerrain(
     uTrackWorldSize.copy(trackDecal.worldSize);
   }
 
+  // Terrain PBR textures — two triplanar-sampled sets (ground + rock) blended
+  // by slope. `uUseTextures` stays 0 until all four textures have loaded, at
+  // which point the shader switches from the procedural fallback to sampled
+  // textures without a recompile.
+  const textureLoader = new THREE.TextureLoader();
+  const loadTexture = (url: string, colorSpace: THREE.ColorSpace): THREE.Texture => {
+    const tex = textureLoader.load(url, () => {
+      loadedTextures++;
+      if (loadedTextures === 4) uUseTextures.value = 1;
+    });
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = colorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  };
+  let loadedTextures = 0;
+  const uUseTextures: { value: number } = { value: 0 };
+  const uGroundAlbedo = { value: loadTexture('/textures/terrain/ground_albedo.jpg', THREE.SRGBColorSpace) };
+  const uGroundNormal = { value: loadTexture('/textures/terrain/ground_normal.jpg', THREE.NoColorSpace) };
+  const uRockAlbedo = { value: loadTexture('/textures/terrain/rock_albedo.jpg', THREE.SRGBColorSpace) };
+  const uRockNormal = { value: loadTexture('/textures/terrain/rock_normal.jpg', THREE.NoColorSpace) };
+
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTrackMap = uTrackMap;
     shader.uniforms.uTrackWorldMin = { value: uTrackWorldMin };
@@ -124,6 +161,15 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uDetailFreq = { value: DETAIL_FREQ };
     shader.uniforms.uBumpStrength = { value: BUMP_STRENGTH };
     shader.uniforms.uBumpFreq = { value: BUMP_FREQ };
+    shader.uniforms.uUseTextures = uUseTextures;
+    shader.uniforms.uGroundAlbedo = uGroundAlbedo;
+    shader.uniforms.uGroundNormal = uGroundNormal;
+    shader.uniforms.uRockAlbedo = uRockAlbedo;
+    shader.uniforms.uRockNormal = uRockNormal;
+    shader.uniforms.uTexTileFreq = { value: TEX_TILE_FREQ };
+    shader.uniforms.uTriplanarBlendPow = { value: TRIPLANAR_BLEND_POW };
+    shader.uniforms.uTextureBumpStrength = { value: TEXTURE_BUMP_STRENGTH };
+    shader.uniforms.uVertexTintGain = { value: VERTEX_TINT_GAIN };
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -159,6 +205,15 @@ uniform float uDetailStrength;
 uniform float uDetailFreq;
 uniform float uBumpStrength;
 uniform float uBumpFreq;
+uniform float uUseTextures;
+uniform sampler2D uGroundAlbedo;
+uniform sampler2D uGroundNormal;
+uniform sampler2D uRockAlbedo;
+uniform sampler2D uRockNormal;
+uniform float uTexTileFreq;
+uniform float uTriplanarBlendPow;
+uniform float uTextureBumpStrength;
+uniform float uVertexTintGain;
 
 float vt_hash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
@@ -187,24 +242,70 @@ float vt_fbm(vec3 p) {
   return v;
 }
 
-float vt_detailNoise = 0.0;`,
+// Triplanar weights from a world-space normal. abs() + power shapes the
+// falloff so each plane dominates near its axis; renormalize so the three
+// weights sum to 1 and the blend stays energy-conserving.
+vec3 vt_triWeights(vec3 wn) {
+  vec3 w = pow(abs(wn), vec3(uTriplanarBlendPow));
+  float s = w.x + w.y + w.z;
+  return s > 0.0 ? w / s : vec3(1.0 / 3.0);
+}
+
+// Sample an albedo texture triplanar and blend by the pre-computed weights.
+vec3 vt_triplanarAlbedo(sampler2D tex, vec3 p, vec3 w) {
+  vec3 cx = texture2D(tex, p.zy).rgb;
+  vec3 cy = texture2D(tex, p.xz).rgb;
+  vec3 cz = texture2D(tex, p.xy).rgb;
+  return cx * w.x + cy * w.y + cz * w.z;
+}
+
+// Whiteout-blend triplanar normal mapping (Ben Golus). Each tangent-space
+// sample gets lifted to a world-space normal by adding the matching world
+// component, then blended with the same triplanar weights.
+vec3 vt_triplanarNormal(sampler2D tex, vec3 p, vec3 wn, vec3 w) {
+  vec3 tnX = texture2D(tex, p.zy).xyz * 2.0 - 1.0;
+  vec3 tnY = texture2D(tex, p.xz).xyz * 2.0 - 1.0;
+  vec3 tnZ = texture2D(tex, p.xy).xyz * 2.0 - 1.0;
+  tnX = vec3(tnX.xy + wn.zy, abs(tnX.z) * wn.x);
+  tnY = vec3(tnY.xy + wn.xz, abs(tnY.z) * wn.y);
+  tnZ = vec3(tnZ.xy + wn.xy, abs(tnZ.z) * wn.z);
+  return normalize(tnX.zyx * w.x + tnY.xzy * w.y + tnZ.xyz * w.z);
+}
+
+float vt_detailNoise = 0.0;
+float vt_rockMixShared = 0.0;`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-// --- slope-based rock blend: steep faces surface a cool dark-rock tone on
-//     top of the baked elevation palette so cliffs read as exposed rock. ---
+// --- slope-based rock mix used by both the procedural and textured paths. ---
 vec3 vt_wn = normalize(vWorldNormal);
 float vt_slope = 1.0 - clamp(vt_wn.y, 0.0, 1.0);
-float vt_rockMix = pow(vt_slope, uRockBlendPower) * uRockMaxMix;
-diffuseColor.rgb = mix(diffuseColor.rgb, uRockColor, vt_rockMix);
+vt_rockMixShared = pow(vt_slope, uRockBlendPower) * uRockMaxMix;
 
-// --- procedural detail: fbm mask modulates brightness so adjacent vertices
-//     don't read as flat panels. Stored for reuse by roughness below. ---
-vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
-diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
+if (uUseTextures > 0.5) {
+  // Textured path: triplanar ground + rock, blended by slope. The baked
+  // vertex color (elevation palette, sand, scorch, bedrock) is multiplied
+  // back in as a tint so scorch rings and beaches still read.
+  vec3 vt_tp = vWorldPos * uTexTileFreq;
+  vec3 vt_w = vt_triWeights(vt_wn);
+  vec3 vt_ground = vt_triplanarAlbedo(uGroundAlbedo, vt_tp, vt_w);
+  vec3 vt_rock = vt_triplanarAlbedo(uRockAlbedo, vt_tp, vt_w);
+  vec3 vt_texAlbedo = mix(vt_ground, vt_rock, vt_rockMixShared);
+  vec3 vt_tint = clamp(diffuseColor.rgb * uVertexTintGain, vec3(0.25), vec3(1.8));
+  diffuseColor.rgb = vt_texAlbedo * vt_tint;
 
-// --- tread-track decal (unchanged behaviour, now keyed off vWorldPos.xz) ---
+  // A very subtle noise modulation to kill any residual tiling feel.
+  vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
+  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * 0.08);
+} else {
+  // Procedural fallback used while the textures are still loading.
+  diffuseColor.rgb = mix(diffuseColor.rgb, uRockColor, vt_rockMixShared);
+  vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
+  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
+}
+
+// --- tread-track decal (always on; sits on top of whichever base path ran) ---
 if (uTrackEnabled > 0.5) {
   vec2 trackUv = (vWorldPos.xz - uTrackWorldMin) / uTrackWorldSize;
   if (trackUv.x >= 0.0 && trackUv.x <= 1.0 && trackUv.y >= 0.0 && trackUv.y <= 1.0) {
@@ -223,19 +324,28 @@ roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1
       .replace(
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
-// --- noise-gradient bump: central-difference sample in world space, project
-//     off the surface normal, transform to view space, and bias the shading
-//     normal. Gives cheap micro-relief without any normal-map asset. ---
-{
+if (uUseTextures > 0.5) {
+  // --- textured path: triplanar normal map blended ground↔rock by slope,
+  //     then rotated from world to view space before overwriting the
+  //     default shading normal. ---
+  vec3 vt_ntp = vWorldPos * uTexTileFreq;
+  vec3 vt_nw = vt_triWeights(vt_wn);
+  vec3 vt_ngw = vt_triplanarNormal(uGroundNormal, vt_ntp, vt_wn, vt_nw);
+  vec3 vt_nrw = vt_triplanarNormal(uRockNormal,   vt_ntp, vt_wn, vt_nw);
+  vec3 vt_nWorld = normalize(mix(vt_ngw, vt_nrw, vt_rockMixShared));
+  // Blend the perturbed world-normal back toward the geometry normal so the
+  // bump stays on a texture-detail scale rather than flipping the surface.
+  vt_nWorld = normalize(mix(vt_wn, vt_nWorld, uTextureBumpStrength));
+  normal = normalize(mat3(viewMatrix) * vt_nWorld);
+} else {
+  // --- procedural fallback: noise-gradient bump used while textures load. ---
   float vt_eps = 0.4;
   vec3 vt_bp = vWorldPos * uBumpFreq;
   float vt_nx = vt_vnoise(vt_bp + vec3(vt_eps, 0.0, 0.0)) - vt_vnoise(vt_bp - vec3(vt_eps, 0.0, 0.0));
   float vt_ny = vt_vnoise(vt_bp + vec3(0.0, vt_eps, 0.0)) - vt_vnoise(vt_bp - vec3(0.0, vt_eps, 0.0));
   float vt_nz = vt_vnoise(vt_bp + vec3(0.0, 0.0, vt_eps)) - vt_vnoise(vt_bp - vec3(0.0, 0.0, vt_eps));
   vec3 vt_gradWorld = vec3(vt_nx, vt_ny, vt_nz);
-  // Reject the component along the world normal so we only displace tangentially.
   vt_gradWorld -= dot(vt_gradWorld, vt_wn) * vt_wn;
-  // world → view for the rotation part; directions ignore translation.
   vec3 vt_gradView = mat3(viewMatrix) * vt_gradWorld;
   normal = normalize(normal - vt_gradView * uBumpStrength);
 }`,
@@ -372,6 +482,10 @@ roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1
     dispose(): void {
       wipeChunks();
       material.dispose();
+      uGroundAlbedo.value.dispose();
+      uGroundNormal.value.dispose();
+      uRockAlbedo.value.dispose();
+      uRockNormal.value.dispose();
       scene.remove(group);
     },
     rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
