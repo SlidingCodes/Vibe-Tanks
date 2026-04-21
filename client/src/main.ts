@@ -381,6 +381,17 @@ const RENDER_SMOOTH_SNAP_DISTANCE = 3.0;
 let renderedPosX = 0, renderedPosY = 0, renderedPosZ = 0;
 let renderedYaw = 0;
 let renderSmootherPrimed = false;
+
+/** Rolling reconciliation error stats. Logged every 10 s so we can tell
+ *  whether the Pi server jitter actually produces big corrections (→ the
+ *  render smoother can't hide them) or tiny ones (→ something else is
+ *  driving the elastic feel). */
+let reconcileCount = 0;
+let reconcileWorstErrMeters = 0;
+let reconcileSumErrMeters = 0;
+let reconcileWorstReplayTicks = 0;
+let reconcileWindowStartMs = performance.now();
+const RECONCILE_REPORT_EVERY_MS = 10_000;
 /** Scratch TankState passed to the mesh / aim pipeline each frame — same
  *  object as `predictedState` but with position + bodyRotation overridden
  *  by the smoothed render values. Avoids a per-frame allocation. */
@@ -632,6 +643,11 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // soft lerp, and correct under caves / overhangs because the
             // replay runs the real KCC against the real TriMesh.
             clientPhysics.flushDirtyChunks();
+            // Snapshot pre-reconcile predicted position so we can measure the
+            // actual correction magnitude the render smoother has to absorb.
+            const preReconcileX = predictedState.position.x;
+            const preReconcileY = predictedState.position.y;
+            const preReconcileZ = predictedState.position.z;
             clientPhysics.restoreTankState(
               myId,
               tankState.position,
@@ -639,15 +655,43 @@ socket.on('state_update', (state: RoomStateUpdate) => {
               tankState.linVel,
               tankState.angVel,
             );
+            let replayTicks = 0;
             for (let s = serverSeq + 1; s <= clientSeq; s++) {
               const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
               if (!replayInput || replayInput.seq !== s) break;
               clientPhysics.setTankInput(myId, replayInput);
               clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
               clientPhysics.step(CLIENT_PHYSICS_STEP);
+              replayTicks++;
             }
             clientPhysics.readbackTank(myId, predictedState);
             lastReconciledSeq = serverSeq;
+
+            // Aggregate reconciliation error for the next 10 s report.
+            const rErrX = predictedState.position.x - preReconcileX;
+            const rErrY = predictedState.position.y - preReconcileY;
+            const rErrZ = predictedState.position.z - preReconcileZ;
+            const rErr = Math.sqrt(rErrX * rErrX + rErrY * rErrY + rErrZ * rErrZ);
+            reconcileCount++;
+            reconcileSumErrMeters += rErr;
+            if (rErr > reconcileWorstErrMeters) reconcileWorstErrMeters = rErr;
+            if (replayTicks > reconcileWorstReplayTicks) reconcileWorstReplayTicks = replayTicks;
+            const nowPerf = performance.now();
+            if (nowPerf - reconcileWindowStartMs >= RECONCILE_REPORT_EVERY_MS) {
+              const avgCm = (reconcileSumErrMeters / reconcileCount) * 100;
+              const worstCm = reconcileWorstErrMeters * 100;
+              // eslint-disable-next-line no-console
+              console.log(
+                `[reconcile] ${reconcileCount} corrections, ` +
+                `avgErr=${avgCm.toFixed(1)}cm, worstErr=${worstCm.toFixed(1)}cm, ` +
+                `worstReplayTicks=${reconcileWorstReplayTicks}`,
+              );
+              reconcileCount = 0;
+              reconcileSumErrMeters = 0;
+              reconcileWorstErrMeters = 0;
+              reconcileWorstReplayTicks = 0;
+              reconcileWindowStartMs = nowPerf;
+            }
           } else if (!clientPhysics) {
             // Fallback while Rapier WASM is still loading — soft lerp.
             const dx = tankState.position.x - predictedState.position.x;
