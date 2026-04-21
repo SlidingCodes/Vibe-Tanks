@@ -20,6 +20,7 @@ function makeTank(overrides: Partial<TankState> = {}): TankState {
     color: '#fff',
     airborne: false,
     linVel: { x: 0, y: 0, z: 0 },
+    extraVel: { x: 0, y: 0, z: 0 },
     angVel: { x: 0, y: 0, z: 0 },
     lastAppliedSeq: 0,
     ...overrides,

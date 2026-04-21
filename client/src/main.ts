@@ -300,6 +300,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
         ...tankState,
         position: { ...tankState.position },
         linVel: { ...tankState.linVel },
+        extraVel: { ...tankState.extraVel },
         angVel: { ...tankState.angVel },
       };
       // If the Rapier world is already up (room_snapshot re-broadcasts after
@@ -593,6 +594,9 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.linVel.x = tankState.linVel.x;
         predictedState.linVel.y = tankState.linVel.y;
         predictedState.linVel.z = tankState.linVel.z;
+        predictedState.extraVel.x = tankState.extraVel.x;
+        predictedState.extraVel.y = tankState.extraVel.y;
+        predictedState.extraVel.z = tankState.extraVel.z;
         predictedState.angVel.x = tankState.angVel.x;
         predictedState.angVel.y = tankState.angVel.y;
         predictedState.angVel.z = tankState.angVel.z;
@@ -653,6 +657,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
               tankState.position,
               tankState.bodyRotation,
               tankState.linVel,
+              tankState.extraVel,
               tankState.angVel,
             );
             let replayTicks = 0;
@@ -1148,7 +1153,7 @@ function animate(): void {
     // Share one object across frames; mutate in place (mesh / aim read
     // it synchronously, so aliasing with predictedState is safe).
     if (!viewState) {
-      viewState = { ...predictedState, position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 }, angVel: { x: 0, y: 0, z: 0 } };
+      viewState = { ...predictedState, position: { x: 0, y: 0, z: 0 }, linVel: { x: 0, y: 0, z: 0 }, extraVel: { x: 0, y: 0, z: 0 }, angVel: { x: 0, y: 0, z: 0 } };
     }
     viewState.hp = predictedState.hp;
     viewState.maxHp = predictedState.maxHp;

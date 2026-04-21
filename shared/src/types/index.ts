@@ -60,8 +60,18 @@ export interface TankState {
   airborne: boolean;
   /** Linear velocity (world units / second). Populated every tick from the
    *  Rapier body so the client can reconstruct the full physics state when
-   *  rewinding + replaying on a state_update. */
+   *  rewinding + replaying on a state_update. This is the "steady-state"
+   *  velocity only (drivenVel XZ + verticalVel Y) — the transient blast
+   *  knockback buffer is broadcast separately as `extraVel` so its
+   *  exponential decay can be preserved across reconciliation. */
   linVel: Vec3;
+  /** Transient blast-knockback velocity (world units / second). Decays
+   *  exponentially with a ~0.35 s time constant on both server and client,
+   *  so it must be restored separately from `linVel` during reconciliation
+   *  — otherwise the client collapses it into drivenVel which ramps
+   *  linearly, producing metres of divergence across the replay window.
+   *  Zero outside of the ~1 s window after a blast. */
+  extraVel: Vec3;
   /** Angular velocity around X/Y/Z axes (radians / second). Only Y is
    *  non-zero in normal operation (X/Z rotations locked on the body); the
    *  full triple is still broadcast to future-proof the ragdoll path (C5). */

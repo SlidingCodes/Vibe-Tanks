@@ -382,13 +382,18 @@ export class RapierVoxelWorld {
   }
 
   /** Restore the full physics state for a tank in one shot: pos, yaw,
-   *  linvel, angvel. Used by the client's rewind-and-replay reconciliation
-   *  to anchor onto the server-broadcast truth at tick `lastAppliedSeq`
-   *  before replaying buffered post-ack inputs forward. Decomposes linVel
-   *  back into drivenVel (horizontal) + verticalVel (Y); the blast
-   *  extraVel buffer is zeroed — a blast that lands mid-rewind can lose
-   *  its decaying kick, which is acceptable for a transient effect. */
-  restoreTankState(id: PlayerId, pos: Vec3, yaw: number, linVel: Vec3, angVel: Vec3): void {
+   *  linvel (steady-state drivenVel + verticalVel), extraVel (transient
+   *  blast kick), angvel. Used by the client's rewind-and-replay
+   *  reconciliation to anchor onto the server-broadcast truth at tick
+   *  `lastAppliedSeq` before replaying buffered post-ack inputs forward.
+   *
+   *  extraVel is preserved (not zeroed) because a blast knockback decays
+   *  exponentially on the server via `entry.extraVel *= Math.exp(-dt/τ)`
+   *  and the replay must match that decay curve — collapsing it into
+   *  drivenVel (as the previous implementation did) produces metres of
+   *  divergence across the reconciliation replay because drivenVel ramps
+   *  linearly toward commanded speed rather than decaying. */
+  restoreTankState(id: PlayerId, pos: Vec3, yaw: number, linVel: Vec3, extraVel: Vec3, angVel: Vec3): void {
     const entry = this.tanks.get(id);
     if (!entry) return;
     entry.body.setTranslation({ x: pos.x, y: pos.y + HULL_RADIUS, z: pos.z }, true);
@@ -398,9 +403,9 @@ export class RapierVoxelWorld {
     entry.drivenVel.x = linVel.x;
     entry.drivenVel.z = linVel.z;
     entry.verticalVel = linVel.y;
-    entry.extraVel.x = 0;
-    entry.extraVel.y = 0;
-    entry.extraVel.z = 0;
+    entry.extraVel.x = extraVel.x;
+    entry.extraVel.y = extraVel.y;
+    entry.extraVel.z = extraVel.z;
   }
 
   /** KCC-driven motion step. Must be called before `step(dt)`:
@@ -534,9 +539,16 @@ export class RapierVoxelWorld {
     tank.position.y = pos.y - HULL_RADIUS;
     tank.position.z = pos.z;
     tank.bodyRotation = entry.yaw;
-    tank.linVel.x = entry.drivenVel.x + entry.extraVel.x;
-    tank.linVel.y = entry.verticalVel + entry.extraVel.y;
-    tank.linVel.z = entry.drivenVel.z + entry.extraVel.z;
+    // linVel carries the steady-state velocity (drivenVel + verticalVel).
+    // extraVel is broadcast separately so restoreTankState can preserve
+    // its exponential decay across reconciliation replay — see its
+    // docstring above.
+    tank.linVel.x = entry.drivenVel.x;
+    tank.linVel.y = entry.verticalVel;
+    tank.linVel.z = entry.drivenVel.z;
+    tank.extraVel.x = entry.extraVel.x;
+    tank.extraVel.y = entry.extraVel.y;
+    tank.extraVel.z = entry.extraVel.z;
     tank.angVel.x = 0;
     tank.angVel.y = entry.turnRate;
     tank.angVel.z = 0;

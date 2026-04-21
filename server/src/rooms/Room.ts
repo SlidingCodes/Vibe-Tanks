@@ -309,6 +309,7 @@ export class Room {
       tank.barrelPitch = 0.2;
       tank.airborne = false;
       tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
+      tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
       tank.lastAppliedSeq = 0;
       tank.burning = false;
@@ -457,6 +458,7 @@ export class Room {
       deaths: 0,
       airborne: false,
       linVel: { x: 0, y: 0, z: 0 },
+      extraVel: { x: 0, y: 0, z: 0 },
       angVel: { x: 0, y: 0, z: 0 },
       color: safeColor,
       lastAppliedSeq: 0,
@@ -958,6 +960,7 @@ export class Room {
     tank.barrelPitch = 0.2;
     tank.airborne = false;
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
+    tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
     // Reset the ack so the client re-baselines its rewind-and-replay
     // anchor to the respawn transform. Input seq also resets on the
