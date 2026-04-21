@@ -14,7 +14,7 @@ import {
 const TILT_SMOOTH = 0.25;
 const SERVER_BROADCAST_INTERVAL = 1 / TICK_RATE;
 const MAX_WEIGHT_TRANSFER_ACCEL = 24;
-const WEIGHT_TRANSFER_FORCE_SCALE = 2.92;
+const WEIGHT_TRANSFER_FORCE_SCALE = 5.0;
 const MAX_CHASSIS_TILT = 0.12;
 
 function smoothTilt(group: THREE.Object3D, targetPitch: number, targetRoll: number): void {
