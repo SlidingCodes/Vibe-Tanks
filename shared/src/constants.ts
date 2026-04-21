@@ -8,7 +8,7 @@ export {
 
 // ── Gameplay constants ──
 export const TICK_RATE = 30;             // server state broadcasts per second
-export const SIM_TICK_RATE = 60;         // physics sim ticks per second
+export const SIM_TICK_RATE = 30;         // physics sim ticks per second
 /** Fixed timestep for the deterministic shot simulator + client-side
  *  trajectory preview. Shared so both sides integrate at the same dt. */
 export const SIM_DT = 1 / SIM_TICK_RATE;
