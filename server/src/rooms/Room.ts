@@ -1020,6 +1020,17 @@ export class Room {
           `worstPendingChunks=${windowWorstPendingChunks}, ` +
           `players=${this.players.size}`,
         );
+        const chunkStats = this.physics.takeChunkBuildStats();
+        if (chunkStats.count > 0) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[chunk-build] ${chunkStats.count} chunks this window — ` +
+            `avgRemove=${chunkStats.avgRemoveMs.toFixed(2)}ms, ` +
+            `avgMesh=${chunkStats.avgMeshMs.toFixed(2)}ms, ` +
+            `avgDesc=${chunkStats.avgDescMs.toFixed(2)}ms, ` +
+            `avgCreate=${chunkStats.avgCreateMs.toFixed(2)}ms`,
+          );
+        }
         windowStartMs = now;
         windowTickCount = 0;
         windowWorstSlipMs = 0;

@@ -136,6 +136,16 @@ export class RapierVoxelWorld {
    *  (splitter = 3 blasts, multiple players firing in the same tick) and
    *  rebuild each unique chunk once per sim tick. */
   private dirtyChunks: Set<string> = new Set();
+  /** Rolling sub-step accumulators for chunk rebuild profiling. Room reads +
+   *  resets these via takeChunkBuildStats() so the tick-jitter log can show
+   *  where the 10–15 ms per chunk actually goes (JS mesher vs WASM trimesh
+   *  desc copy vs BVH build inside createCollider). Temporary — once we
+   *  know the hot spot we can drop this. */
+  private chunkBuildCount = 0;
+  private chunkBuildRemoveMs = 0;
+  private chunkBuildMeshMs = 0;
+  private chunkBuildDescMs = 0;
+  private chunkBuildCreateMs = 0;
 
   constructor(grid: VoxelGrid) {
     this.grid = grid;
@@ -176,18 +186,55 @@ export class RapierVoxelWorld {
   }
 
   private setChunkCollider(cx: number, cy: number, cz: number): boolean {
+    const t0 = performance.now();
     const key = chunkKey(cx, cy, cz);
     const prev = this.colliders.get(key);
     if (prev) {
       this.world.removeCollider(prev, false);
       this.colliders.delete(key);
     }
+    const t1 = performance.now();
     const mesh = buildSurfaceNetsChunk(this.grid, cx, cy, cz);
-    if (!mesh) return false;
+    const t2 = performance.now();
+    if (!mesh) {
+      this.chunkBuildCount++;
+      this.chunkBuildRemoveMs += t1 - t0;
+      this.chunkBuildMeshMs += t2 - t1;
+      return false;
+    }
     const desc = RAPIER.ColliderDesc.trimesh(mesh.positions, mesh.indices).setFriction(1.0);
+    const t3 = performance.now();
     const collider = this.world.createCollider(desc, this.terrainBody);
+    const t4 = performance.now();
     this.colliders.set(key, collider);
+    this.chunkBuildCount++;
+    this.chunkBuildRemoveMs += t1 - t0;
+    this.chunkBuildMeshMs += t2 - t1;
+    this.chunkBuildDescMs += t3 - t2;
+    this.chunkBuildCreateMs += t4 - t3;
     return true;
+  }
+
+  /** Snapshot + reset chunk build sub-step timings. Returns averages in ms
+   *  so the caller can log without extra math. Zeroed after read. */
+  takeChunkBuildStats(): { count: number; avgRemoveMs: number; avgMeshMs: number; avgDescMs: number; avgCreateMs: number } {
+    const count = this.chunkBuildCount;
+    if (count === 0) {
+      return { count: 0, avgRemoveMs: 0, avgMeshMs: 0, avgDescMs: 0, avgCreateMs: 0 };
+    }
+    const stats = {
+      count,
+      avgRemoveMs: this.chunkBuildRemoveMs / count,
+      avgMeshMs: this.chunkBuildMeshMs / count,
+      avgDescMs: this.chunkBuildDescMs / count,
+      avgCreateMs: this.chunkBuildCreateMs / count,
+    };
+    this.chunkBuildCount = 0;
+    this.chunkBuildRemoveMs = 0;
+    this.chunkBuildMeshMs = 0;
+    this.chunkBuildDescMs = 0;
+    this.chunkBuildCreateMs = 0;
+    return stats;
   }
 
   rebuildAll(): void {
