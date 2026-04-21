@@ -243,20 +243,36 @@ export class RapierVoxelWorld {
     }
   }
 
-  /** Rebuild every chunk marked dirty since the last flush. Returns the
-   *  number of chunks rebuilt — 0 on an idle tick, N on a carve tick. The
-   *  sim loop calls this before physics.step() so the next KCC pass sees
-   *  up-to-date colliders. */
-  flushDirtyChunks(): number {
+  /** Rebuild up to `maxChunks` dirty chunks this call, carrying any leftover
+   *  into the next flush. Returns the number of chunks rebuilt. Each TriMesh
+   *  rebuild is 5–10 ms on a Pi; without a cap, a splitter / multi-shot carve
+   *  that dirties ~10 chunks produces one 80–100 ms sim-tick spike, which
+   *  reads on the client as elastic snapping even though average CPU is
+   *  unsaturated. Spreading the rebuild over several ticks trades a bit of
+   *  physics-collider lag (the voxel grid is already carved — only the KCC
+   *  approximation lags) for a flat per-tick duration. */
+  flushDirtyChunks(maxChunks: number = 2): number {
     if (this.dirtyChunks.size === 0) return 0;
     let count = 0;
     for (const key of this.dirtyChunks) {
+      if (count >= maxChunks) break;
       const [cxStr, cyStr, czStr] = key.split(',');
       this.setChunkCollider(Number(cxStr), Number(cyStr), Number(czStr));
+      this.dirtyChunks.delete(key);
       count++;
     }
-    this.dirtyChunks.clear();
     return count;
+  }
+
+  /** True iff there are still dirty chunks pending rebuild. The jitter
+   *  instrumentation surfaces this so we can see backlog build-up on the
+   *  server logs. */
+  hasDirtyChunks(): boolean {
+    return this.dirtyChunks.size > 0;
+  }
+
+  dirtyChunkCount(): number {
+    return this.dirtyChunks.size;
   }
 
   // ── Tank management ─────────────────────────────────────────────

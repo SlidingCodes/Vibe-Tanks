@@ -981,6 +981,7 @@ export class Room {
     let windowWorstDurationMs = 0;
     let windowSlipOverCount = 0;
     let windowDurOverCount = 0;
+    let windowWorstPendingChunks = 0;
     const SLIP_THRESHOLD_MS = 10;
     const DURATION_THRESHOLD_MS = 20;
     const REPORT_EVERY_MS = 10_000;
@@ -1002,9 +1003,11 @@ export class Room {
       this.tickSpaceInvaders(simDt);
 
       const durationMs = performance.now() - now;
+      const pendingChunks = this.physics.dirtyChunkCount();
       windowTickCount++;
       if (slipMs > windowWorstSlipMs) windowWorstSlipMs = slipMs;
       if (durationMs > windowWorstDurationMs) windowWorstDurationMs = durationMs;
+      if (pendingChunks > windowWorstPendingChunks) windowWorstPendingChunks = pendingChunks;
       if (slipMs > SLIP_THRESHOLD_MS) windowSlipOverCount++;
       if (durationMs > DURATION_THRESHOLD_MS) windowDurOverCount++;
 
@@ -1014,6 +1017,7 @@ export class Room {
           `[tick-jitter] ${windowTickCount} ticks, ` +
           `worstSlip=${windowWorstSlipMs.toFixed(1)}ms over${SLIP_THRESHOLD_MS}=${windowSlipOverCount}, ` +
           `worstDur=${windowWorstDurationMs.toFixed(1)}ms over${DURATION_THRESHOLD_MS}=${windowDurOverCount}, ` +
+          `worstPendingChunks=${windowWorstPendingChunks}, ` +
           `players=${this.players.size}`,
         );
         windowStartMs = now;
@@ -1022,6 +1026,7 @@ export class Room {
         windowWorstDurationMs = 0;
         windowSlipOverCount = 0;
         windowDurOverCount = 0;
+        windowWorstPendingChunks = 0;
       }
     }, targetTickMs);
 
