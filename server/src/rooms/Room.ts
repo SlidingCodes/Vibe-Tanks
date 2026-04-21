@@ -997,6 +997,14 @@ export class Room {
     let windowSlipOverCount = 0;
     let windowDurOverCount = 0;
     let windowWorstPendingChunks = 0;
+    // Per-phase worst durations inside the sim tick so we can localise the
+    // source of a 50–70 ms spike (chunk-build alone only explains ~6 ms).
+    let worstTickBotsMs = 0;
+    let worstTickMovementMs = 0;
+    let worstTickProjectilesMs = 0;
+    let worstTickHazardsMs = 0;
+    let worstTickStrikesMs = 0;
+    let worstTickInvadersMs = 0;
     const SLIP_THRESHOLD_MS = 10;
     const DURATION_THRESHOLD_MS = 20;
     const REPORT_EVERY_MS = 10_000;
@@ -1010,14 +1018,35 @@ export class Room {
       if (this.phase === MatchPhase.Leaderboard) return;
 
       this.simTime += simDt;
-      this.tickBots(simDt);
-      this.tickMovement(simDt);
-      this.tickProjectiles(simDt);
-      this.tickHazards(simDt);
-      this.tickScheduledStrikes();
-      this.tickSpaceInvaders(simDt);
 
-      const durationMs = performance.now() - now;
+      const tBots0 = performance.now();
+      this.tickBots(simDt);
+      const tMove0 = performance.now();
+      this.tickMovement(simDt);
+      const tProj0 = performance.now();
+      this.tickProjectiles(simDt);
+      const tHaz0 = performance.now();
+      this.tickHazards(simDt);
+      const tStr0 = performance.now();
+      this.tickScheduledStrikes();
+      const tInv0 = performance.now();
+      this.tickSpaceInvaders(simDt);
+      const tEnd = performance.now();
+
+      const botsMs = tMove0 - tBots0;
+      const moveMs = tProj0 - tMove0;
+      const projMs = tHaz0 - tProj0;
+      const hazMs = tStr0 - tHaz0;
+      const strikesMs = tInv0 - tStr0;
+      const invadersMs = tEnd - tInv0;
+      if (botsMs > worstTickBotsMs) worstTickBotsMs = botsMs;
+      if (moveMs > worstTickMovementMs) worstTickMovementMs = moveMs;
+      if (projMs > worstTickProjectilesMs) worstTickProjectilesMs = projMs;
+      if (hazMs > worstTickHazardsMs) worstTickHazardsMs = hazMs;
+      if (strikesMs > worstTickStrikesMs) worstTickStrikesMs = strikesMs;
+      if (invadersMs > worstTickInvadersMs) worstTickInvadersMs = invadersMs;
+
+      const durationMs = tEnd - now;
       const pendingChunks = this.physics.dirtyChunkCount();
       windowTickCount++;
       if (slipMs > windowWorstSlipMs) windowWorstSlipMs = slipMs;
@@ -1034,6 +1063,15 @@ export class Room {
           `worstDur=${windowWorstDurationMs.toFixed(1)}ms over${DURATION_THRESHOLD_MS}=${windowDurOverCount}, ` +
           `worstPendingChunks=${windowWorstPendingChunks}, ` +
           `players=${this.players.size}`,
+        );
+        // eslint-disable-next-line no-console
+        console.log(
+          `[phase-worst] bots=${worstTickBotsMs.toFixed(1)}ms, ` +
+          `move=${worstTickMovementMs.toFixed(1)}ms, ` +
+          `proj=${worstTickProjectilesMs.toFixed(1)}ms, ` +
+          `haz=${worstTickHazardsMs.toFixed(1)}ms, ` +
+          `strikes=${worstTickStrikesMs.toFixed(1)}ms, ` +
+          `invaders=${worstTickInvadersMs.toFixed(1)}ms`,
         );
         const chunkStats = this.physics.takeChunkBuildStats();
         if (chunkStats.count > 0) {
@@ -1053,6 +1091,12 @@ export class Room {
         windowSlipOverCount = 0;
         windowDurOverCount = 0;
         windowWorstPendingChunks = 0;
+        worstTickBotsMs = 0;
+        worstTickMovementMs = 0;
+        worstTickProjectilesMs = 0;
+        worstTickHazardsMs = 0;
+        worstTickStrikesMs = 0;
+        worstTickInvadersMs = 0;
       }
     }, targetTickMs);
 
