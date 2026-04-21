@@ -660,14 +660,29 @@ socket.on('state_update', (state: RoomStateUpdate) => {
               tankState.extraVel,
               tankState.angVel,
             );
+            // Skip replay when physics is "engaged" — airborne, significant
+            // vertical motion, or on a slope. KCC's sweep tests against the
+            // chunk TriMeshes are chaotically sensitive to sub-cm start-position
+            // differences: a replay of 10+ inputs through complex terrain
+            // diverges metres from the server's trajectory even with the same
+            // inputs and the same Rapier build. Trusting the server state
+            // directly (short apparent latency, ~50 ms) looks far smoother
+            // than a replayed-then-corrected trajectory.
+            const kccSensitive =
+              tankState.airborne ||
+              Math.abs(tankState.linVel.y) > 0.5 ||
+              Math.abs(tankState.bodyPitch) > 0.25 ||
+              Math.abs(tankState.bodyRoll) > 0.25;
             let replayTicks = 0;
-            for (let s = serverSeq + 1; s <= clientSeq; s++) {
-              const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
-              if (!replayInput || replayInput.seq !== s) break;
-              clientPhysics.setTankInput(myId, replayInput);
-              clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
-              clientPhysics.step(CLIENT_PHYSICS_STEP);
-              replayTicks++;
+            if (!kccSensitive) {
+              for (let s = serverSeq + 1; s <= clientSeq; s++) {
+                const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
+                if (!replayInput || replayInput.seq !== s) break;
+                clientPhysics.setTankInput(myId, replayInput);
+                clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+                clientPhysics.step(CLIENT_PHYSICS_STEP);
+                replayTicks++;
+              }
             }
             clientPhysics.readbackTank(myId, predictedState);
             lastReconciledSeq = serverSeq;
