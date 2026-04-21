@@ -524,6 +524,21 @@ export class RapierVoxelWorld {
     }, true);
   }
 
+  /** Copy the tank body's current "feet" position (body centre − hull
+   *  radius) into `out`. Used by the client to snapshot its own predicted
+   *  position per input seq so later reconciliation can compare server
+   *  state at seq N against what *we* predicted at seq N — cancelling out
+   *  the legitimate lag component. Returns false if the tank is unknown. */
+  getTankPosition(id: PlayerId, out: Vec3): boolean {
+    const entry = this.tanks.get(id);
+    if (!entry) return false;
+    const p = entry.body.translation();
+    out.x = p.x;
+    out.y = p.y - HULL_RADIUS;
+    out.z = p.z;
+    return true;
+  }
+
   /** Add a velocity kick to the blast buffer — knockback from shell
    *  blasts, future vehicle ramming, etc. Decays exponentially each
    *  tick (see BLAST_DECAY_TAU). `velocityDelta` is m/s, identical to

@@ -370,6 +370,18 @@ let lastReconciledSeq = 0;
  *  from the server-anchored state to the current present. */
 const INPUT_BUFFER_SIZE = 128;
 const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(null);
+/** Parallel history buffer of the client-predicted tank feet-position at
+ *  the end of the physics step for each `clientSeq`. Reconciliation
+ *  compares the server's state at `lastAppliedSeq` against what the
+ *  client predicted at that same seq, so legitimate lag is cancelled out
+ *  and only true physics divergence appears as drift. Each slot carries
+ *  its own seq stamp so we can detect ring-buffer wraparound and reject
+ *  stale lookups. */
+interface PredictedSample { seq: number; x: number; y: number; z: number }
+const predictedPosBuffer: PredictedSample[] = Array.from(
+  { length: INPUT_BUFFER_SIZE },
+  () => ({ seq: -1, x: 0, y: 0, z: 0 }),
+);
 /** Render-side error smoother state. `renderedPos` / `renderedYaw` are
  *  what the mesh, camera, aim raycast, and tread decal actually follow
  *  each frame; `predictedState` remains the exact Rapier readback so the
@@ -646,30 +658,33 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // inputs the player has already issued — no rubber-band, no
             // soft lerp, and correct under caves / overhangs because the
             // replay runs the real KCC against the real TriMesh.
-            // Client-authoritative local player, Minecraft / Krunker / Source
-            // model: we do NOT snap the Rapier body to the server state on
-            // every broadcast — that's what was producing the visible jitter.
-            // Rapier prediction runs uninterrupted driven by the player's own
-            // inputs; the server state is consulted only to detect a
-            // "real" desync (wall clip, teleport, server-side correction).
-            // Small drifts self-correct as inputs continue to flow.
-            const errX = predictedState.position.x - tankState.position.x;
-            const errY = predictedState.position.y - tankState.position.y;
-            const errZ = predictedState.position.z - tankState.position.z;
-            const errMag = Math.sqrt(errX * errX + errY * errY + errZ * errZ);
-            // 3 m is comfortably above typical prediction drift (~30 cm) and
-            // normal latency-delta; anything larger is almost certainly a
-            // server-side position override (respawn handled separately above,
-            // anti-cheat rollback, clipped-into-wall rescue).
+            // Client-authoritative local player, Source / Overwatch / Krunker
+            // model: compare server state at seq N against *our own
+            // prediction at seq N* (not at "now" — that would include
+            // legitimate lag and pull the tank backward in time). The
+            // predictedPosBuffer lookup cancels out the lag component so
+            // errMag reflects only true physics divergence.
+            const sample = predictedPosBuffer[serverSeq % INPUT_BUFFER_SIZE];
+            const sampleValid = sample.seq === serverSeq;
+            let errX = 0, errY = 0, errZ = 0, errMag = 0;
+            if (sampleValid) {
+              errX = sample.x - tankState.position.x;
+              errY = sample.y - tankState.position.y;
+              errZ = sample.z - tankState.position.z;
+              errMag = Math.sqrt(errX * errX + errY * errY + errZ * errZ);
+            }
+            // 3 m of *real* divergence is almost certainly a server-side
+            // position override (respawn is handled earlier, anti-cheat
+            // rollback, clipped-into-wall rescue).
             const HARD_RESYNC_THRESHOLD = 3.0;
-            // Fraction of the remaining client-vs-server drift we absorb on
-            // each broadcast. 15 % per reconcile at 30 Hz broadcast gives an
-            // e-fold decay in ~200 ms — sub-cm per frame at typical drifts,
-            // invisible to the user, but prevents drift from compounding to
-            // the hard-snap threshold no matter how long the turbo burst is.
-            const SOFT_CORRECT_RATE = 0.15;
+            // Soft absorb 20 % of the true drift per broadcast into the
+            // Rapier body. Typical drift is a few cm → each nudge is sub-cm,
+            // imperceptible per frame, and across ~5 reconciles the drift
+            // converges to zero. Because we're now measuring *true* drift,
+            // this never pulls the tank backward in time.
+            const SOFT_CORRECT_RATE = 0.20;
             let replayTicks = 0;
-            const forcedSnap = errMag > HARD_RESYNC_THRESHOLD;
+            const forcedSnap = sampleValid && errMag > HARD_RESYNC_THRESHOLD;
             if (forcedSnap) {
               clientPhysics.flushDirtyChunks();
               clientPhysics.restoreTankState(
@@ -681,10 +696,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
                 tankState.angVel,
               );
               clientPhysics.readbackTank(myId, predictedState);
-            } else if (errMag > 0.01) {
-              // Soft correction: nudge the Rapier body a fraction of the way
-              // toward the server state. errX = predictedX − serverX, so
-              // −errX × rate moves predicted toward server.
+            } else if (sampleValid && errMag > 0.02) {
               clientPhysics.softCorrectTankPosition(myId, {
                 x: -errX * SOFT_CORRECT_RATE,
                 y: -errY * SOFT_CORRECT_RATE,
@@ -1122,6 +1134,12 @@ function animate(): void {
         clientPhysics.setTankInput(myId, tickInput);
         clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
         clientPhysics.step(CLIENT_PHYSICS_STEP);
+        // Snapshot the predicted position AFTER this tick's physics step so
+        // reconciliation can compare server-state(seq) against our
+        // prediction(seq) instead of against "now" (which includes lag).
+        const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
+        sample.seq = clientSeq;
+        clientPhysics.getTankPosition(myId, sample);
         physicsAccumulator -= CLIENT_PHYSICS_STEP;
       }
       clientPhysics.readbackTank(myId, predictedState);
