@@ -377,7 +377,7 @@ const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(
  *  lerp renderedPos toward predictedState.position — small reconciliation
  *  corrections (server state anchoring + input replay) manifest as a
  *  gentle catch-up rather than a tick-boundary pop. */
-const RENDER_SMOOTH_RATE_PER_SIM_TICK = 0.25;
+const RENDER_SMOOTH_RATE_PER_SIM_TICK = 0.40;
 const RENDER_SMOOTH_SNAP_DISTANCE = 3.0;
 let renderedPosX = 0, renderedPosY = 0, renderedPosZ = 0;
 let renderedYaw = 0;
