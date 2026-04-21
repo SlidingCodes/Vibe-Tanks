@@ -1179,6 +1179,15 @@ function animate(): void {
     viewState.bodyRoll = predictedState.bodyRoll;
     viewState.turretRotation = predictedState.turretRotation;
     viewState.barrelPitch = predictedState.barrelPitch;
+    viewState.linVel.x = predictedState.linVel.x;
+    viewState.linVel.y = predictedState.linVel.y;
+    viewState.linVel.z = predictedState.linVel.z;
+    viewState.extraVel.x = predictedState.extraVel.x;
+    viewState.extraVel.y = predictedState.extraVel.y;
+    viewState.extraVel.z = predictedState.extraVel.z;
+    viewState.angVel.x = predictedState.angVel.x;
+    viewState.angVel.y = predictedState.angVel.y;
+    viewState.angVel.z = predictedState.angVel.z;
     viewState.position.x = renderedPosX;
     viewState.position.y = renderedPosY;
     viewState.position.z = renderedPosZ;

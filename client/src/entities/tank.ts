@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { TICK_RATE } from '@shared/constants';
 import { TankState } from '@shared/types/index';
 import { getParticleTextures } from '../scene/particles';
 import { getTankTextures, configureHullMaterial } from './tankTextures';
@@ -11,10 +12,20 @@ import {
 } from './tankGeometry';
 
 const TILT_SMOOTH = 0.25;
+const SERVER_BROADCAST_INTERVAL = 1 / TICK_RATE;
+const MAX_WEIGHT_TRANSFER_ACCEL = 24;
+const WEIGHT_TRANSFER_FORCE_SCALE = 2.92;
+const MAX_CHASSIS_TILT = 0.12;
 
 function smoothTilt(group: THREE.Object3D, targetPitch: number, targetRoll: number): void {
   group.rotation.x += (targetPitch - group.rotation.x) * TILT_SMOOTH;
   group.rotation.z += (targetRoll - group.rotation.z) * TILT_SMOOTH;
+}
+
+function getLongitudinalSpeed(state: TankState): number {
+  const forwardX = Math.sin(state.bodyRotation);
+  const forwardZ = Math.cos(state.bodyRotation);
+  return state.linVel.x * forwardX + state.linVel.z * forwardZ;
 }
 
 export interface TankMesh {
@@ -45,10 +56,12 @@ export interface TankMesh {
   /** Seconds remaining to show the skull emoji after death. */
   deathTimer: number;
   // Recoil & Suspension Visual State
-  barrelRecoil: number;     // 0-1 (displacement)
-  chassisTilt: number;      // Radian pitch offset
-  chassisTiltVel: number;   // Velocity for spring
-  prevSpeed: number;        // To detect acceleration
+  barrelRecoil: number;             // 0-1 (displacement)
+  chassisTilt: number;              // Radian pitch offset
+  chassisTiltVel: number;           // Velocity for spring
+  prevLongitudinalSpeed: number;    // Signed forward speed from prior sample
+  motionSampleDt: number;           // Seconds covered by the latest motion sample
+  motionDirty: boolean;             // True when state changed and motion should be re-sampled
 }
 
 
@@ -56,9 +69,6 @@ export interface TankMesh {
 const RESPAWN_ANIM_DURATION = 0.6; // seconds to fade the tank back in
 
 const tankMeshes: Map<string, TankMesh> = new Map();
-
-// Server broadcasts at 20hz -> 50ms between updates
-const SERVER_BROADCAST_INTERVAL = 1 / 20;
 
 const TREAD_HALF_WIDTH = 0.7; // distance from tank center to each tread
 const MAX_NAME_LABEL_DISTANCE = 60; // distance at which name labels are hidden
@@ -259,7 +269,9 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     barrelRecoil: 0,
     chassisTilt: 0,
     chassisTiltVel: 0,
-    prevSpeed: 0,
+    prevLongitudinalSpeed: getLongitudinalSpeed(tank),
+    motionSampleDt: SERVER_BROADCAST_INTERVAL,
+    motionDirty: false,
   };
 
 
@@ -271,6 +283,9 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 export function onServerStateReceived(tank: TankState): void {
   const tm = tankMeshes.get(tank.playerId);
   if (!tm) return;
+
+  tm.motionSampleDt = Math.max(tm.interpTime || SERVER_BROADCAST_INTERVAL, 1 / 240);
+  tm.motionDirty = true;
 
   // Detect respawn (dead → alive): snap to new position instead of
   // sliding across the map from the death location.
@@ -293,6 +308,10 @@ export function onServerStateReceived(tank: TankState): void {
     tm.targetPosition.set(tank.position.x, tank.position.y, tank.position.z);
     tm.prevBodyRotation = tm.group.rotation.y;
     tm.targetBodyRotation = tank.bodyRotation;
+  }
+  if (justRespawned || !tank.alive) {
+    tm.prevLongitudinalSpeed = getLongitudinalSpeed(tank);
+    tm.motionDirty = false;
   }
   tm.interpTime = 0;
   tm.interpDuration = SERVER_BROADCAST_INTERVAL;
@@ -324,24 +343,29 @@ export function tickTankEffects(dt: number): void {
     }
 
     // ── Recoil & Suspension Physics (Spring-Damper) ──
-    // Body Tilt
-    const stiffness = 160.0; // Lower stiffness = bigger swing
-    const damping = 10.0;   // Less damping = more wobble
+    const stiffness = 160.0;
+    const damping = 10.0;
 
+    let suspensionForce = 0;
+    if (tm.motionDirty) {
+      const currentLongitudinalSpeed = getLongitudinalSpeed(tm.state);
+      const sampleDt = Math.max(tm.motionSampleDt || dt, 1 / 240);
+      tm.motionDirty = false;
+      if (!tm.state.airborne) {
+        const accel = (currentLongitudinalSpeed - tm.prevLongitudinalSpeed) / sampleDt;
+        const clampedAccel = THREE.MathUtils.clamp(accel, -MAX_WEIGHT_TRANSFER_ACCEL, MAX_WEIGHT_TRANSFER_ACCEL);
+        suspensionForce = -clampedAccel * WEIGHT_TRANSFER_FORCE_SCALE;
+      }
+      tm.prevLongitudinalSpeed = currentLongitudinalSpeed;
+    }
 
-    // Estimate horizontal acceleration. velocity isn't part of TankState —
-    // it's an optional client-side runtime field some tracks may fill in.
-    const stateVel = (tm.state as { velocity?: { x: number; y: number; z: number } }).velocity;
-    const currentSpeed = stateVel ? Math.sqrt(stateVel.x ** 2 + stateVel.z ** 2) : 0;
-    const accel = (currentSpeed - (tm.prevSpeed || 0)) / dt;
-    
-    // Pitch force from acceleration (nose up when accelerating, nose down when braking)
-    const suspensionForce = -accel * 0.08;
-    
     const force = -tm.chassisTilt * stiffness - tm.chassisTiltVel * damping + suspensionForce;
     tm.chassisTiltVel += force * dt;
     tm.chassisTilt += tm.chassisTiltVel * dt;
-    tm.prevSpeed = currentSpeed;
+    tm.chassisTilt = THREE.MathUtils.clamp(tm.chassisTilt, -MAX_CHASSIS_TILT, MAX_CHASSIS_TILT);
+    if (tm.chassisTilt === -MAX_CHASSIS_TILT || tm.chassisTilt === MAX_CHASSIS_TILT) {
+      tm.chassisTiltVel *= 0.85;
+    }
 
     // Barrel Recoil
     if (tm.barrelRecoil > 0) {
@@ -450,7 +474,14 @@ export function updateLocalTankMesh(tank: TankState): void {
   const tm = tankMeshes.get(tank.playerId);
   if (!tm) return;
 
+  const justRespawned = !tm.state.alive && tank.alive;
   tm.state = tank;
+  tm.motionDirty = true;
+  tm.motionSampleDt = 0;
+  if (justRespawned || !tank.alive) {
+    tm.prevLongitudinalSpeed = getLongitudinalSpeed(tank);
+    tm.motionDirty = false;
+  }
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
   if (tank.airborne) {
@@ -481,6 +512,8 @@ export function updateTankMesh(tank: TankState): void {
   }
 
   tm.state = tank;
+  tm.motionDirty = true;
+  tm.motionSampleDt = SERVER_BROADCAST_INTERVAL;
   tm.group.position.set(tank.position.x, tank.position.y, tank.position.z);
   tm.group.rotation.y = tank.bodyRotation;
   tm.group.rotation.x = tank.bodyPitch;
