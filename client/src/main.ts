@@ -662,6 +662,12 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // server-side position override (respawn handled separately above,
             // anti-cheat rollback, clipped-into-wall rescue).
             const HARD_RESYNC_THRESHOLD = 3.0;
+            // Fraction of the remaining client-vs-server drift we absorb on
+            // each broadcast. 15 % per reconcile at 30 Hz broadcast gives an
+            // e-fold decay in ~200 ms — sub-cm per frame at typical drifts,
+            // invisible to the user, but prevents drift from compounding to
+            // the hard-snap threshold no matter how long the turbo burst is.
+            const SOFT_CORRECT_RATE = 0.15;
             let replayTicks = 0;
             const forcedSnap = errMag > HARD_RESYNC_THRESHOLD;
             if (forcedSnap) {
@@ -675,6 +681,15 @@ socket.on('state_update', (state: RoomStateUpdate) => {
                 tankState.angVel,
               );
               clientPhysics.readbackTank(myId, predictedState);
+            } else if (errMag > 0.01) {
+              // Soft correction: nudge the Rapier body a fraction of the way
+              // toward the server state. errX = predictedX − serverX, so
+              // −errX × rate moves predicted toward server.
+              clientPhysics.softCorrectTankPosition(myId, {
+                x: -errX * SOFT_CORRECT_RATE,
+                y: -errY * SOFT_CORRECT_RATE,
+                z: -errZ * SOFT_CORRECT_RATE,
+              });
             }
             lastReconciledSeq = serverSeq;
 

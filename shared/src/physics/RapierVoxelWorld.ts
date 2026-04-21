@@ -505,6 +505,25 @@ export class RapierVoxelWorld {
     }
   }
 
+  /** Apply a small position delta to a tank body without running the KCC
+   *  movement pipeline. Used by the client to bleed out accumulated
+   *  client-vs-server drift over several state_updates at ~15 % per
+   *  broadcast — each step is sub-cm so it's imperceptible per frame,
+   *  but across ~200 ms any drift below the hard-snap threshold converges
+   *  to near-zero. Bypassing KCC is safe for the small magnitudes involved
+   *  (typical <3 cm per call); the next applyTankInputs pass re-resolves
+   *  any micro-penetration through the usual sweep. */
+  softCorrectTankPosition(id: PlayerId, delta: Vec3): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    const cur = entry.body.translation();
+    entry.body.setTranslation({
+      x: cur.x + delta.x,
+      y: cur.y + delta.y,
+      z: cur.z + delta.z,
+    }, true);
+  }
+
   /** Add a velocity kick to the blast buffer — knockback from shell
    *  blasts, future vehicle ramming, etc. Decays exponentially each
    *  tick (see BLAST_DECAY_TAU). `velocityDelta` is m/s, identical to
