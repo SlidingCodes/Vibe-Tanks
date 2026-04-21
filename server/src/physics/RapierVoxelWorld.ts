@@ -12,16 +12,7 @@ export function initRapier(): Promise<void> {
 
 // ── Tank tuning ────────────────────────────────────────────────────
 const HULL_HALF = { x: 0.85, y: 0.35, z: 1.0 };
-const HULL_MASS = 900;
-const WHEEL_RADIUS = 0.58;
-const SUSPENSION_REST = 0.28;
-const SUSPENSION_STIFF = 155;
-const SUSPENSION_DAMPING_COMPRESSION = 6.8;
-const SUSPENSION_DAMPING_RELAX = 6.1;
-const MAX_SUSPENSION_TRAVEL = 0.14;
-const MAX_SUSPENSION_FORCE = HULL_MASS * 75;
-const FRICTION_SLIP = 8.8;
-const WHEEL_SIDE_FRICTION = 0.72;
+const HULL_MASS = 2900;
 const BALLAST_MASS = HULL_MASS * 1.45;
 const BALLAST_OFFSET_Y = -0.82;
 const EXTRA_ANGULAR_INERTIA = {
@@ -31,54 +22,65 @@ const EXTRA_ANGULAR_INERTIA = {
 };
 const IDLE_BRAKE_FACTOR = 0.12;
 const REVERSAL_BRAKE_FACTOR = 0.65;
-const ROOT_Y_FROM_BODY_CENTER = SUSPENSION_REST + HULL_HALF.y;
-const WHEEL_Y = 0;
-type WheelSide = 'left' | 'right';
-interface WheelSetup {
+const TRACK_CLEARANCE = 0.15;
+const TRACK_SUSPENSION_REST = HULL_HALF.y + TRACK_CLEARANCE;
+const TRACK_SUSPENSION_TRAVEL = 0.58;
+const TRACK_SUSPENSION_STIFF = HULL_MASS * 30;
+const TRACK_SUSPENSION_DAMPING = HULL_MASS * 3.8;
+const TRACK_MAX_SUPPORT_FORCE = HULL_MASS * 7.0;
+const TRACK_SIDE_SLIP_DAMPING = HULL_MASS * 10.0;
+const TRACK_BRAKE_DAMPING = HULL_MASS * 4.6;
+const TRACK_ANTI_ROLL_FORCE = HULL_MASS * 6.0;
+const ROOT_Y_FROM_BODY_CENTER = TRACK_SUSPENSION_REST;
+type TrackProbeSide = 'left' | 'right' | 'center';
+interface TrackProbeSetup {
   x: number;
-  y: number;
   z: number;
-  side: WheelSide;
+  side: TrackProbeSide;
 }
-const TRACK_X = HULL_HALF.x * 1.0;
-const TRACK_FRONT_Z = HULL_HALF.z * 0.98;
-const TRACK_FRONT_MID_Z = HULL_HALF.z * 0.34;
-const TRACK_REAR_MID_Z = -HULL_HALF.z * 0.34;
-const TRACK_REAR_Z = -HULL_HALF.z * 0.98;
-const WHEEL_OFFSETS: Array<WheelSetup> = [
-  { x: TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_Z, side: 'right' },
-  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_Z, side: 'left' },
-  { x: TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_MID_Z, side: 'right' },
-  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_FRONT_MID_Z, side: 'left' },
-  { x: TRACK_X, y: WHEEL_Y, z: TRACK_REAR_MID_Z, side: 'right' },
-  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_REAR_MID_Z, side: 'left' },
-  { x: TRACK_X, y: WHEEL_Y, z: TRACK_REAR_Z, side: 'right' },
-  { x: -TRACK_X, y: WHEEL_Y, z: TRACK_REAR_Z, side: 'left' },
+interface TrackProbeHit {
+  spec: TrackProbeSetup;
+  anchor: Vec3;
+  point: Vec3 | null;
+  normal: Vec3;
+  grounded: boolean;
+  distance: number;
+  compression: number;
+  suspensionForce: number;
+}
+interface TrackSideState {
+  groundedCount: number;
+  centroid: Vec3 | null;
+  averageNormal: Vec3;
+  averageCompression: number;
+}
+const TRACK_LANE_X = HULL_HALF.x * 0.9;
+const TRACK_PROBE_ZS = [0.95, 0.57, 0.19, -0.19, -0.57, -0.95].map((t) => t * HULL_HALF.z);
+const TRACK_PROBES: Array<TrackProbeSetup> = TRACK_PROBE_ZS.flatMap((z) => ([
+  { x: TRACK_LANE_X, z, side: 'right' as const },
+  { x: -TRACK_LANE_X, z, side: 'left' as const },
+]));
+const BELLY_PROBES: Array<TrackProbeSetup> = [
+  { x: 0, z: HULL_HALF.z * 0.45, side: 'center' },
+  { x: 0, z: -HULL_HALF.z * 0.45, side: 'center' },
 ];
-const RIGHT_WHEEL_INDICES = WHEEL_OFFSETS.reduce<number[]>((acc, wheel, index) => {
-  if (wheel.side === 'right') acc.push(index);
-  return acc;
-}, []);
-const LEFT_WHEEL_INDICES = WHEEL_OFFSETS.reduce<number[]>((acc, wheel, index) => {
-  if (wheel.side === 'left') acc.push(index);
-  return acc;
-}, []);
+const ALL_SUPPORT_PROBES: Array<TrackProbeSetup> = [...TRACK_PROBES, ...BELLY_PROBES];
 const SUPPORT_SAMPLE_OFFSETS: Array<{ x: number; z: number }> = [
   { x: 0, z: 0 },
-  ...WHEEL_OFFSETS.map(({ x, z }) => ({ x: x * 0.92, z: z * 0.92 })),
+  ...ALL_SUPPORT_PROBES.map(({ x, z }) => ({ x: x * 0.96, z: z * 0.96 })),
 ];
-const ENGINE_FORCE = HULL_MASS * 24;
+const ENGINE_FORCE = HULL_MASS * 28;
 const BRAKE_FORCE = HULL_MASS * 3.2;
-const LEGACY_WHEELS_PER_SIDE = 2;
 const TOP_FORWARD_SPEED = TANK_SPEED * 1.6;
-const TURN_MIX_MOVING = 2.1;
-const TURN_MIX_PIVOT = 1.3;
-const STRAIGHT_YAW_HOLD_GAIN = 2.2;
-const STRAIGHT_YAW_HOLD_MAX = 0.32;
+const TURN_MIX_MOVING = 1.0;
+const TURN_MIX_PIVOT = 0.6;
+const STRAIGHT_YAW_HOLD_GAIN = 3.1;
+const STRAIGHT_YAW_HOLD_MAX = 0.48;
+const STRAIGHT_YAW_RATE_DAMPING = 0.24;
 const CRAWL_ASSIST_MIN_CONTACTS = 4;
-const CRAWL_ASSIST_MAX_SPEED = TANK_SPEED * 0.9;
-const CRAWL_ASSIST_GAIN = 8.0;
-const CRAWL_ASSIST_MAX_BOOST = 2.4;
+const CRAWL_ASSIST_MAX_SPEED = TANK_SPEED * 1.15;
+const CRAWL_ASSIST_GAIN = 12.5;
+const CRAWL_ASSIST_MAX_BOOST = 3.8;
 
 // ── Projectile tuning / filtering ──────────────────────────────────
 const PROJECTILE_MASS = 1.0;
@@ -100,13 +102,13 @@ interface TankSupportState {
 interface TankEntry {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
-  vehicle: RAPIER.DynamicRayCastVehicleController;
   leftEngine: number;
   leftBrake: number;
   rightEngine: number;
   rightBrake: number;
   headingHoldYaw: number | null;
   support: TankSupportState;
+  probes: TrackProbeHit[];
 }
 
 interface ProjectileEntry {
@@ -268,28 +270,10 @@ export class RapierVoxelWorld {
       .setCollisionGroups(TANK_COLLISION_GROUPS);
     const collider = this.world.createCollider(colliderDesc, body);
 
-    const vehicle = this.world.createVehicleController(body);
-    vehicle.indexUpAxis = 1;
-    vehicle.setIndexForwardAxis = 2;
-
-    const suspensionDir = { x: 0, y: -1, z: 0 };
-    const axleDir = { x: -1, y: 0, z: 0 };
-    WHEEL_OFFSETS.forEach(({ x, y, z }, i) => {
-      vehicle.addWheel({ x, y, z }, suspensionDir, axleDir, SUSPENSION_REST, WHEEL_RADIUS);
-      vehicle.setWheelSuspensionStiffness(i, SUSPENSION_STIFF);
-      vehicle.setWheelSuspensionCompression(i, SUSPENSION_DAMPING_COMPRESSION);
-      vehicle.setWheelSuspensionRelaxation(i, SUSPENSION_DAMPING_RELAX);
-      vehicle.setWheelMaxSuspensionForce(i, MAX_SUSPENSION_FORCE);
-      vehicle.setWheelMaxSuspensionTravel(i, MAX_SUSPENSION_TRAVEL);
-      vehicle.setWheelFrictionSlip(i, FRICTION_SLIP);
-      vehicle.setWheelSideFrictionStiffness(i, WHEEL_SIDE_FRICTION);
-    });
-
     this.tankColliderOwners.set(collider.handle, tank.playerId);
     this.tanks.set(tank.playerId, {
       body,
       collider,
-      vehicle,
       leftEngine: 0,
       leftBrake: 0,
       rightEngine: 0,
@@ -302,6 +286,7 @@ export class RapierVoxelWorld {
         averageNormalZ: 0,
         averageSuspensionForce: 0,
       },
+      probes: [],
     });
   }
 
@@ -441,9 +426,12 @@ export class RapierVoxelWorld {
     let steeringCommand = turnInput;
     if (turnInput === 0 && throttle !== 0) {
       if (entry.headingHoldYaw === null) entry.headingHoldYaw = currentYaw;
+      const supportFactor = clamp(entry.support.terrainContactCount / ALL_SUPPORT_PROBES.length, 0, 1);
+      const holdStrength = 0.35 + 0.65 * supportFactor;
       const yawError = shortestAngleDelta(entry.headingHoldYaw, currentYaw);
-      const holdStrength = 0.35 + 0.65 * clamp(entry.support.terrainContactCount / WHEEL_OFFSETS.length, 0, 1);
-      steeringCommand += clamp(yawError * STRAIGHT_YAW_HOLD_GAIN, -STRAIGHT_YAW_HOLD_MAX, STRAIGHT_YAW_HOLD_MAX) * holdStrength;
+      const headingCorrection = clamp(yawError * STRAIGHT_YAW_HOLD_GAIN, -STRAIGHT_YAW_HOLD_MAX, STRAIGHT_YAW_HOLD_MAX);
+      const yawRateCorrection = clamp(-entry.body.angvel().y * STRAIGHT_YAW_RATE_DAMPING, -STRAIGHT_YAW_HOLD_MAX, STRAIGHT_YAW_HOLD_MAX);
+      steeringCommand += (headingCorrection + yawRateCorrection) * holdStrength;
     } else {
       entry.headingHoldYaw = null;
     }
@@ -460,7 +448,7 @@ export class RapierVoxelWorld {
       const uphillness = Math.max(0, -(fwdWorld.x * entry.support.averageNormalX + fwdWorld.z * entry.support.averageNormalZ));
       const speedFactor = clamp((CRAWL_ASSIST_MAX_SPEED - Math.max(0, fwdSpeed)) / CRAWL_ASSIST_MAX_SPEED, 0, 1);
       if (uphillness > 0.02 && speedFactor > 0) {
-        const contactFactor = clamp(entry.support.terrainContactCount / WHEEL_OFFSETS.length, 0, 1);
+        const contactFactor = clamp(entry.support.terrainContactCount / ALL_SUPPORT_PROBES.length, 0, 1);
         const assist = clamp(uphillness * CRAWL_ASSIST_GAIN * speedFactor * contactFactor, 0, CRAWL_ASSIST_MAX_BOOST);
         crawlAssistMultiplier += assist;
       }
@@ -477,26 +465,21 @@ export class RapierVoxelWorld {
   step(dt = 1 / SIM_TICK_RATE): void {
     this.world.timestep = dt;
     for (const entry of this.tanks.values()) {
-      const leftEnginePerWheel = entry.leftEngine * (LEGACY_WHEELS_PER_SIDE / LEFT_WHEEL_INDICES.length);
-      const leftBrakePerWheel = entry.leftBrake * (LEGACY_WHEELS_PER_SIDE / LEFT_WHEEL_INDICES.length);
-      const rightEnginePerWheel = entry.rightEngine * (LEGACY_WHEELS_PER_SIDE / RIGHT_WHEEL_INDICES.length);
-      const rightBrakePerWheel = entry.rightBrake * (LEGACY_WHEELS_PER_SIDE / RIGHT_WHEEL_INDICES.length);
+      entry.body.resetForces(false);
+      entry.body.resetTorques(false);
 
-      for (const wheelIndex of LEFT_WHEEL_INDICES) {
-        entry.vehicle.setWheelEngineForce(wheelIndex, leftEnginePerWheel);
-        entry.vehicle.setWheelBrake(wheelIndex, leftBrakePerWheel);
-      }
-      for (const wheelIndex of RIGHT_WHEEL_INDICES) {
-        entry.vehicle.setWheelEngineForce(wheelIndex, rightEnginePerWheel);
-        entry.vehicle.setWheelBrake(wheelIndex, rightBrakePerWheel);
-      }
-      entry.vehicle.updateVehicle(
-        dt,
-        RAPIER.QueryFilterFlags.ONLY_FIXED,
-        undefined,
-        (collider) => this.terrainColliderHandles.has(collider.handle),
-      );
-      this.updateSupportState(entry);
+      const probes = this.sampleTrackProbes(entry);
+      entry.probes = probes;
+
+      this.applySuspensionForces(entry, probes);
+
+      const leftSide = this.buildTrackSideState(probes, 'left');
+      const rightSide = this.buildTrackSideState(probes, 'right');
+      const supportNormal = this.computeAverageSupportNormal(probes);
+
+      this.applyTrackDriveForces(entry, leftSide, rightSide, supportNormal);
+      this.applyAntiRollForces(entry, leftSide, rightSide);
+      this.updateSupportState(entry, probes);
     }
     this.world.step(this.eventQueue);
     this.captureProjectileImpacts();
@@ -528,30 +511,205 @@ export class RapierVoxelWorld {
     tank.bodyRoll = e.z;
   }
 
-  private updateSupportState(entry: TankEntry): void {
+  private sampleTrackProbes(entry: TankEntry): TrackProbeHit[] {
+    const bodyPos = entry.body.translation();
+    const bodyRot = entry.body.rotation();
+    const castLength = TRACK_SUSPENSION_REST + TRACK_SUSPENSION_TRAVEL;
+
+    return ALL_SUPPORT_PROBES.map((spec) => {
+      const anchorOffset = rotateVec({ x: spec.x, y: 0, z: spec.z }, bodyRot);
+      const anchor = {
+        x: bodyPos.x + anchorOffset.x,
+        y: bodyPos.y + anchorOffset.y,
+        z: bodyPos.z + anchorOffset.z,
+      };
+      const ray = new RAPIER.Ray(anchor, { x: 0, y: -1, z: 0 });
+      const hit = this.world.castRayAndGetNormal(
+        ray,
+        castLength,
+        false,
+        RAPIER.QueryFilterFlags.ONLY_FIXED,
+        undefined,
+        undefined,
+        entry.body,
+        (collider) => this.terrainColliderHandles.has(collider.handle),
+      );
+
+      if (!hit) {
+        return {
+          spec,
+          anchor,
+          point: null,
+          normal: { x: 0, y: 1, z: 0 },
+          grounded: false,
+          distance: castLength,
+          compression: 0,
+          suspensionForce: 0,
+        };
+      }
+
+      const point = ray.pointAt(hit.timeOfImpact);
+      return {
+        spec,
+        anchor,
+        point: { x: point.x, y: point.y, z: point.z },
+        normal: normalizeVec3(hit.normal),
+        grounded: true,
+        distance: hit.timeOfImpact,
+        compression: clamp(TRACK_SUSPENSION_REST - hit.timeOfImpact, 0, TRACK_SUSPENSION_TRAVEL),
+        suspensionForce: 0,
+      };
+    });
+  }
+
+  private applySuspensionForces(entry: TankEntry, probes: TrackProbeHit[]): void {
+    for (const probe of probes) {
+      if (!probe.grounded || !probe.point) continue;
+      const pointVelocity = entry.body.velocityAtPoint(probe.point);
+      const compressionVelocity = -pointVelocity.y;
+      const springForce = probe.compression * TRACK_SUSPENSION_STIFF;
+      const dampingForce = compressionVelocity * TRACK_SUSPENSION_DAMPING;
+      const supportForce = clamp(springForce + dampingForce, 0, TRACK_MAX_SUPPORT_FORCE);
+      probe.suspensionForce = supportForce;
+      if (supportForce <= 0) continue;
+      entry.body.addForceAtPoint({ x: 0, y: supportForce, z: 0 }, probe.point, true);
+    }
+  }
+
+  private buildTrackSideState(probes: TrackProbeHit[], side: 'left' | 'right'): TrackSideState {
+    let groundedCount = 0;
+    let centroidX = 0;
+    let centroidY = 0;
+    let centroidZ = 0;
+    let normalX = 0;
+    let normalY = 0;
+    let normalZ = 0;
+    let compression = 0;
+
+    for (const probe of probes) {
+      if (probe.spec.side !== side || !probe.grounded || !probe.point) continue;
+      groundedCount++;
+      centroidX += probe.point.x;
+      centroidY += probe.point.y;
+      centroidZ += probe.point.z;
+      normalX += probe.normal.x;
+      normalY += probe.normal.y;
+      normalZ += probe.normal.z;
+      compression += probe.compression;
+    }
+
+    return {
+      groundedCount,
+      centroid: groundedCount > 0 ? {
+        x: centroidX / groundedCount,
+        y: centroidY / groundedCount,
+        z: centroidZ / groundedCount,
+      } : null,
+      averageNormal: groundedCount > 0
+        ? normalizeVec3({ x: normalX / groundedCount, y: normalY / groundedCount, z: normalZ / groundedCount })
+        : { x: 0, y: 1, z: 0 },
+      averageCompression: groundedCount > 0 ? compression / groundedCount : 0,
+    };
+  }
+
+  private computeAverageSupportNormal(probes: TrackProbeHit[]): Vec3 {
+    let contactCount = 0;
+    let normalX = 0;
+    let normalY = 0;
+    let normalZ = 0;
+
+    for (const probe of probes) {
+      if (!probe.grounded) continue;
+      contactCount++;
+      normalX += probe.normal.x;
+      normalY += probe.normal.y;
+      normalZ += probe.normal.z;
+    }
+
+    return contactCount > 0
+      ? normalizeVec3({ x: normalX / contactCount, y: normalY / contactCount, z: normalZ / contactCount })
+      : { x: 0, y: 1, z: 0 };
+  }
+
+  private applyTrackDriveForces(entry: TankEntry, leftSide: TrackSideState, rightSide: TrackSideState, supportNormal: Vec3): void {
+    const bodyRot = entry.body.rotation();
+    const bodyForward = rotateVec({ x: 0, y: 0, z: 1 }, bodyRot);
+    const bodyRight = rotateVec({ x: 1, y: 0, z: 0 }, bodyRot);
+    const fallbackForward = normalizeVec3({ x: bodyForward.x, y: 0, z: bodyForward.z });
+    const fallbackRight = normalizeVec3({ x: bodyRight.x, y: 0, z: bodyRight.z });
+    const driveForward = normalizeOrFallback(projectOntoPlane(bodyForward, supportNormal), fallbackForward);
+    const driveRight = normalizeOrFallback(crossVec3(supportNormal, driveForward), fallbackRight);
+
+    this.applyTrackSideForce(entry, leftSide, driveForward, driveRight, entry.leftEngine, entry.leftBrake);
+    this.applyTrackSideForce(entry, rightSide, driveForward, driveRight, entry.rightEngine, entry.rightBrake);
+  }
+
+  private applyTrackSideForce(
+    entry: TankEntry,
+    sideState: TrackSideState,
+    driveForward: Vec3,
+    driveRight: Vec3,
+    engineForce: number,
+    brakeForce: number,
+  ): void {
+    if (!sideState.centroid || sideState.groundedCount <= 0) return;
+
+    const contactFactor = clamp(sideState.groundedCount / TRACK_PROBE_ZS.length, 0, 1);
+    const pointVelocity = entry.body.velocityAtPoint(sideState.centroid);
+    const forwardSpeed = dotVec3(pointVelocity, driveForward);
+    const lateralSpeed = dotVec3(pointVelocity, driveRight);
+    const brakeFactor = clamp(brakeForce / Math.max(BRAKE_FORCE, 1), 0, 1);
+    const longitudinalForce =
+      engineForce * contactFactor -
+      forwardSpeed * TRACK_BRAKE_DAMPING * brakeFactor * contactFactor;
+    const lateralForce = -lateralSpeed * TRACK_SIDE_SLIP_DAMPING * contactFactor;
+    const totalForce = addVec3(
+      scaleVec3(driveForward, longitudinalForce),
+      scaleVec3(driveRight, lateralForce),
+    );
+
+    entry.body.addForceAtPoint(totalForce, sideState.centroid, true);
+  }
+
+  private applyAntiRollForces(entry: TankEntry, leftSide: TrackSideState, rightSide: TrackSideState): void {
+    if (!leftSide.centroid || !rightSide.centroid || leftSide.groundedCount === 0 || rightSide.groundedCount === 0) return;
+
+    const rollForce = clamp(
+      (leftSide.averageCompression - rightSide.averageCompression) * TRACK_ANTI_ROLL_FORCE,
+      -TRACK_MAX_SUPPORT_FORCE * 0.35,
+      TRACK_MAX_SUPPORT_FORCE * 0.35,
+    );
+    if (Math.abs(rollForce) <= 1e-3) return;
+
+    entry.body.addForceAtPoint({ x: 0, y: -rollForce, z: 0 }, leftSide.centroid, true);
+    entry.body.addForceAtPoint({ x: 0, y: rollForce, z: 0 }, rightSide.centroid, true);
+  }
+
+  private updateSupportState(entry: TankEntry, probes = entry.probes): void {
     let contactCount = 0;
     let normalX = 0;
     let normalY = 0;
     let normalZ = 0;
     let suspensionForce = 0;
 
-    for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
-      if (!entry.vehicle.wheelIsInContact(i)) continue;
-      const ground = entry.vehicle.wheelGroundObject(i);
-      if (!ground || !this.terrainColliderHandles.has(ground.handle)) continue;
-      const normal = entry.vehicle.wheelContactNormal(i) ?? { x: 0, y: 1, z: 0 };
+    for (const probe of probes) {
+      if (!probe.grounded) continue;
       contactCount++;
-      normalX += normal.x;
-      normalY += normal.y;
-      normalZ += normal.z;
-      suspensionForce += entry.vehicle.wheelSuspensionForce(i) ?? 0;
+      normalX += probe.normal.x;
+      normalY += probe.normal.y;
+      normalZ += probe.normal.z;
+      suspensionForce += probe.suspensionForce;
     }
+
+    const averageNormal = contactCount > 0
+      ? normalizeVec3({ x: normalX / contactCount, y: normalY / contactCount, z: normalZ / contactCount })
+      : { x: 0, y: 1, z: 0 };
 
     entry.support = {
       terrainContactCount: contactCount,
-      averageNormalX: contactCount > 0 ? normalX / contactCount : 0,
-      averageNormalY: contactCount > 0 ? normalY / contactCount : 1,
-      averageNormalZ: contactCount > 0 ? normalZ / contactCount : 0,
+      averageNormalX: averageNormal.x,
+      averageNormalY: averageNormal.y,
+      averageNormalZ: averageNormal.z,
       averageSuspensionForce: contactCount > 0 ? suspensionForce / contactCount : 0,
     };
   }
@@ -563,7 +721,7 @@ export class RapierVoxelWorld {
     const yaw = eulerYXZFromQuat(q).y;
     const supportHeight = this.sampleSupportHeight(t.x, t.z, yaw);
     const desiredCenterY = supportHeight + ROOT_Y_FROM_BODY_CENTER;
-    const missingSupport = entry.support.terrainContactCount <= 1;
+    const missingSupport = entry.support.terrainContactCount <= 2;
     const embeddedLift = desiredCenterY - t.y;
     if (embeddedLift <= 0.03 && !missingSupport) return;
 
@@ -573,7 +731,8 @@ export class RapierVoxelWorld {
     entry.body.setTranslation({ x: t.x, y: t.y + lift, z: t.z }, true);
     entry.body.setLinvel({ x: v.x * 0.92, y: Math.max(0, v.y), z: v.z * 0.92 }, true);
     entry.body.wakeUp();
-    this.updateSupportState(entry);
+    entry.probes = this.sampleTrackProbes(entry);
+    this.updateSupportState(entry, entry.probes);
   }
 
   private sampleSupportHeight(x: number, z: number, yaw: number): number {
@@ -644,6 +803,51 @@ function driveCommandToForces(command: number, forwardSpeed: number, allowCounte
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function addVec3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function scaleVec3(v: Vec3, scalar: number): Vec3 {
+  return { x: v.x * scalar, y: v.y * scalar, z: v.z * scalar };
+}
+
+function dotVec3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function crossVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function lengthVec3(v: Vec3): number {
+  return Math.sqrt(dotVec3(v, v));
+}
+
+function normalizeVec3(v: Vec3): Vec3 {
+  const len = lengthVec3(v);
+  if (len <= 1e-6) return { x: 0, y: 1, z: 0 };
+  return scaleVec3(v, 1 / len);
+}
+
+function normalizeOrFallback(v: Vec3, fallback: Vec3): Vec3 {
+  const len = lengthVec3(v);
+  if (len <= 1e-6) return normalizeVec3(fallback);
+  return scaleVec3(v, 1 / len);
+}
+
+function projectOntoPlane(v: Vec3, normal: Vec3): Vec3 {
+  const amount = dotVec3(v, normal);
+  return {
+    x: v.x - normal.x * amount,
+    y: v.y - normal.y * amount,
+    z: v.z - normal.z * amount,
+  };
 }
 
 function shortestAngleDelta(target: number, current: number): number {

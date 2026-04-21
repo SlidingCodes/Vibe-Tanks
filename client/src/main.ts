@@ -19,6 +19,7 @@ import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints }
 import { connect } from './net/socket';
 import { addImpactCameraShake, createCamera, followTank, overviewCamera, updateCameraScale } from './scene/camera';
 import { createLights } from './scene/lights';
+import { CollisionDebugOverlay } from './scene/collisionDebug';
 import * as hud from './ui/hud';
 import { showLogin } from './ui/login';
 import {
@@ -59,6 +60,7 @@ scene.fog = new THREE.Fog(0x87ceeb, 60, 120);
 
 const camera = createCamera();
 const lighting = createLights(scene);
+const collisionDebug = new CollisionDebugOverlay(scene);
 
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -243,6 +245,10 @@ window.addEventListener('keydown', (ev) => {
     syncHeightmapVisibility();
     // eslint-disable-next-line no-console
     console.log(`[voxel] surface nets ${surfaceNetsVisible ? 'shown' : 'hidden'}`);
+  } else if (k === 'n' && !ev.repeat) {
+    collisionDebug.setEnabled(!collisionDebug.isEnabled());
+    // eslint-disable-next-line no-console
+    console.log(`[debug] collisions ${collisionDebug.isEnabled() ? 'shown' : 'hidden'}`);
   }
 });
 
@@ -605,6 +611,7 @@ function animate(): void {
   }
 
   voxelDebris?.update(dt, voxelGrid);
+  collisionDebug.update(myId, getAllTankMeshes(), voxelGrid);
 
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
