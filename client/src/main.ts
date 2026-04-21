@@ -646,41 +646,45 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // inputs the player has already issued — no rubber-band, no
             // soft lerp, and correct under caves / overhangs because the
             // replay runs the real KCC against the real TriMesh.
-            clientPhysics.flushDirtyChunks();
-            // Snapshot pre-reconcile predicted position so we can measure the
-            // actual correction magnitude the render smoother has to absorb.
-            const preReconcileX = predictedState.position.x;
-            const preReconcileY = predictedState.position.y;
-            const preReconcileZ = predictedState.position.z;
-            clientPhysics.restoreTankState(
-              myId,
-              tankState.position,
-              tankState.bodyRotation,
-              tankState.linVel,
-              tankState.extraVel,
-              tankState.angVel,
-            );
+            // Client-authoritative local player, Minecraft / Krunker / Source
+            // model: we do NOT snap the Rapier body to the server state on
+            // every broadcast — that's what was producing the visible jitter.
+            // Rapier prediction runs uninterrupted driven by the player's own
+            // inputs; the server state is consulted only to detect a
+            // "real" desync (wall clip, teleport, server-side correction).
+            // Small drifts self-correct as inputs continue to flow.
+            const errX = predictedState.position.x - tankState.position.x;
+            const errY = predictedState.position.y - tankState.position.y;
+            const errZ = predictedState.position.z - tankState.position.z;
+            const errMag = Math.sqrt(errX * errX + errY * errY + errZ * errZ);
+            // 3 m is comfortably above typical prediction drift (~30 cm) and
+            // normal latency-delta; anything larger is almost certainly a
+            // server-side position override (respawn handled separately above,
+            // anti-cheat rollback, clipped-into-wall rescue).
+            const HARD_RESYNC_THRESHOLD = 3.0;
             let replayTicks = 0;
-            for (let s = serverSeq + 1; s <= clientSeq; s++) {
-              const replayInput = inputBuffer[s % INPUT_BUFFER_SIZE];
-              if (!replayInput || replayInput.seq !== s) break;
-              clientPhysics.setTankInput(myId, replayInput);
-              clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
-              clientPhysics.step(CLIENT_PHYSICS_STEP);
-              replayTicks++;
+            const forcedSnap = errMag > HARD_RESYNC_THRESHOLD;
+            if (forcedSnap) {
+              clientPhysics.flushDirtyChunks();
+              clientPhysics.restoreTankState(
+                myId,
+                tankState.position,
+                tankState.bodyRotation,
+                tankState.linVel,
+                tankState.extraVel,
+                tankState.angVel,
+              );
+              clientPhysics.readbackTank(myId, predictedState);
             }
-            clientPhysics.readbackTank(myId, predictedState);
             lastReconciledSeq = serverSeq;
 
-            // Aggregate reconciliation error for the next 10 s report.
-            const rErrX = predictedState.position.x - preReconcileX;
-            const rErrY = predictedState.position.y - preReconcileY;
-            const rErrZ = predictedState.position.z - preReconcileZ;
-            const rErr = Math.sqrt(rErrX * rErrX + rErrY * rErrY + rErrZ * rErrZ);
+            // Aggregate observed divergence for the next 10 s report. We now
+            // log both the raw error magnitude (how much client drifted from
+            // server) and whether a hard snap fired.
             reconcileCount++;
-            reconcileSumErrMeters += rErr;
-            if (rErr > reconcileWorstErrMeters) reconcileWorstErrMeters = rErr;
-            if (replayTicks > reconcileWorstReplayTicks) reconcileWorstReplayTicks = replayTicks;
+            reconcileSumErrMeters += errMag;
+            if (errMag > reconcileWorstErrMeters) reconcileWorstErrMeters = errMag;
+            if (forcedSnap && replayTicks > reconcileWorstReplayTicks) reconcileWorstReplayTicks = replayTicks;
             const nowPerf = performance.now();
             if (nowPerf - reconcileWindowStartMs >= RECONCILE_REPORT_EVERY_MS) {
               const avgCm = (reconcileSumErrMeters / reconcileCount) * 100;
