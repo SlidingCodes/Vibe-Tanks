@@ -322,6 +322,15 @@ export class Room {
     }
     this.ensureFourTanks();
     this.scheduleReset();
+    // If the reset timer fired on an empty server (no human ever joined
+    // during the previous match), resetMatch flips phase to InProgress
+    // without anyone having called startLoop. The first player to
+    // connect afterwards hits addPlayer's `phase === WaitingForPlayers`
+    // guard, which is now false, so the sim interval is never created
+    // and tanks + broadcasts stay frozen. startLoop is idempotent, so
+    // calling it here is safe and guarantees the loop is alive after a
+    // reset regardless of the prior phase.
+    this.startLoop();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
@@ -366,6 +375,12 @@ export class Room {
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
       this.startMatch();
+    } else {
+      // Defensive: if the match is already InProgress (e.g. a reset
+      // cycle advanced phase on an empty server before any human
+      // connected), make sure the sim interval is actually alive.
+      // startLoop is idempotent.
+      this.startLoop();
     }
   }
 
