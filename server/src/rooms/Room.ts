@@ -201,9 +201,6 @@ export class Room {
   private tankList: TankState[] = [];
   private wireProjectiles: ActiveProjectileState[] = [];
   private wireHazards: HazardState[] = [];
-  /** Worst per-phase timings inside tickMovement across the current jitter
-   *  reporting window. Reset when the log is emitted. Temporary. */
-  private movementPhaseWorst = { setup: 0, flush: 0, applyInputs: 0, step: 0, readback: 0 };
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
@@ -992,147 +989,17 @@ export class Room {
     const simDt = 1 / SIM_TICK_RATE;
     const targetTickMs = simDt * 1000;
 
-    // Temporary instrumentation: measure sim-tick jitter on the Pi. Logs
-    // once every 10 s with the worst slip/duration and how many ticks went
-    // over a threshold. Remove once we've decided the mitigation.
-    let lastTickWallMs = performance.now();
-    let windowStartMs = lastTickWallMs;
-    let windowTickCount = 0;
-    let windowWorstSlipMs = 0;
-    let windowWorstDurationMs = 0;
-    let windowSlipOverCount = 0;
-    let windowDurOverCount = 0;
-    let windowWorstPendingChunks = 0;
-    let heartbeatCounter = 0;
-    // Per-phase worst durations inside the sim tick so we can localise the
-    // source of a 50–70 ms spike (chunk-build alone only explains ~6 ms).
-    let worstTickBotsMs = 0;
-    let worstTickMovementMs = 0;
-    let worstTickProjectilesMs = 0;
-    let worstTickHazardsMs = 0;
-    let worstTickStrikesMs = 0;
-    let worstTickInvadersMs = 0;
-    const SLIP_THRESHOLD_MS = 10;
-    const DURATION_THRESHOLD_MS = 20;
-    const REPORT_EVERY_MS = 10_000;
-
     this.simInterval = setInterval(() => {
-      const now = performance.now();
-      const slipMs = Math.max(0, now - lastTickWallMs - targetTickMs);
-      lastTickWallMs = now;
-
       // Pause simulation during leaderboard to let players admire the results
       if (this.phase === MatchPhase.Leaderboard) return;
 
       this.simTime += simDt;
-
-      const tBots0 = performance.now();
       this.tickBots(simDt);
-      const tMove0 = performance.now();
       this.tickMovement(simDt);
-      const tProj0 = performance.now();
       this.tickProjectiles(simDt);
-      const tHaz0 = performance.now();
       this.tickHazards(simDt);
-      const tStr0 = performance.now();
       this.tickScheduledStrikes();
-      const tInv0 = performance.now();
       this.tickSpaceInvaders(simDt);
-      const tEnd = performance.now();
-
-      const botsMs = tMove0 - tBots0;
-      const moveMs = tProj0 - tMove0;
-      const projMs = tHaz0 - tProj0;
-      const hazMs = tStr0 - tHaz0;
-      const strikesMs = tInv0 - tStr0;
-      const invadersMs = tEnd - tInv0;
-      if (botsMs > worstTickBotsMs) worstTickBotsMs = botsMs;
-      if (moveMs > worstTickMovementMs) worstTickMovementMs = moveMs;
-      if (projMs > worstTickProjectilesMs) worstTickProjectilesMs = projMs;
-      if (hazMs > worstTickHazardsMs) worstTickHazardsMs = hazMs;
-      if (strikesMs > worstTickStrikesMs) worstTickStrikesMs = strikesMs;
-      if (invadersMs > worstTickInvadersMs) worstTickInvadersMs = invadersMs;
-
-      const durationMs = tEnd - now;
-      const pendingChunks = this.physics.dirtyChunkCount();
-      windowTickCount++;
-      if (slipMs > windowWorstSlipMs) windowWorstSlipMs = slipMs;
-      if (durationMs > windowWorstDurationMs) windowWorstDurationMs = durationMs;
-      if (pendingChunks > windowWorstPendingChunks) windowWorstPendingChunks = pendingChunks;
-      if (slipMs > SLIP_THRESHOLD_MS) windowSlipOverCount++;
-      if (durationMs > DURATION_THRESHOLD_MS) windowDurOverCount++;
-
-      if (now - windowStartMs >= REPORT_EVERY_MS && this.players.size > 0) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[tick-jitter] ${windowTickCount} ticks, ` +
-          `worstSlip=${windowWorstSlipMs.toFixed(1)}ms over${SLIP_THRESHOLD_MS}=${windowSlipOverCount}, ` +
-          `worstDur=${windowWorstDurationMs.toFixed(1)}ms over${DURATION_THRESHOLD_MS}=${windowDurOverCount}, ` +
-          `worstPendingChunks=${windowWorstPendingChunks}, ` +
-          `players=${this.players.size}`,
-        );
-        // eslint-disable-next-line no-console
-        console.log(
-          `[phase-worst] bots=${worstTickBotsMs.toFixed(1)}ms, ` +
-          `move=${worstTickMovementMs.toFixed(1)}ms, ` +
-          `proj=${worstTickProjectilesMs.toFixed(1)}ms, ` +
-          `haz=${worstTickHazardsMs.toFixed(1)}ms, ` +
-          `strikes=${worstTickStrikesMs.toFixed(1)}ms, ` +
-          `invaders=${worstTickInvadersMs.toFixed(1)}ms`,
-        );
-        const mw = this.movementPhaseWorst;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[move-worst] setup=${mw.setup.toFixed(1)}ms, ` +
-          `flush=${mw.flush.toFixed(1)}ms, ` +
-          `apply=${mw.applyInputs.toFixed(1)}ms, ` +
-          `step=${mw.step.toFixed(1)}ms, ` +
-          `readback=${mw.readback.toFixed(1)}ms`,
-        );
-        mw.setup = 0; mw.flush = 0; mw.applyInputs = 0; mw.step = 0; mw.readback = 0;
-        heartbeatCounter++;
-        if (heartbeatCounter >= 3) {
-          heartbeatCounter = 0;
-          const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
-          const heapMb = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0);
-          let trackPts = 0;
-          for (const pts of this.trackHistory.values()) trackPts += pts.length;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[heartbeat] rss=${rssMb}MB, heap=${heapMb}MB, ` +
-            `pendingShots=${this.pendingShotTimeouts.size}, ` +
-            `scheduledStrikes=${this.scheduledStrikes.length}, ` +
-            `projectiles=${this.activeProjectiles.size}, ` +
-            `hazards=${this.activeHazards.size}, ` +
-            `trackPts=${trackPts}, ` +
-            `players=${this.players.size}, tanks=${this.tanks.size}`,
-          );
-        }
-        const chunkStats = this.physics.takeChunkBuildStats();
-        if (chunkStats.count > 0) {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[chunk-build] ${chunkStats.count} chunks this window — ` +
-            `avgRemove=${chunkStats.avgRemoveMs.toFixed(2)}ms, ` +
-            `avgMesh=${chunkStats.avgMeshMs.toFixed(2)}ms, ` +
-            `avgDesc=${chunkStats.avgDescMs.toFixed(2)}ms, ` +
-            `avgCreate=${chunkStats.avgCreateMs.toFixed(2)}ms`,
-          );
-        }
-        windowStartMs = now;
-        windowTickCount = 0;
-        windowWorstSlipMs = 0;
-        windowWorstDurationMs = 0;
-        windowSlipOverCount = 0;
-        windowDurOverCount = 0;
-        windowWorstPendingChunks = 0;
-        worstTickBotsMs = 0;
-        worstTickMovementMs = 0;
-        worstTickProjectilesMs = 0;
-        worstTickHazardsMs = 0;
-        worstTickStrikesMs = 0;
-        worstTickInvadersMs = 0;
-      }
     }, targetTickMs);
 
     this.broadcastInterval = setInterval(() => {
@@ -1256,7 +1123,6 @@ export class Room {
     // is preserved by Rapier so blast tosses, cliff drives, and jump
     // arcs "just work" through gravity + contact integration. No custom
     // airborne integrator runs in parallel.
-    const tSetup0 = performance.now();
     const cellSize = this.voxels.cellSize;
     const mapW = this.voxels.sizeX * cellSize;
     const mapH = this.voxels.sizeZ * cellSize;
@@ -1303,13 +1169,9 @@ export class Room {
     // Rebuild any chunk colliders dirtied since the last tick in one pass,
     // before KCC queries the terrain. Overlapping carves in the same tick
     // (splitter, simultaneous shots) collapse to one rebuild per chunk.
-    const tFlush0 = performance.now();
     this.physics.flushDirtyChunks();
-    const tApply0 = performance.now();
     this.physics.applyTankInputs(dt);
-    const tStep0 = performance.now();
     this.physics.step(dt);
-    const tReadback0 = performance.now();
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
@@ -1360,18 +1222,6 @@ export class Room {
         });
       }
     }
-    const tReadbackEnd = performance.now();
-    const setupMs = tFlush0 - tSetup0;
-    const flushMs = tApply0 - tFlush0;
-    const applyMs = tStep0 - tApply0;
-    const stepMs = tReadback0 - tStep0;
-    const readbackMs = tReadbackEnd - tReadback0;
-    const w = this.movementPhaseWorst;
-    if (setupMs > w.setup) w.setup = setupMs;
-    if (flushMs > w.flush) w.flush = flushMs;
-    if (applyMs > w.applyInputs) w.applyInputs = applyMs;
-    if (stepMs > w.step) w.step = stepMs;
-    if (readbackMs > w.readback) w.readback = readbackMs;
   }
 
   /** Sample pitch/roll from the voxel gradient around the tank. Y is NOT

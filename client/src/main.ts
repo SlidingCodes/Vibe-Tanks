@@ -395,16 +395,6 @@ let renderedPosX = 0, renderedPosY = 0, renderedPosZ = 0;
 let renderedYaw = 0;
 let renderSmootherPrimed = false;
 
-/** Rolling reconciliation error stats. Logged every 10 s so we can tell
- *  whether the Pi server jitter actually produces big corrections (→ the
- *  render smoother can't hide them) or tiny ones (→ something else is
- *  driving the elastic feel). */
-let reconcileCount = 0;
-let reconcileWorstErrMeters = 0;
-let reconcileSumErrMeters = 0;
-let reconcileWorstReplayTicks = 0;
-let reconcileWindowStartMs = performance.now();
-const RECONCILE_REPORT_EVERY_MS = 10_000;
 /** Scratch TankState passed to the mesh / aim pipeline each frame — same
  *  object as `predictedState` but with position + bodyRotation overridden
  *  by the smoothed render values. Avoids a per-frame allocation. */
@@ -683,9 +673,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
             // converges to zero. Because we're now measuring *true* drift,
             // this never pulls the tank backward in time.
             const SOFT_CORRECT_RATE = 0.20;
-            let replayTicks = 0;
-            const forcedSnap = sampleValid && errMag > HARD_RESYNC_THRESHOLD;
-            if (forcedSnap) {
+            if (sampleValid && errMag > HARD_RESYNC_THRESHOLD) {
               clientPhysics.flushDirtyChunks();
               clientPhysics.restoreTankState(
                 myId,
@@ -716,30 +704,6 @@ socket.on('state_update', (state: RoomStateUpdate) => {
               }
             }
             lastReconciledSeq = serverSeq;
-
-            // Aggregate observed divergence for the next 10 s report. We now
-            // log both the raw error magnitude (how much client drifted from
-            // server) and whether a hard snap fired.
-            reconcileCount++;
-            reconcileSumErrMeters += errMag;
-            if (errMag > reconcileWorstErrMeters) reconcileWorstErrMeters = errMag;
-            if (forcedSnap && replayTicks > reconcileWorstReplayTicks) reconcileWorstReplayTicks = replayTicks;
-            const nowPerf = performance.now();
-            if (nowPerf - reconcileWindowStartMs >= RECONCILE_REPORT_EVERY_MS) {
-              const avgCm = (reconcileSumErrMeters / reconcileCount) * 100;
-              const worstCm = reconcileWorstErrMeters * 100;
-              // eslint-disable-next-line no-console
-              console.log(
-                `[reconcile] ${reconcileCount} corrections, ` +
-                `avgErr=${avgCm.toFixed(1)}cm, worstErr=${worstCm.toFixed(1)}cm, ` +
-                `worstReplayTicks=${reconcileWorstReplayTicks}`,
-              );
-              reconcileCount = 0;
-              reconcileSumErrMeters = 0;
-              reconcileWorstErrMeters = 0;
-              reconcileWorstReplayTicks = 0;
-              reconcileWindowStartMs = nowPerf;
-            }
           } else if (!clientPhysics) {
             // Fallback while Rapier WASM is still loading — soft lerp.
             const dx = tankState.position.x - predictedState.position.x;
