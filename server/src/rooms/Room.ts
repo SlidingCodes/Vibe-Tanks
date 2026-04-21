@@ -1003,6 +1003,7 @@ export class Room {
     let windowSlipOverCount = 0;
     let windowDurOverCount = 0;
     let windowWorstPendingChunks = 0;
+    let heartbeatCounter = 0;
     // Per-phase worst durations inside the sim tick so we can localise the
     // source of a 50–70 ms spike (chunk-build alone only explains ~6 ms).
     let worstTickBotsMs = 0;
@@ -1089,6 +1090,24 @@ export class Room {
           `readback=${mw.readback.toFixed(1)}ms`,
         );
         mw.setup = 0; mw.flush = 0; mw.applyInputs = 0; mw.step = 0; mw.readback = 0;
+        heartbeatCounter++;
+        if (heartbeatCounter >= 3) {
+          heartbeatCounter = 0;
+          const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
+          const heapMb = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0);
+          let trackPts = 0;
+          for (const pts of this.trackHistory.values()) trackPts += pts.length;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[heartbeat] rss=${rssMb}MB, heap=${heapMb}MB, ` +
+            `pendingShots=${this.pendingShotTimeouts.size}, ` +
+            `scheduledStrikes=${this.scheduledStrikes.length}, ` +
+            `projectiles=${this.activeProjectiles.size}, ` +
+            `hazards=${this.activeHazards.size}, ` +
+            `trackPts=${trackPts}, ` +
+            `players=${this.players.size}, tanks=${this.tanks.size}`,
+          );
+        }
         const chunkStats = this.physics.takeChunkBuildStats();
         if (chunkStats.count > 0) {
           // eslint-disable-next-line no-console
