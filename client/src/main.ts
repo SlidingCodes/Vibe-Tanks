@@ -377,10 +377,10 @@ const inputBuffer: (MovementInput | null)[] = new Array(INPUT_BUFFER_SIZE).fill(
  *  and only true physics divergence appears as drift. Each slot carries
  *  its own seq stamp so we can detect ring-buffer wraparound and reject
  *  stale lookups. */
-interface PredictedSample { seq: number; x: number; y: number; z: number }
+interface PredictedSample { seq: number; x: number; y: number; z: number; yaw: number }
 const predictedPosBuffer: PredictedSample[] = Array.from(
   { length: INPUT_BUFFER_SIZE },
-  () => ({ seq: -1, x: 0, y: 0, z: 0 }),
+  () => ({ seq: -1, x: 0, y: 0, z: 0, yaw: 0 }),
 );
 /** Render-side error smoother state. `renderedPos` / `renderedYaw` are
  *  what the mesh, camera, aim raycast, and tread decal actually follow
@@ -696,12 +696,24 @@ socket.on('state_update', (state: RoomStateUpdate) => {
                 tankState.angVel,
               );
               clientPhysics.readbackTank(myId, predictedState);
-            } else if (sampleValid && errMag > 0.02) {
-              clientPhysics.softCorrectTankPosition(myId, {
-                x: -errX * SOFT_CORRECT_RATE,
-                y: -errY * SOFT_CORRECT_RATE,
-                z: -errZ * SOFT_CORRECT_RATE,
-              });
+            } else if (sampleValid) {
+              if (errMag > 0.02) {
+                clientPhysics.softCorrectTankPosition(myId, {
+                  x: -errX * SOFT_CORRECT_RATE,
+                  y: -errY * SOFT_CORRECT_RATE,
+                  z: -errZ * SOFT_CORRECT_RATE,
+                });
+              }
+              // Yaw drift correction — even 1-2° of yaw error rotates the
+              // drive vector every tick, producing fresh lateral position
+              // drift after any turning manoeuvre. Normalise to (−π, π] so
+              // we correct across the ±π wrap the short way round.
+              let yawErr = sample.yaw - tankState.bodyRotation;
+              while (yawErr > Math.PI) yawErr -= 2 * Math.PI;
+              while (yawErr < -Math.PI) yawErr += 2 * Math.PI;
+              if (Math.abs(yawErr) > 0.003) {
+                clientPhysics.softCorrectTankYaw(myId, -yawErr * SOFT_CORRECT_RATE);
+              }
             }
             lastReconciledSeq = serverSeq;
 
@@ -1134,12 +1146,15 @@ function animate(): void {
         clientPhysics.setTankInput(myId, tickInput);
         clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
         clientPhysics.step(CLIENT_PHYSICS_STEP);
-        // Snapshot the predicted position AFTER this tick's physics step so
-        // reconciliation can compare server-state(seq) against our
-        // prediction(seq) instead of against "now" (which includes lag).
+        // Snapshot the predicted transform (position + yaw) AFTER this
+        // tick's physics step so reconciliation can compare
+        // server-state(seq) against our prediction(seq) — same tick,
+        // lag cancels. Yaw included because small yaw drift rotates the
+        // drive vector and regenerates position drift every frame.
         const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
         sample.seq = clientSeq;
         clientPhysics.getTankPosition(myId, sample);
+        sample.yaw = clientPhysics.getTankYaw(myId);
         physicsAccumulator -= CLIENT_PHYSICS_STEP;
       }
       clientPhysics.readbackTank(myId, predictedState);

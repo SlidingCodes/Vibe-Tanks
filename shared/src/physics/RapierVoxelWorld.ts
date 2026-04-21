@@ -539,6 +539,25 @@ export class RapierVoxelWorld {
     return true;
   }
 
+  /** Authoritative yaw of the tank (same source of truth the drive pipeline
+   *  uses). Returns NaN when the tank is unknown. */
+  getTankYaw(id: PlayerId): number {
+    const entry = this.tanks.get(id);
+    if (!entry) return NaN;
+    return entry.yaw;
+  }
+
+  /** Add a small yaw delta directly to the authoritative yaw. Client-side
+   *  drift correction analogue to softCorrectTankPosition — bleeds out
+   *  rotation divergence over a few broadcasts. A tiny yaw error left
+   *  uncorrected rotates the drive direction every tick, so forward input
+   *  keeps generating fresh lateral drift after turning manoeuvres. */
+  softCorrectTankYaw(id: PlayerId, deltaYaw: number): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.yaw += deltaYaw;
+  }
+
   /** Add a velocity kick to the blast buffer — knockback from shell
    *  blasts, future vehicle ramming, etc. Decays exponentially each
    *  tick (see BLAST_DECAY_TAU). `velocityDelta` is m/s, identical to
