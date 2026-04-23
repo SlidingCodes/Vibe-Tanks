@@ -58,7 +58,10 @@
     #scoreboard {
       position: absolute; top: 40px; right: 6px;
       font-size: 14px; text-align: right; text-shadow: 0 0 6px #000;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
     }
+    #scoreboard div { display: flex; align-items: center; gap: 6px; }
+    .sb-flag { height: 11px; width: auto; border-radius: 1px; box-shadow: 0 0 3px rgba(0,0,0,0.4); }
     #weapon-hud {
       position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
       display: flex; flex-wrap: wrap; justify-content: center; gap: 0;
@@ -345,6 +348,7 @@
     
     .lb-rank { width: 60px; opacity: 0.5; }
     .lb-name { font-weight: bold; letter-spacing: 1px; }
+    .lb-flag { height: 16px; width: auto; vertical-align: middle; margin-right: 10px; border-radius: 1px; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
     .lb-kills { color: #4af; text-align: center; width: 80px; }
     .lb-deaths { color: #f44; text-align: center; width: 80px; }
     .lb-score { color: #fff; text-align: right; width: 100px; font-weight: bold; }
