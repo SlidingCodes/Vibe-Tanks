@@ -18,6 +18,7 @@ import {
   Vec3,
   WeaponDefinition,
 } from '@shared/types/index';
+import countries from '@shared/countries.json';
 import {
   TANK_MAX_HP,
   MIN_PLAYERS_TO_START,
@@ -244,7 +245,7 @@ export class Room {
     this.phase = MatchPhase.Leaderboard;
     // Set matchResetAt so clients see a 10s countdown
     this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
-    
+
     // Broadcast the room snapshot so clients see the Leaderboard phase
     // and the final scores/kills/deaths.
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
@@ -321,7 +322,7 @@ export class Room {
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
     if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
@@ -341,7 +342,7 @@ export class Room {
       burningOwner: null,
     });
 
-    this.spawnTank(playerId, playerName, color);
+    this.spawnTank(playerId, playerName, color, flagId);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
@@ -409,7 +410,7 @@ export class Room {
     }
   }
 
-  private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
     const pos = this.findSpawnPosition();
     let safeColor: string;
     if (isValidHex(color)) {
@@ -445,6 +446,7 @@ export class Room {
       shieldActive: false,
       shieldAvailable: true,
       shieldTimeRemaining: 0,
+      flagId,
       burning: false,
     };
     this.tanks.set(playerId, tank);
@@ -553,7 +555,7 @@ export class Room {
 
   private ensureFourTanks(): void {
     const TARGET_TANKS = 4;
-    
+
     // Remove bots if we have too many tanks
     if (this.players.size > TARGET_TANKS) {
       const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
@@ -571,8 +573,13 @@ export class Room {
 
   private addBot(): void {
     const botId = `bot_${Math.random().toString(36).substr(2, 9)}`;
-    const botNames = ['Bit', 'Byte', 'Kernel', 'Shell', 'Buffer', 'Pointer', 'Array', 'Struct'];
-    const playerName = botNames[Math.floor(Math.random() * botNames.length)];
+    const botNamesPool = ['Pisa', 'Titanium', 'Blin', 'Jikeh'];
+    const usedNames = Array.from(this.tanks.values()).map((t) => t.playerName);
+    const availableNames = botNamesPool.filter((n) => !usedNames.includes(n));
+
+    const playerName = availableNames.length > 0
+      ? availableNames[Math.floor(Math.random() * availableNames.length)]
+      : `Bot_${Math.random().toString(36).substr(2, 4)}`;
 
     this.players.set(botId, {
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
@@ -588,7 +595,16 @@ export class Room {
       burningOwner: null,
     });
 
-    this.spawnTank(botId, playerName);
+    // Pick a unique flag for the bot from the full countries list
+    const usedFlags = Array.from(this.tanks.values()).map(t => t.flagId?.toLowerCase()).filter(Boolean);
+    const countryCodes = Object.keys(countries).map(k => k.toLowerCase());
+    const availableFlags = countryCodes.filter(f => !usedFlags.includes(f));
+    
+    const randomFlag = availableFlags.length > 0 
+      ? availableFlags[Math.floor(Math.random() * availableFlags.length)]
+      : countryCodes[Math.floor(Math.random() * countryCodes.length)];
+
+    this.spawnTank(botId, playerName, undefined, randomFlag);
     const tank = this.tanks.get(botId)!;
     this.io.to(this.id).emit('player_spawned', tank);
     this.io.to(this.id).emit('match_event', {
@@ -782,11 +798,11 @@ export class Room {
     const damageTotals: DamageTotals = new Map();
     const carveTerrain = segment.reason === 'impact'
       ? applyImpact({
-          point: segment.endPoint,
-          blastRadius: weapon.blastRadius,
-          damage: weapon.damage,
-          terrainDamage: weapon.terrainDamage,
-        }, this.getTankList(), damageTotals)
+        point: segment.endPoint,
+        blastRadius: weapon.blastRadius,
+        damage: weapon.damage,
+        terrainDamage: weapon.terrainDamage,
+      }, this.getTankList(), damageTotals)
       : false;
 
     const result = createShotResult(tank.playerId, weapon.id, [
@@ -1500,12 +1516,12 @@ export class Room {
         // Predictive Firing Logic - Initiative Enhancement
         const weaponIndex = player.botWeaponIndex ?? 0;
         const weapon = WEAPONS[weaponIndex];
-        
+
         // Only run simulation if cooldown is ready to save performance
         if (now - player.lastFireTime >= weapon.cooldown) {
           // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
-          
+
           // Fire! The jitter ensures they only hit 40-60% of the time.
           this.performFire(tank, player, weapon, targetTank.position, result);
           player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);

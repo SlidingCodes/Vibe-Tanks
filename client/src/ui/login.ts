@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import randomNames from './randomNames.json';
+import countries from '@shared/countries.json';
 import { getTankTextures, configureHullMaterial } from '../entities/tankTextures';
 import {
   buildHullGeometry,
@@ -7,6 +8,7 @@ import {
   buildBarrelGeometry,
   buildRoadWheelsGeometry,
 } from '../entities/tankGeometry';
+import { FLAGS, createFlagMesh } from '../entities/flag';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -16,6 +18,7 @@ const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4']
  *  outer showLogin() flow can retarget the team tint and tear down cleanly. */
 function createTankPreview(canvas: HTMLCanvasElement): {
   setColor: (hex: string) => void;
+  setFlag: (id: string) => void;
   stop: () => void;
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -137,7 +140,17 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   );
   barrel.position.y = 0.2;
   barrel.castShadow = true;
+  barrel.castShadow = true;
   turretGroup.add(barrel);
+  
+  let currentFlag: THREE.Group | null = null;
+  const setFlag = (id: string) => {
+    if (currentFlag) group.remove(currentFlag);
+    currentFlag = createFlagMesh(id);
+    currentFlag.position.set(-0.7, 0.56, -0.6); // sit on left fender
+    group.add(currentFlag);
+  };
+
   group.add(turretGroup);
 
   // Tread textures are cloned so their `.offset.y` can advance without
@@ -206,6 +219,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       bodyMat.color.set(hex);
       turretMat.color.set(hex);
     },
+    setFlag,
     stop: () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
@@ -226,24 +240,46 @@ function pickRandomName(): string {
 export interface LoginResult {
   name: string;
   color: string;
+  flagId: string;
 }
 
 /** Block until the player submits a name + color. */
 export function showLogin(): Promise<LoginResult> {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const overlay = document.getElementById('login-overlay') as HTMLDivElement;
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
+    const flagSwatches = document.getElementById('flag-swatches') as HTMLDivElement;
+    const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
     nameInput.value = pickRandomName();
     nameInput.placeholder = pickRandomName();
 
+    // Try to auto-detect country via IP with a 2s timeout
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+      clearTimeout(tid);
+      const data = await res.json();
+      if (data && data.country_code) {
+        const detected = data.country_code.toLowerCase();
+        if (FLAGS.find((f) => f.id === detected)) {
+          selectedFlag = detected;
+        }
+      }
+    } catch (e) {
+      // Fallback to random is already set
+    }
+
     const preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
+    preview.setFlag(selectedFlag);
 
     swatches.innerHTML = '';
     PALETTE.forEach((hex) => {
@@ -260,13 +296,48 @@ export function showLogin(): Promise<LoginResult> {
       swatches.appendChild(el);
     });
 
+    flagSwatches.innerHTML = '';
+    FLAGS.forEach((f) => {
+      const el = document.createElement('div');
+      el.className = 'flag-swatch';
+      el.title = f.name;
+      el.dataset.code = f.id;
+      el.dataset.name = f.name.toLowerCase();
+      el.style.backgroundImage = `url(https://flagcdn.com/w80/${f.id.toLowerCase()}.png)`;
+
+      if (f.id === selectedFlag) el.classList.add('selected');
+      el.addEventListener('click', () => {
+        selectedFlag = f.id;
+        flagSwatches.querySelectorAll('.flag-swatch').forEach((e) => e.classList.remove('selected'));
+        el.classList.add('selected');
+        preview.setFlag(f.id);
+      });
+      flagSwatches.appendChild(el);
+    });
+
+    const onFilterFlags = () => {
+      const query = flagSearch.value.toLowerCase();
+      const items = flagSwatches.querySelectorAll('.flag-swatch');
+      items.forEach((item) => {
+        const el = item as HTMLDivElement;
+        const name = el.dataset.name || '';
+        if (name.includes(query)) {
+          el.style.display = 'block';
+        } else {
+          el.style.display = 'none';
+        }
+      });
+    };
+    flagSearch.addEventListener('input', onFilterFlags);
+
     const done = () => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
       overlay.style.display = 'none';
       submit.removeEventListener('click', done);
       nameInput.removeEventListener('keydown', onKey);
+      flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected });
+      resolve({ name, color: selected, flagId: selectedFlag });
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };
 

@@ -8,6 +8,7 @@
     "outDir": "dist",
     "rootDir": "..",
     "baseUrl": ".",
+    "resolveJsonModule": true,
     "paths": {
       "@shared/*": ["../shared/src/*"]
     }

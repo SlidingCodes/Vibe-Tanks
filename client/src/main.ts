@@ -220,7 +220,7 @@ const socket = connect();
 
 socket.on('connect', () => {
   myId = socket.id!;
-  socket.emit('join_room', { playerName: login.name, color: login.color });
+  socket.emit('join_room', { playerName: login.name, color: login.color, flagId: login.flagId });
   hud.showWaiting(true);
 });
 

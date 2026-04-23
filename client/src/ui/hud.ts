@@ -121,10 +121,11 @@ export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): vo
   leaderboardBody.innerHTML = sorted
     .map((t, i) => {
       const name = escapeHtml(t.playerName ?? t.playerId.slice(0, 6));
+      const flagImg = t.flagId ? `<img src="https://flagcdn.com/w40/${t.flagId.toLowerCase()}.png" class="lb-flag" alt="">` : '';
       return `
         <tr>
           <td class="lb-rank">#${i + 1}</td>
-          <td class="lb-name" style="color:${t.color}">${name}</td>
+          <td class="lb-name" style="color:${t.color}">${flagImg}${name}</td>
           <td class="lb-kills">${t.kills || 0}</td>
           <td class="lb-deaths">${t.deaths || 0}</td>
           <td class="lb-score">${Math.round(t.score)}</td>
@@ -171,7 +172,8 @@ export function updateScoreboard(tanks: TankState[]): void {
     .map((t) => {
       const name = escapeHtml(t.playerName ?? t.playerId.slice(0, 6));
       const status = t.alive ? '' : ' [DEAD]';
-      return `<div style="color:${t.color}">${name}: ${t.score}${status}</div>`;
+      const flagImg = t.flagId ? `<img src="https://flagcdn.com/w20/${t.flagId.toLowerCase()}.png" class="sb-flag" alt="">` : '';
+      return `<div style="color:${t.color}">${flagImg}${name}: ${t.score}${status}</div>`;
     })
     .join('');
 }

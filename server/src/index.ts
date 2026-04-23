@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
-      mainRoom.addPlayer(socket, data.playerName, data.color);
+      mainRoom.addPlayer(socket, data.playerName, data.color, data.flagId);
       console.log(`Player ${data.playerName} (${socket.id}) joined room`);
     });
 

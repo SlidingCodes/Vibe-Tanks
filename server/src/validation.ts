@@ -19,6 +19,7 @@ const hexColor = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
 export const JoinRoomSchema = z.object({
   playerName: z.string().min(1).max(32),
   color: hexColor.optional(),
+  flagId: z.string().optional(),
 });
 
 export const MovementInputSchema = z.object({
