@@ -37,7 +37,6 @@ import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
   isShiftHeld, consumeRightClick,
-  setAimBasis, setAimBounds, initAimPoint, isAimInitialized, isPointerLocked, resetAim,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -442,7 +441,6 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   const worldW = voxelGrid.sizeX * voxelGrid.cellSize;
   const worldH = voxelGrid.sizeZ * voxelGrid.cellSize;
   updateSceneScale(worldW, worldH);
-  setAimBounds(0, worldW, 0, worldH);
   sea.setMapBounds(worldW, worldH);
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
@@ -759,10 +757,6 @@ socket.on('state_update', (state: RoomStateUpdate) => {
       hud.hideDeathScreen();
       playRespawn();
       wasDead = false;
-      // Respawn teleports the tank; drop the world aim so the main loop's
-      // lazy init re-plants the reticle 10 m in front of the new spawn
-      // position instead of leaving it at the death site.
-      resetAim();
     }
   }
 });
@@ -1269,22 +1263,6 @@ function animate(): void {
       predictedState.turretRotation,
       predictedState.barrelPitch,
     );
-
-    // World-space aim needs the camera's orientation on the XZ plane so
-    // mouse-right = camera-right and mouse-up = camera-forward. Read the
-    // camera's basis directly from its world matrix (column 0 = right,
-    // column 2 = back, forward = -back). Re-normalise after flattening.
-    {
-      const me = camera.matrixWorld.elements;
-      const rx = me[0], rz = me[2];
-      const rLen = Math.hypot(rx, rz) || 1;
-      const fx = -me[8], fz = -me[10];
-      const fLen = Math.hypot(fx, fz) || 1;
-      setAimBasis(rx / rLen, rz / rLen, fx / fLen, fz / fLen);
-      if (isPointerLocked() && !isAimInitialized()) {
-        initAimPoint(myTankMesh.group.position.x, myTankMesh.group.position.z);
-      }
-    }
   } else {
     hideTrajectoryPreview();
     if (killcamKillerId) {

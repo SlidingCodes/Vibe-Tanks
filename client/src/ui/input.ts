@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { MovementInput } from '@shared/types/index';
 import { isFirstPerson } from '../scene/camera';
-import { getTerrainHeight } from '../scene/terrain';
 
 const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
@@ -54,106 +53,15 @@ export function isShiftHeld(): boolean {
 const mouse = new THREE.Vector2();
 let mouseDown = false;
 let rightMousePressed = false;
-let pointerLocked = false;
-
-// ── World-space aim (used while pointer-locked) ──
-// Mouse deltas drive an absolute aim point on the world XZ plane instead
-// of a screen-space virtual cursor. The target's Y is resampled from the
-// terrain each read, so carves reveal/hide it correctly. Sensitivity is
-// in metres per mouse pixel — 0.05 feels right for a typical 800-dpi
-// mouse on a 200x200 map and will be exposed in settings later.
-const AIM_SENS_METRES_PER_PIXEL = 0.05;
-const aimWorld = { x: 0, z: 0 };
-let aimInitialized = false;
-// Camera basis on the XZ plane. main.ts refreshes this every frame after
-// the follow camera has moved so the mouse→world mapping tracks whatever
-// the camera is actually pointing at (tactical, classic, FPV, killcam).
-const aimCamRight = { x: 1, z: 0 };
-const aimCamForward = { x: 0, z: 1 };
-// World bounds for the aim point. Seeded from the voxel grid at snapshot
-// time so the reticle cannot leave the map; huge defaults so the
-// clamp is a no-op until bounds are actually pushed.
-let aimMinX = -1e9, aimMaxX = 1e9;
-let aimMinZ = -1e9, aimMaxZ = 1e9;
-
-function getCanvas(): HTMLCanvasElement | null {
-  return document.querySelector('canvas');
-}
-
-document.addEventListener('pointerlockchange', () => {
-  pointerLocked = document.pointerLockElement !== null;
-});
 
 window.addEventListener('mousemove', (e) => {
-  if (pointerLocked) {
-    if (!aimInitialized) return;
-    // Mouse-right = camera-right; mouse-up = camera-forward. movementY is
-    // positive when the mouse moves down the screen, which should pull
-    // the aim point closer to the player, so we negate it before
-    // projecting onto the forward axis.
-    const rightStep = e.movementX * AIM_SENS_METRES_PER_PIXEL;
-    const forwardStep = -e.movementY * AIM_SENS_METRES_PER_PIXEL;
-    aimWorld.x += aimCamRight.x * rightStep + aimCamForward.x * forwardStep;
-    aimWorld.z += aimCamRight.z * rightStep + aimCamForward.z * forwardStep;
-    aimWorld.x = Math.max(aimMinX, Math.min(aimMaxX, aimWorld.x));
-    aimWorld.z = Math.max(aimMinZ, Math.min(aimMaxZ, aimWorld.z));
-    return;
-  }
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
 });
 
-/** Refresh the camera basis used to convert mouse deltas into world
- *  displacement. Both vectors should be projected onto the XZ plane and
- *  normalised. Called from main.ts once per frame after followTank(). */
-export function setAimBasis(
-  rightX: number, rightZ: number,
-  forwardX: number, forwardZ: number,
-): void {
-  aimCamRight.x = rightX; aimCamRight.z = rightZ;
-  aimCamForward.x = forwardX; aimCamForward.z = forwardZ;
-}
-
-/** Clamp the aim point inside an axis-aligned rectangle on the XZ plane.
- *  Called once per map (from the voxel snapshot handler). */
-export function setAimBounds(minX: number, maxX: number, minZ: number, maxZ: number): void {
-  aimMinX = minX; aimMaxX = maxX;
-  aimMinZ = minZ; aimMaxZ = maxZ;
-}
-
-/** Reset the world aim to a point `distance` metres in front of the given
- *  position (using the current camera-forward). Call this on first spawn,
- *  respawn, and whenever the player should "find" their reticle again. */
-export function initAimPoint(px: number, pz: number, distance = 10): void {
-  aimWorld.x = Math.max(aimMinX, Math.min(aimMaxX, px + aimCamForward.x * distance));
-  aimWorld.z = Math.max(aimMinZ, Math.min(aimMaxZ, pz + aimCamForward.z * distance));
-  aimInitialized = true;
-}
-
-export function isAimInitialized(): boolean {
-  return aimInitialized;
-}
-
-export function resetAim(): void {
-  aimInitialized = false;
-}
-
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0) {
-    // While unlocked, only a click on the game canvas itself grabs the
-    // pointer lock — clicks on the login overlay, weapon chips, and the
-    // settings panel must reach their own handlers unmolested. The lock
-    // click does not also fire, so players don't blow themselves up on
-    // re-focus.
-    if (!pointerLocked) {
-      const c = getCanvas();
-      if (c && e.target === c) c.requestPointerLock?.();
-      return;
-    }
-    mouseDown = true;
-  } else if (e.button === 2) {
-    rightMousePressed = true;
-  }
+  if (e.button === 0) mouseDown = true;
+  else if (e.button === 2) rightMousePressed = true;
 });
 
 window.addEventListener('mouseup', (e) => {
@@ -161,10 +69,6 @@ window.addEventListener('mouseup', (e) => {
 });
 
 window.addEventListener('contextmenu', (e) => e.preventDefault());
-
-export function isPointerLocked(): boolean {
-  return pointerLocked;
-}
 
 export function getMouseNDC(): THREE.Vector2 {
   return mouse;
@@ -276,13 +180,6 @@ function shapedNDC(raw: THREE.Vector2): THREE.Vector2 {
 }
 
 export function getAimTarget(camera: THREE.Camera, terrain: THREE.Object3D | null, tankY: number): THREE.Vector3 | null {
-  // Pointer-locked path: the mouse drives a world-space point directly, so
-  // we skip the NDC raycast entirely. Y is resampled from the terrain so
-  // the reticle tracks carves and rising ground without any camera work.
-  if (pointerLocked && aimInitialized) {
-    return new THREE.Vector3(aimWorld.x, getTerrainHeight(aimWorld.x, aimWorld.z), aimWorld.z);
-  }
-
   const ndc = isFirstPerson() ? shapedNDC(mouse) : mouse;
   raycaster.setFromCamera(ndc, camera);
 
