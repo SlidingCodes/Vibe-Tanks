@@ -166,9 +166,12 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   let msmokeSpawnCursor = 0;
 
   // ── Muzzle Flash ──
+  // Warm orange-white punch right at the barrel. Short lifetime + fast
+  // scale-up in the update loop gives the "gunpowder pop" read without
+  // the cartoon yellow ball the old sphere produced.
   const flashGeom = new THREE.SphereGeometry(1, 8, 8);
   const flashMat = new THREE.MeshBasicMaterial({
-    color: 0xffdd44,
+    color: 0xffb050,
     transparent: true,
     opacity: 1,
   });
@@ -412,35 +415,38 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   }
 
   function spawnMuzzleFX(pos: THREE.Vector3, direction: THREE.Vector3): void {
-    // 1. Flash
+    // 1. Flash — slightly bigger seed size so the scale-up in the update
+    //    loop feels like a real muzzle crack rather than a tiny spark.
     const fSlot = flashSpawnCursor;
     flashSpawnCursor = (flashSpawnCursor + 1) % MAX_FLASH;
     const fs = flashStates[fSlot];
     fs.px = pos.x; fs.py = pos.y; fs.pz = pos.z;
-    fs.size = 0.8;
+    fs.size = 1.0;
     fs.life = FLASH_LIFETIME;
     fs.active = true;
 
-    // 2. Smoke
-    const smokeCount = 4 + Math.floor(Math.random() * 3);
+    // 2. Smoke — a forward cone of puffs. More particles (6–8) with
+    //    higher forward velocity so the smoke jets out of the barrel
+    //    before drifting up, matching real-tank footage.
+    const smokeCount = 6 + Math.floor(Math.random() * 3);
     for (let i = 0; i < smokeCount; i++) {
       const sSlot = msmokeSpawnCursor;
       msmokeSpawnCursor = (msmokeSpawnCursor + 1) % MAX_MUZZLE_SMOKE;
       const ss = msmokeStates[sSlot];
-      
-      ss.px = pos.x + (Math.random() - 0.5) * 0.2;
-      ss.py = pos.y + (Math.random() - 0.5) * 0.2;
-      ss.pz = pos.z + (Math.random() - 0.5) * 0.2;
-      
-      const speed = 1.0 + Math.random() * 2.5;
-      ss.vx = direction.x * speed + (Math.random() - 0.5) * 0.5;
-      ss.vy = direction.y * speed + 0.5 + Math.random() * 0.5;
-      ss.vz = direction.z * speed + (Math.random() - 0.5) * 0.5;
-      
+
+      ss.px = pos.x + (Math.random() - 0.5) * 0.15;
+      ss.py = pos.y + (Math.random() - 0.5) * 0.15;
+      ss.pz = pos.z + (Math.random() - 0.5) * 0.15;
+
+      const speed = 2.5 + Math.random() * 3.0;
+      ss.vx = direction.x * speed + (Math.random() - 0.5) * 0.4;
+      ss.vy = direction.y * speed + 0.3 + Math.random() * 0.4;
+      ss.vz = direction.z * speed + (Math.random() - 0.5) * 0.4;
+
       ss.rx = Math.random() * Math.PI;
       ss.ry = Math.random() * Math.PI;
-      ss.size = MUZZLE_SMOKE_SIZE * (0.8 + Math.random() * 1.5);
-      ss.life = MUZZLE_SMOKE_LIFETIME * (0.7 + Math.random() * 0.6);
+      ss.size = MUZZLE_SMOKE_SIZE * (0.7 + Math.random() * 1.4);
+      ss.life = MUZZLE_SMOKE_LIFETIME * (0.8 + Math.random() * 0.6);
       ss.active = true;
     }
   }
@@ -725,13 +731,15 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
         dummy.updateMatrix();
         msmokeMesh.setMatrixAt(i, dummy.matrix);
 
-        // Starts white-bright (gunpowder flash smoke) then drifts to grey.
+        // Color ramp: fresh puff picks up flash illumination (warm
+        // beige), drifts to cool dark grey as it ages. No more fully
+        // white smoke — real muzzle smoke reads dirty against the sky.
         const warm = scale; // 1 fresh → 0 fading
         const o = i * 4;
-        msmokeRgba[o]     = 0.72 + 0.23 * warm;
-        msmokeRgba[o + 1] = 0.72 + 0.23 * warm;
-        msmokeRgba[o + 2] = 0.72 + 0.23 * warm;
-        msmokeRgba[o + 3] = scale * 0.9;
+        msmokeRgba[o]     = 0.42 + 0.38 * warm;
+        msmokeRgba[o + 1] = 0.40 + 0.32 * warm;
+        msmokeRgba[o + 2] = 0.36 + 0.26 * warm;
+        msmokeRgba[o + 3] = scale * 0.85;
       }
       msmokeMesh.instanceMatrix.needsUpdate = true;
       msmokeRgbaAttr.needsUpdate = true;
@@ -749,7 +757,9 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
           continue;
         }
         dummy.position.set(s.px, s.py, s.pz);
-        dummy.scale.setScalar(s.size * (1 + (1 - s.life / FLASH_LIFETIME) * 2));
+        // Sharper punch: grows 3.5x during the 80ms lifetime instead of
+        // 3x, so the flash reads as a crack rather than a swelling ball.
+        dummy.scale.setScalar(s.size * (1 + (1 - s.life / FLASH_LIFETIME) * 2.5));
         dummy.updateMatrix();
         flashMesh.setMatrixAt(i, dummy.matrix);
       }

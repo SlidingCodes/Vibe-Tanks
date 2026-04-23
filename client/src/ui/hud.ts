@@ -219,10 +219,12 @@ export function setCooldown(fraction: number): void {
   const ready = f >= 1;
   cooldownRing.style.setProperty('--cd-scale', ready ? '0' : (1 - f).toFixed(3));
   cooldownRing.style.setProperty('--cd-opacity', ready ? '0' : '1');
-  // Interpolate orange (255,170,0) → white (255,255,255) as cooldown fills.
-  const g = Math.round(170 + (255 - 170) * f);
-  const b = Math.round(0 + 255 * f);
-  cooldownRing.style.setProperty('--cd-color', `rgb(255,${g},${b})`);
+  // Interpolate dark bronze (140,100,40) → warm khaki (232,196,100) as
+  // the round finishes cooling down. No more cartoon yellow→white flash.
+  const r = Math.round(140 + (232 - 140) * f);
+  const g = Math.round(100 + (196 - 100) * f);
+  const b = Math.round(40 + (100 - 40) * f);
+  cooldownRing.style.setProperty('--cd-color', `rgb(${r},${g},${b})`);
 }
 
 function getWeaponRoleLabel(weapon: WeaponDefinition): string {
