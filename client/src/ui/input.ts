@@ -89,11 +89,14 @@ window.addEventListener('mousemove', (e) => {
 
 window.addEventListener('mousedown', (e) => {
   if (e.button === 0) {
-    // While unlocked, the first left-click only grabs the pointer lock —
-    // it doesn't also fire, otherwise players would blow themselves up on
-    // every focus/unfocus. Once locked, clicks fire as normal.
+    // While unlocked, only a click on the game canvas itself grabs the
+    // pointer lock — clicks on the login overlay, weapon chips, and the
+    // settings panel must reach their own handlers unmolested. The lock
+    // click does not also fire, so players don't blow themselves up on
+    // re-focus.
     if (!pointerLocked) {
-      getCanvas()?.requestPointerLock?.();
+      const c = getCanvas();
+      if (c && e.target === c) c.requestPointerLock?.();
       return;
     }
     mouseDown = true;
