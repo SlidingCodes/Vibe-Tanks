@@ -46,6 +46,7 @@ export function createFlagMesh(flagId: string): THREE.Group {
   });
   const flag = new THREE.Mesh(flagGeo, flagMat);
   flag.position.set(0, 1.0, 0);
+  flag.rotation.y = Math.PI; // Rotate 180deg so it points outward (to -X) while keeping UVs correct at the pole
   flag.castShadow = true;
   group.add(flag);
 

@@ -444,8 +444,9 @@ export function tickTankEffects(dt: number): void {
         const speed = flag.userData.wobbleSpeed || 2;
         const phase = flag.userData.wobblePhase || 0;
         const t = performance.now() * 0.001 * speed + phase;
-        // Simple sine wobble for flag waving
-        flag.rotation.y = Math.sin(t) * 0.2;
+        // Simple sine wobble for flag waving - ADD to base rotation
+        const baseRotationY = Math.PI; // from flag.ts
+        flag.rotation.y = baseRotationY + Math.sin(t) * 0.2;
         flag.rotation.z = Math.cos(t * 1.5) * 0.1;
       }
     }
