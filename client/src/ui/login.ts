@@ -48,8 +48,8 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     if (w <= 720) {
-      camera.position.set(0, 2.2, 5.4);
-      camera.lookAt(0, 0.35, 0);
+      camera.position.set(0, 2.6, 7.2);
+      camera.lookAt(0, 0.4, 0);
     } else {
       camera.position.set(2.0, 1.7, 5.5);
       camera.lookAt(1, 0.7, 0);
