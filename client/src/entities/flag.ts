@@ -1,125 +1,24 @@
 import * as THREE from 'three';
 
-export const FLAGS = [
-  { id: 'italy', name: 'Italy' },
-  { id: 'spain', name: 'Spain' },
-  { id: 'france', name: 'France' },
-  { id: 'germany', name: 'Germany' },
-  { id: 'usa', name: 'USA' },
-  { id: 'uk', name: 'UK' },
-  { id: 'japan', name: 'Japan' },
-];
+import countries from './countries.json';
 
-const flagTextureCache: Map<string, THREE.CanvasTexture> = new Map();
+export const FLAGS = Object.entries(countries).map(([id, name]) => ({
+  id: id.toLowerCase(),
+  name: name as string,
+})).sort((a, b) => a.name.localeCompare(b.name));
 
-export function getFlagTexture(flagId: string): THREE.CanvasTexture {
+const flagTextureCache: Map<string, THREE.Texture> = new Map();
+
+export function getFlagTexture(flagId: string): THREE.Texture {
   if (flagTextureCache.has(flagId)) return flagTextureCache.get(flagId)!;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 85;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Could not get canvas context');
-
-  // Default white background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  switch (flagId) {
-    case 'italy':
-      ctx.fillStyle = '#008d46';
-      ctx.fillRect(0, 0, 42, 85);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(42, 0, 44, 85);
-      ctx.fillStyle = '#d2232c';
-      ctx.fillRect(86, 0, 42, 85);
-      break;
-    case 'spain':
-      ctx.fillStyle = '#aa151b';
-      ctx.fillRect(0, 0, 128, 21);
-      ctx.fillStyle = '#f1bf00';
-      ctx.fillRect(0, 21, 128, 43);
-      ctx.fillStyle = '#aa151b';
-      ctx.fillRect(0, 64, 128, 21);
-      break;
-    case 'france':
-      ctx.fillStyle = '#002395';
-      ctx.fillRect(0, 0, 42, 85);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(42, 0, 44, 85);
-      ctx.fillStyle = '#ed2939';
-      ctx.fillRect(86, 0, 42, 85);
-      break;
-    case 'germany':
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, 128, 28);
-      ctx.fillStyle = '#dd0000';
-      ctx.fillRect(0, 28, 128, 29);
-      ctx.fillStyle = '#ffce00';
-      ctx.fillRect(0, 57, 128, 28);
-      break;
-    case 'usa':
-      // Red/White stripes
-      for (let i = 0; i < 13; i++) {
-        ctx.fillStyle = i % 2 === 0 ? '#b22234' : '#ffffff';
-        ctx.fillRect(0, (i * 85) / 13, 128, 85 / 13 + 1);
-      }
-      // Blue canton
-      ctx.fillStyle = '#3c3b6e';
-      ctx.fillRect(0, 0, 51, 46);
-      // Stars (simple dots)
-      ctx.fillStyle = '#ffffff';
-      for (let y = 0; y < 9; y++) {
-        for (let x = 0; x < 11; x++) {
-          if ((x + y) % 2 === 0) {
-            ctx.fillRect(4 + x * 4, 4 + y * 4.5, 2, 2);
-          }
-        }
-      }
-      break;
-    case 'uk':
-      ctx.fillStyle = '#012169';
-      ctx.fillRect(0, 0, 128, 85);
-      // White diagonals
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 12;
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(128, 85); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(128, 0); ctx.lineTo(0, 85); ctx.stroke();
-      // Red diagonals
-      ctx.strokeStyle = '#c8102e';
-      ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(128, 85); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(128, 0); ctx.lineTo(0, 85); ctx.stroke();
-      // White cross
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(52, 0, 24, 85);
-      ctx.fillRect(0, 32, 128, 21);
-      // Red cross
-      ctx.fillStyle = '#c8102e';
-      ctx.fillRect(58, 0, 12, 85);
-      ctx.fillRect(0, 38, 128, 9);
-      break;
-    case 'japan':
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, 128, 85);
-      ctx.fillStyle = '#bc002d';
-      ctx.beginPath();
-      ctx.arc(64, 42.5, 25, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    default:
-      // Checkered placeholder
-      ctx.fillStyle = '#ff00ff';
-      ctx.fillRect(0, 0, 64, 42);
-      ctx.fillRect(64, 42, 64, 43);
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(64, 0, 64, 42);
-      ctx.fillRect(0, 42, 64, 43);
-      break;
-  }
-
-  const tex = new THREE.CanvasTexture(canvas);
+  // Use FlagCDN for all countries. Quality 'w160' is enough for a small flag.
+  // We use a TextureLoader to load the external image.
+  const loader = new THREE.TextureLoader();
+  const url = `https://flagcdn.com/w160/${flagId.toLowerCase()}.png`;
+  const tex = loader.load(url);
   tex.colorSpace = THREE.SRGBColorSpace;
+  
   flagTextureCache.set(flagId, tex);
   return tex;
 }

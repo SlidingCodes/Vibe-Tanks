@@ -147,7 +147,12 @@
     }
     .color-swatch:hover { transform: scale(1.08); }
     .color-swatch.selected { border-color: #fff; }
-    #flag-swatches { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px; }
+    #flag-swatches {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px;
+      max-height: 140px; overflow-y: auto; padding-right: 4px;
+    }
+    #flag-swatches::-webkit-scrollbar { width: 4px; }
+    #flag-swatches::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
     .flag-swatch {
       width: 100%; aspect-ratio: 3 / 2; border-radius: 2px; cursor: pointer;
       border: 2px solid rgba(255,255,255,0.1); background-size: cover; background-position: center;
