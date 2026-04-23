@@ -144,10 +144,10 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   
   let currentFlag: THREE.Group | null = null;
   const setFlag = (id: string) => {
-    if (currentFlag) turretGroup.remove(currentFlag);
+    if (currentFlag) group.remove(currentFlag);
     currentFlag = createFlagMesh(id);
-    currentFlag.position.set(0.24, 0.4, -0.28); // mirror antenna position, a bit lower to start at turret top
-    turretGroup.add(currentFlag);
+    currentFlag.position.set(-0.7, 0.56, -0.6); // sit on left fender
+    group.add(currentFlag);
   };
 
   group.add(turretGroup);

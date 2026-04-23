@@ -158,8 +158,8 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   let flagGroup: THREE.Group | undefined;
   if (tank.flagId) {
     flagGroup = createFlagMesh(tank.flagId);
-    flagGroup.position.set(0.24, 0.4, -0.28);
-    turretGroup.add(flagGroup);
+    flagGroup.position.set(-0.7, 0.56, -0.6); // sit on left fender
+    chassisGroup.add(flagGroup);
   }
 
   chassisGroup.add(turretGroup);
