@@ -589,7 +589,7 @@ export class Room {
       burningOwner: null,
     });
 
-    const flags = ['italy', 'spain', 'france', 'germany', 'usa', 'uk', 'japan'];
+    const flags = ['it', 'es', 'fr', 'de', 'us', 'gb', 'jp'];
     const randomFlag = flags[Math.floor(Math.random() * flags.length)];
     this.spawnTank(botId, playerName, undefined, randomFlag);
     const tank = this.tanks.get(botId)!;

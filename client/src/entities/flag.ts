@@ -9,17 +9,30 @@ export const FLAGS = Object.entries(countries).map(([id, name]) => ({
 
 const flagTextureCache: Map<string, THREE.Texture> = new Map();
 
-export function getFlagTexture(flagId: string): THREE.Texture {
-  if (flagTextureCache.has(flagId)) return flagTextureCache.get(flagId)!;
+const ALIASES: Record<string, string> = {
+  'italy': 'it',
+  'spain': 'es',
+  'france': 'fr',
+  'germany': 'de',
+  'usa': 'us',
+  'uk': 'gb',
+  'japan': 'jp'
+};
 
-  // Use FlagCDN for all countries. Quality 'w160' is enough for a small flag.
-  // We use a TextureLoader to load the external image.
+export function getFlagTexture(flagId: string): THREE.Texture {
+  let id = flagId.toLowerCase();
+  if (ALIASES[id]) id = ALIASES[id];
+  
+  if (flagTextureCache.has(id)) return flagTextureCache.get(id)!;
+
   const loader = new THREE.TextureLoader();
-  const url = `https://flagcdn.com/w160/${flagId.toLowerCase()}.png`;
+  loader.setCrossOrigin('anonymous');
+  const url = `https://flagcdn.com/w160/${id}.png`;
+  
   const tex = loader.load(url);
   tex.colorSpace = THREE.SRGBColorSpace;
-
-  flagTextureCache.set(flagId, tex);
+  
+  flagTextureCache.set(id, tex);
   return tex;
 }
 
@@ -38,11 +51,15 @@ export function createFlagMesh(flagId: string): THREE.Group {
   // We use a PlaneGeometry but we want it to be double sided.
   const flagGeo = new THREE.PlaneGeometry(0.6, 0.4);
   flagGeo.translate(0.3, 0, 0); // align left edge to pole
+  const flagTex = getFlagTexture(flagId);
   const flagMat = new THREE.MeshStandardMaterial({
-    map: getFlagTexture(flagId),
+    map: flagTex,
+    emissiveMap: flagTex,
+    emissive: 0xffffff,
+    emissiveIntensity: 0.2,
     side: THREE.DoubleSide,
-    roughness: 0.8,
-    metalness: 0.1,
+    roughness: 1.0,
+    metalness: 0.0,
   });
   const flag = new THREE.Mesh(flagGeo, flagMat);
   flag.position.set(0, 1.0, 0);
