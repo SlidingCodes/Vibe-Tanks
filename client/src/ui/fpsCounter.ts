@@ -5,6 +5,7 @@ let minDt = Infinity;
 let maxDt = 0;
 let fpsLine = 'FPS --';
 let telemetryLine = '';
+const devHintLine = 'R: reset map (dev)';
 let lastSpeed: number | null = null;
 let smoothedAccel = 0;
 
@@ -14,8 +15,9 @@ export function initFpsCounter(): void {
   el.id = 'vt-fps';
   el.style.cssText = [
     'position:fixed',
-    'top:56px',
-    'left:6px',
+    'top:6px',
+    'left:50%',
+    'transform:translateX(-50%)',
     'z-index:9999',
     'padding:4px 8px',
     'font:12px/1.2 ui-monospace,Menlo,Consolas,monospace',
@@ -26,14 +28,18 @@ export function initFpsCounter(): void {
     'pointer-events:none',
     'user-select:none',
     'white-space:pre',
+    'text-align:center',
   ].join(';');
-  el.textContent = fpsLine;
+  render();
   document.body.appendChild(el);
 }
 
 function render(): void {
   if (!el) return;
-  el.textContent = telemetryLine ? `${fpsLine}\n${telemetryLine}` : fpsLine;
+  const lines = [fpsLine];
+  if (telemetryLine) lines.push(telemetryLine);
+  lines.push(devHintLine);
+  el.textContent = lines.join('\n');
 }
 
 export function tickFpsCounter(dt: number): void {
