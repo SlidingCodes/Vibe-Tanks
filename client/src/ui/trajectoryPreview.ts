@@ -20,13 +20,23 @@ interface SegmentResult {
   reason: 'impact' | 'airburst' | 'split' | 'bounds';
 }
 
+interface Reticle {
+  group: THREE.Group;
+  ringMat: THREE.MeshBasicMaterial;
+  accentMat: THREE.MeshBasicMaterial;
+}
+
 let parentDots: THREE.Mesh[] = [];
 let fragmentDots: THREE.Mesh[] = [];
 let parentMat: THREE.MeshBasicMaterial;
 let fragmentMat: THREE.MeshBasicMaterial;
-let marker: THREE.Group;
-let markerRingMat: THREE.MeshBasicMaterial;
-let markerAccentMat: THREE.MeshBasicMaterial;
+let marker: Reticle;
+/** Pool of secondary reticles for multi-impact weapons (splitter fragments,
+ *  future cluster munitions, etc). Kept separate from `marker` so single-
+ *  impact weapons stay on the fast path. 6 is enough to cover the default
+ *  splitter fragmentCount of 3 with headroom. */
+const MAX_AUX_RETICLES = 6;
+const auxReticles: Reticle[] = [];
 let initialized = false;
 
 /** Small vertical offset applied to every marker placement. Without it the
@@ -36,8 +46,56 @@ let initialized = false;
  *  still reading as "planted on the ground". */
 const MARKER_GROUND_LIFT = 0.2;
 
-function placeMarker(x: number, y: number, z: number): void {
-  marker.position.set(x, y + MARKER_GROUND_LIFT, z);
+function createReticle(): Reticle {
+  const group = new THREE.Group();
+  // depthTest:false + depthWrite:false: always draws on top of the
+  // terrain, doesn't write its own depth so transparent-pass sorting
+  // can't hide it. renderOrder (set below) pushes it to the end.
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xff7744, transparent: true, opacity: 0.9,
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+  });
+  const accentMat = new THREE.MeshBasicMaterial({
+    color: 0xffd07a, transparent: true, opacity: 0.95,
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
+  });
+
+  const outerRing = new THREE.Mesh(new THREE.RingGeometry(0.88, 1.0, 48), ringMat);
+  outerRing.rotation.x = -Math.PI / 2;
+  outerRing.renderOrder = 10;
+  group.add(outerRing);
+
+  const centerDot = new THREE.Mesh(new THREE.CircleGeometry(0.1, 16), accentMat);
+  centerDot.rotation.x = -Math.PI / 2;
+  centerDot.position.y = 0.01;
+  centerDot.renderOrder = 11;
+  group.add(centerDot);
+
+  const tickGeo = new THREE.PlaneGeometry(0.12, 0.36);
+  for (let i = 0; i < 4; i++) {
+    const angle = (i * Math.PI) / 2;
+    const tick = new THREE.Mesh(tickGeo, accentMat);
+    tick.rotation.x = -Math.PI / 2;
+    tick.rotation.z = angle;
+    tick.position.set(Math.sin(angle) * 0.7, 0.01, Math.cos(angle) * 0.7);
+    tick.renderOrder = 11;
+    group.add(tick);
+  }
+
+  group.visible = false;
+  return { group, ringMat, accentMat };
+}
+
+function placeReticle(r: Reticle, x: number, y: number, z: number, scale: number, ringHex: number, accentHex: number): void {
+  r.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+  r.group.scale.setScalar(scale);
+  r.ringMat.color.setHex(ringHex);
+  r.accentMat.color.setHex(accentHex);
+  r.group.visible = true;
+}
+
+function hideAuxReticles(): void {
+  for (const r of auxReticles) r.group.visible = false;
 }
 
 function init(scene: THREE.Scene): void {
@@ -58,55 +116,28 @@ function init(scene: THREE.Scene): void {
     fragmentDots.push(m);
   }
 
-  // 3D impact reticle — sits flat on the ground at the resolved landing point.
-  // Built from a thin outer ring (radius 1, i.e. scales 1:1 with `scale`) plus
-  // a centre dot and four NESW tick bars so the eye can snap to the centre
-  // even when the ring is wider than the screen.
-  marker = new THREE.Group();
-  // depthTest:false + depthWrite:false: the reticle always draws on top of
-  // the terrain regardless of camera angle, and doesn't write its own
-  // depth so transparent-pass sorting can't hide it behind later opaque
-  // geometry. renderOrder (set on each child mesh below) forces it to the
-  // end of the draw list.
-  markerRingMat = new THREE.MeshBasicMaterial({
-    color: 0xff7744, transparent: true, opacity: 0.9,
-    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-  });
-  markerAccentMat = new THREE.MeshBasicMaterial({
-    color: 0xffd07a, transparent: true, opacity: 0.95,
-    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-  });
-
-  const outerRing = new THREE.Mesh(new THREE.RingGeometry(0.88, 1.0, 48), markerRingMat);
-  outerRing.rotation.x = -Math.PI / 2;
-  outerRing.renderOrder = 10;
-  marker.add(outerRing);
-
-  const centerDot = new THREE.Mesh(new THREE.CircleGeometry(0.1, 16), markerAccentMat);
-  centerDot.rotation.x = -Math.PI / 2;
-  centerDot.position.y = 0.01;
-  centerDot.renderOrder = 11;
-  marker.add(centerDot);
-
-  const tickGeo = new THREE.PlaneGeometry(0.12, 0.36);
-  for (let i = 0; i < 4; i++) {
-    const angle = (i * Math.PI) / 2;
-    const tick = new THREE.Mesh(tickGeo, markerAccentMat);
-    tick.rotation.x = -Math.PI / 2;
-    tick.rotation.z = angle;
-    tick.position.set(Math.sin(angle) * 0.7, 0.01, Math.cos(angle) * 0.7);
-    tick.renderOrder = 11;
-    marker.add(tick);
+  // 3D impact reticle — sits flat on the ground at the resolved landing
+  // point. Built from a thin outer ring plus a centre dot and four NESW
+  // tick bars so the eye can snap to the centre even when the ring is
+  // wider than the screen.
+  marker = createReticle();
+  scene.add(marker.group);
+  for (let i = 0; i < MAX_AUX_RETICLES; i++) {
+    const r = createReticle();
+    scene.add(r.group);
+    auxReticles.push(r);
   }
 
-  marker.visible = false;
-  scene.add(marker);
   initialized = true;
 }
 
+function placeMarker(x: number, y: number, z: number): void {
+  marker.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+}
+
 function setMarkerColor(ringHex: number, accentHex: number): void {
-  markerRingMat.color.setHex(ringHex);
-  markerAccentMat.color.setHex(accentHex);
+  marker.ringMat.color.setHex(ringHex);
+  marker.accentMat.color.setHex(accentHex);
 }
 
 function cloneVec3(v: Vec3): Vec3 {
@@ -297,7 +328,8 @@ export function updateTrajectoryPreview(
 
   hideDots(parentDots);
   hideDots(fragmentDots);
-  marker.visible = false;
+  marker.group.visible = false;
+  hideAuxReticles();
 
   const startPos = { x: startX, y: startY, z: startZ };
   const startVel: Vec3 = { x: vx, y: vy, z: vz };
@@ -309,9 +341,9 @@ export function updateTrajectoryPreview(
     });
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
-    marker.scale.setScalar(Math.max(1, weapon.blastRadius * 0.28));
+    marker.group.scale.setScalar(Math.max(1, weapon.blastRadius * 0.28));
     setMarkerColor(0xff5522, 0xffa077);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -322,10 +354,6 @@ export function updateTrajectoryPreview(
       splitTime: weapon.behaviorConfig?.splitTime ?? 0.7,
     });
     placePoints(parentDots, segment.points);
-    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
-    marker.scale.setScalar(0.65);
-    setMarkerColor(0x88ddff, 0xcfeeff);
-    marker.visible = true;
 
     if (segment.reason === 'split') {
       const fragmentCount = weapon.behaviorConfig?.fragmentCount ?? 3;
@@ -334,10 +362,25 @@ export function updateTrajectoryPreview(
       const half = (fragmentCount - 1) / 2;
       const fragmentPoints: Vec3[] = [];
 
+      // A reticle per fragment impact: the main reticle takes the first
+      // fragment so single-weapon code paths that expect one always see
+      // one, and the rest go on the aux pool. Previously the only
+      // reticle landed on the split point (aerial), which told the
+      // player where the parent breaks but not where the damage lands.
       for (let i = 0; i < fragmentCount; i++) {
         const fragmentVelocity = makeFragmentVelocity(segment.endVelocity, (i - half) * fragmentSpread, fragmentSpeedScale);
         const fragment = simulateSegment(segment.endPoint, fragmentVelocity);
         fragmentPoints.push(...fragment.points.slice(i === 0 ? 0 : 1));
+
+        const end = fragment.endPoint;
+        if (i === 0) {
+          placeMarker(end.x, end.y, end.z);
+          marker.group.scale.setScalar(0.55);
+          setMarkerColor(0x88ddff, 0xcfeeff);
+          marker.group.visible = true;
+        } else if (i - 1 < MAX_AUX_RETICLES) {
+          placeReticle(auxReticles[i - 1], end.x, end.y, end.z, 0.55, 0x88ddff, 0xcfeeff);
+        }
       }
 
       placePoints(fragmentDots, fragmentPoints);
@@ -356,10 +399,14 @@ export function updateTrajectoryPreview(
       const bouncedVelocity = reflectVelocity(first.endVelocity, normal, weapon.behaviorConfig?.bounceDamping ?? 0.72);
       const second = simulateSegment(add(first.endPoint, scale(normal, 0.25)), bouncedVelocity);
       placePoints(fragmentDots, second.points);
-      placeMarker(first.endPoint.x, first.endPoint.y, first.endPoint.z);
-      marker.scale.setScalar(0.55);
-      setMarkerColor(0xffd96a, 0xfff0a8);
-      marker.visible = true;
+      // Main reticle on the final explosion (after the bounce) — that's
+      // where the damage lands. A smaller aux reticle marks the bounce
+      // point itself so the player can still read the ricochet geometry.
+      placeMarker(second.endPoint.x, second.endPoint.y, second.endPoint.z);
+      marker.group.scale.setScalar(0.6);
+      setMarkerColor(0xffb347, 0xffd37a);
+      marker.group.visible = true;
+      placeReticle(auxReticles[0], first.endPoint.x, first.endPoint.y, first.endPoint.z, 0.35, 0xffd96a, 0xfff0a8);
     }
     return;
   }
@@ -385,9 +432,9 @@ export function updateTrajectoryPreview(
     burstPoint.y = getTerrainHeight(burstPoint.x, burstPoint.z);
 
     placeMarker(burstPoint.x, burstPoint.y, burstPoint.z);
-    marker.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
+    marker.group.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
     setMarkerColor(0xff7a29, 0xffb37a);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -397,9 +444,9 @@ export function updateTrajectoryPreview(
       ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
       : simulateSegment(startPos, startVel).endPoint;
     placeMarker(impact.x, impact.y, impact.z);
-    marker.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
+    marker.group.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
     setMarkerColor(0xffd04d, 0xffe9a0);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -415,9 +462,9 @@ export function updateTrajectoryPreview(
         };
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
     placeMarker(end.x, end.y, end.z);
-    marker.scale.setScalar(0.45);
+    marker.group.scale.setScalar(0.45);
     setMarkerColor(0xcff8ff, 0xffffff);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -431,9 +478,9 @@ export function updateTrajectoryPreview(
     };
     placePoints(parentDots, makeLinePoints(startPos, end, 14));
     placeMarker(end.x, end.y, end.z);
-    marker.scale.setScalar(0.5);
+    marker.group.scale.setScalar(0.5);
     setMarkerColor(0x7de6ff, 0xcef4ff);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -442,9 +489,9 @@ export function updateTrajectoryPreview(
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
-    marker.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
+    marker.group.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
     setMarkerColor(0xff6a00, 0xffa552);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -453,9 +500,9 @@ export function updateTrajectoryPreview(
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
-    marker.scale.setScalar(0.55);
+    marker.group.scale.setScalar(0.55);
     setMarkerColor(0xb8ff66, 0xe4ffb2);
-    marker.visible = true;
+    marker.group.visible = true;
     return;
   }
 
@@ -467,9 +514,9 @@ export function updateTrajectoryPreview(
   const segment = simulateSegment(startPos, startVel);
   placePoints(parentDots, segment.points);
   placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
-  marker.scale.setScalar(Math.max(0.9, weapon.blastRadius * 0.3));
+  marker.group.scale.setScalar(Math.max(0.9, weapon.blastRadius * 0.3));
   setMarkerColor(0xffcc44, 0xfff2a0);
-  marker.visible = true;
+  marker.group.visible = true;
 }
 
 export function getTrajectoryXZPoints(): { x: number; z: number }[] {
@@ -483,5 +530,6 @@ export function getTrajectoryXZPoints(): { x: number; z: number }[] {
 export function hideTrajectoryPreview(): void {
   hideDots(parentDots);
   hideDots(fragmentDots);
-  if (marker) marker.visible = false;
+  if (marker) marker.group.visible = false;
+  if (auxReticles.length > 0) hideAuxReticles();
 }
