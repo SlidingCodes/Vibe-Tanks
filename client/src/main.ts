@@ -31,7 +31,7 @@ import { triggerRecoil } from './entities/tank';
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
-import { initFpsCounter, reportTankTelemetry, tickFpsCounter } from './ui/fpsCounter';
+import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
@@ -223,6 +223,16 @@ socket.on('connect', () => {
   socket.emit('join_room', { playerName: login.name, color: login.color });
   hud.showWaiting(true);
 });
+
+// RTT probe: emit a ping every 2 s stamped with performance.now(). The server
+// echoes the same timestamp back via 'pong', so the round-trip = now - t.
+socket.on('pong', (t: number) => {
+  reportPing(performance.now() - t);
+});
+socket.on('disconnect', () => reportPing(null));
+setInterval(() => {
+  if (socket.connected) socket.emit('ping', performance.now());
+}, 2000);
 
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
@@ -957,31 +967,6 @@ function animate(): void {
   const dt = Math.min(clock.getDelta(), 0.1);
   const now = clock.getElapsedTime();
   tickFpsCounter(dt);
-  if (predictedState && predictedState.alive) {
-    const mv = getMovementInput();
-    const throttle = (mv.forward ? 1 : 0) - (mv.backward ? 1 : 0);
-    // Signed climb grade: sample terrain height in front of and behind the
-    // tank along its forward axis, then atan2 the difference. Positive =
-    // nose pointing uphill. Stencil ~2 m so small voxel stair-steps don't
-    // dominate the reading.
-    const climbEps = 2.0;
-    const yaw = predictedState.bodyRotation;
-    const fwdX = Math.sin(yaw);
-    const fwdZ = Math.cos(yaw);
-    const px = predictedState.position.x;
-    const pz = predictedState.position.z;
-    const hF = getTerrainHeight(px + fwdX * climbEps, pz + fwdZ * climbEps);
-    const hB = getTerrainHeight(px - fwdX * climbEps, pz - fwdZ * climbEps);
-    const climbDeg = (Math.atan2(hF - hB, 2 * climbEps) * 180) / Math.PI;
-    reportTankTelemetry({
-      vx: predictedState.linVel.x,
-      vz: predictedState.linVel.z,
-      throttle,
-      climbDeg,
-    }, dt);
-  } else {
-    reportTankTelemetry(null, dt);
-  }
 
   const requestedWeaponSlot = consumeWeaponSlot();
   if (requestedWeaponSlot !== null) {

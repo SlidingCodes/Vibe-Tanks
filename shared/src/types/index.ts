@@ -357,6 +357,9 @@ export interface ClientEvents {
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   force_reset_match: () => void;
   shield_activate: () => void;
+  /** RTT probe: client sends `performance.now()`, server echoes it back
+   *  unchanged via `pong` so the client can compute round-trip latency. */
+  ping: (t: number) => void;
 }
 
 // ── Match events (server → client feed) ──
@@ -392,4 +395,6 @@ export interface ServerEvents {
    *  damage-number popup and hit-marker on the client, mirroring the
    *  experience of direct-hit weapons. */
   damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
+  /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
+  pong: (t: number) => void;
 }

@@ -510,6 +510,10 @@ export class Room {
       this.resetMatch();
     });
 
+    socket.on('ping', (t: number) => {
+      socket.emit('pong', t);
+    });
+
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
