@@ -29,6 +29,17 @@ let markerRingMat: THREE.MeshBasicMaterial;
 let markerAccentMat: THREE.MeshBasicMaterial;
 let initialized = false;
 
+/** Small vertical offset applied to every marker placement. Without it the
+ *  flat reticle sits exactly on the Surface Nets isosurface and loses the
+ *  z-fight against terrain triangles that happen to round slightly above
+ *  getTerrainHeight(). 0.2 is enough to clear the worst offenders while
+ *  still reading as "planted on the ground". */
+const MARKER_GROUND_LIFT = 0.2;
+
+function placeMarker(x: number, y: number, z: number): void {
+  marker.position.set(x, y + MARKER_GROUND_LIFT, z);
+}
+
 function init(scene: THREE.Scene): void {
   const geo = new THREE.SphereGeometry(0.12, 6, 6);
   parentMat = new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.88 });
@@ -52,11 +63,18 @@ function init(scene: THREE.Scene): void {
   // a centre dot and four NESW tick bars so the eye can snap to the centre
   // even when the ring is wider than the screen.
   marker = new THREE.Group();
+  // depthTest:false + depthWrite:false: the reticle always draws on top of
+  // the terrain regardless of camera angle, and doesn't write its own
+  // depth so transparent-pass sorting can't hide it behind later opaque
+  // geometry. renderOrder (set on each child mesh below) forces it to the
+  // end of the draw list.
   markerRingMat = new THREE.MeshBasicMaterial({
-    color: 0xff7744, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthTest: false,
+    color: 0xff7744, transparent: true, opacity: 0.9,
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
   });
   markerAccentMat = new THREE.MeshBasicMaterial({
-    color: 0xffd07a, transparent: true, opacity: 0.95, depthTest: false,
+    color: 0xffd07a, transparent: true, opacity: 0.95,
+    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
   });
 
   const outerRing = new THREE.Mesh(new THREE.RingGeometry(0.88, 1.0, 48), markerRingMat);
@@ -290,7 +308,7 @@ export function updateTrajectoryPreview(
       airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
     });
     placePoints(parentDots, segment.points);
-    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(Math.max(1, weapon.blastRadius * 0.28));
     setMarkerColor(0xff5522, 0xffa077);
     marker.visible = true;
@@ -304,7 +322,7 @@ export function updateTrajectoryPreview(
       splitTime: weapon.behaviorConfig?.splitTime ?? 0.7,
     });
     placePoints(parentDots, segment.points);
-    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(0.65);
     setMarkerColor(0x88ddff, 0xcfeeff);
     marker.visible = true;
@@ -338,7 +356,7 @@ export function updateTrajectoryPreview(
       const bouncedVelocity = reflectVelocity(first.endVelocity, normal, weapon.behaviorConfig?.bounceDamping ?? 0.72);
       const second = simulateSegment(add(first.endPoint, scale(normal, 0.25)), bouncedVelocity);
       placePoints(fragmentDots, second.points);
-      marker.position.set(first.endPoint.x, first.endPoint.y, first.endPoint.z);
+      placeMarker(first.endPoint.x, first.endPoint.y, first.endPoint.z);
       marker.scale.setScalar(0.55);
       setMarkerColor(0xffd96a, 0xfff0a8);
       marker.visible = true;
@@ -366,7 +384,7 @@ export function updateTrajectoryPreview(
     };
     burstPoint.y = getTerrainHeight(burstPoint.x, burstPoint.z);
 
-    marker.position.set(burstPoint.x, burstPoint.y, burstPoint.z);
+    placeMarker(burstPoint.x, burstPoint.y, burstPoint.z);
     marker.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
     setMarkerColor(0xff7a29, 0xffb37a);
     marker.visible = true;
@@ -378,7 +396,7 @@ export function updateTrajectoryPreview(
     const impact = aimTarget
       ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
       : simulateSegment(startPos, startVel).endPoint;
-    marker.position.set(impact.x, impact.y, impact.z);
+    placeMarker(impact.x, impact.y, impact.z);
     marker.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
     setMarkerColor(0xffd04d, 0xffe9a0);
     marker.visible = true;
@@ -396,7 +414,7 @@ export function updateTrajectoryPreview(
           z: startPos.z + dir.z * (weapon.behaviorConfig?.railRange ?? 50),
         };
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
-    marker.position.set(end.x, end.y, end.z);
+    placeMarker(end.x, end.y, end.z);
     marker.scale.setScalar(0.45);
     setMarkerColor(0xcff8ff, 0xffffff);
     marker.visible = true;
@@ -419,7 +437,7 @@ export function updateTrajectoryPreview(
     parentMat.color.setHex(0xffb259);
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
-    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
     setMarkerColor(0xff6a00, 0xffa552);
     marker.visible = true;
@@ -430,7 +448,7 @@ export function updateTrajectoryPreview(
     parentMat.color.setHex(0xbdf06a);
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
-    marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(0.55);
     setMarkerColor(0xb8ff66, 0xe4ffb2);
     marker.visible = true;
