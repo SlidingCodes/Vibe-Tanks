@@ -430,6 +430,10 @@ export function updateTrajectoryPreview(
       z: startPos.z + dir.z * 10,
     };
     placePoints(parentDots, makeLinePoints(startPos, end, 14));
+    placeMarker(end.x, end.y, end.z);
+    marker.scale.setScalar(0.5);
+    setMarkerColor(0x7de6ff, 0xcef4ff);
+    marker.visible = true;
     return;
   }
 
@@ -455,9 +459,17 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  // Fallback: 'standard' (and any future weapon without a custom preview).
+  // Without this the default weapon has no reticle at all, which is how the
+  // bug first surfaced: the game starts on the first weapon slot and the
+  // reticle only appeared once you switched to e.g. mortar or drill.
   parentMat.color.setHex(0xffff66);
   const segment = simulateSegment(startPos, startVel);
   placePoints(parentDots, segment.points);
+  placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+  marker.scale.setScalar(Math.max(0.9, weapon.blastRadius * 0.3));
+  setMarkerColor(0xffcc44, 0xfff2a0);
+  marker.visible = true;
 }
 
 export function getTrajectoryXZPoints(): { x: number; z: number }[] {
