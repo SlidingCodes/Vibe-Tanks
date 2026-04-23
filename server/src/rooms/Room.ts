@@ -573,8 +573,13 @@ export class Room {
 
   private addBot(): void {
     const botId = `bot_${Math.random().toString(36).substr(2, 9)}`;
-    const botNames = ['Bit', 'Byte', 'Kernel', 'Shell', 'Buffer', 'Pointer', 'Array', 'Struct'];
-    const playerName = botNames[Math.floor(Math.random() * botNames.length)];
+    const botNamesPool = ['Pisa', 'Titanium', 'Blin', 'Jikeh'];
+    const usedNames = Array.from(this.tanks.values()).map((t) => t.playerName);
+    const availableNames = botNamesPool.filter((n) => !usedNames.includes(n));
+
+    const playerName = availableNames.length > 0
+      ? availableNames[Math.floor(Math.random() * availableNames.length)]
+      : `Bot_${Math.random().toString(36).substr(2, 4)}`;
 
     this.players.set(botId, {
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
