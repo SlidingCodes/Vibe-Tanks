@@ -51,8 +51,8 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       camera.position.set(0, 2.2, 5.4);
       camera.lookAt(0, 0.35, 0);
     } else {
-      camera.position.set(1.0, 1.7, 5.5);
-      camera.lookAt(0.1, 0.7, 0);
+      camera.position.set(2.0, 1.7, 5.5);
+      camera.lookAt(1, 0.7, 0);
     }
     camera.updateProjectionMatrix();
   };
@@ -149,7 +149,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   barrel.castShadow = true;
   barrel.castShadow = true;
   turretGroup.add(barrel);
-  
+
   let currentFlag: THREE.Group | null = null;
   const setFlag = (id: string) => {
     if (currentFlag) group.remove(currentFlag);
