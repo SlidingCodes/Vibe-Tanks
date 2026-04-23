@@ -53,7 +53,7 @@ const PRESETS: Record<CameraPresetId, CameraPreset> = {
 const FPV_EYE_HEIGHT = 1.75;
 const FPV_BACK_OFFSET = 1.15;
 
-let currentPreset: CameraPresetId = 'wide';
+let currentPreset: CameraPresetId = 'tactical';
 
 function applyProjection(): void {
   const p = PRESETS[currentPreset];

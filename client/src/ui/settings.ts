@@ -42,7 +42,7 @@ export function setupSettingsMenu(): void {
   document.body.appendChild(panel);
 
   const camWrap = panel.querySelector('#settings-cameras') as HTMLDivElement;
-  const savedPreset = (localStorage.getItem(LS_PRESET) as CameraPresetId | null) ?? 'wide';
+  const savedPreset = (localStorage.getItem(LS_PRESET) as CameraPresetId | null) ?? 'tactical';
 
   for (const p of PRESETS) {
     const btnP = document.createElement('button');

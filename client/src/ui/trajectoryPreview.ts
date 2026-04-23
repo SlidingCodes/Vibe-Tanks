@@ -24,15 +24,15 @@ let parentDots: THREE.Mesh[] = [];
 let fragmentDots: THREE.Mesh[] = [];
 let parentMat: THREE.MeshBasicMaterial;
 let fragmentMat: THREE.MeshBasicMaterial;
-let marker: THREE.Mesh;
-let markerMat: THREE.MeshBasicMaterial;
+let marker: THREE.Group;
+let markerRingMat: THREE.MeshBasicMaterial;
+let markerAccentMat: THREE.MeshBasicMaterial;
 let initialized = false;
 
 function init(scene: THREE.Scene): void {
   const geo = new THREE.SphereGeometry(0.12, 6, 6);
   parentMat = new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.88 });
   fragmentMat = new THREE.MeshBasicMaterial({ color: 0x7dd6ff, transparent: true, opacity: 0.82 });
-  markerMat = new THREE.MeshBasicMaterial({ color: 0xff7744, transparent: true, opacity: 0.7 });
 
   for (let i = 0; i < MAX_PARENT_DOTS; i++) {
     const m = new THREE.Mesh(geo, parentMat);
@@ -47,10 +47,48 @@ function init(scene: THREE.Scene): void {
     fragmentDots.push(m);
   }
 
-  marker = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 10), markerMat);
+  // 3D impact reticle — sits flat on the ground at the resolved landing point.
+  // Built from a thin outer ring (radius 1, i.e. scales 1:1 with `scale`) plus
+  // a centre dot and four NESW tick bars so the eye can snap to the centre
+  // even when the ring is wider than the screen.
+  marker = new THREE.Group();
+  markerRingMat = new THREE.MeshBasicMaterial({
+    color: 0xff7744, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthTest: false,
+  });
+  markerAccentMat = new THREE.MeshBasicMaterial({
+    color: 0xffd07a, transparent: true, opacity: 0.95, depthTest: false,
+  });
+
+  const outerRing = new THREE.Mesh(new THREE.RingGeometry(0.88, 1.0, 48), markerRingMat);
+  outerRing.rotation.x = -Math.PI / 2;
+  outerRing.renderOrder = 10;
+  marker.add(outerRing);
+
+  const centerDot = new THREE.Mesh(new THREE.CircleGeometry(0.1, 16), markerAccentMat);
+  centerDot.rotation.x = -Math.PI / 2;
+  centerDot.position.y = 0.01;
+  centerDot.renderOrder = 11;
+  marker.add(centerDot);
+
+  const tickGeo = new THREE.PlaneGeometry(0.12, 0.36);
+  for (let i = 0; i < 4; i++) {
+    const angle = (i * Math.PI) / 2;
+    const tick = new THREE.Mesh(tickGeo, markerAccentMat);
+    tick.rotation.x = -Math.PI / 2;
+    tick.rotation.z = angle;
+    tick.position.set(Math.sin(angle) * 0.7, 0.01, Math.cos(angle) * 0.7);
+    tick.renderOrder = 11;
+    marker.add(tick);
+  }
+
   marker.visible = false;
   scene.add(marker);
   initialized = true;
+}
+
+function setMarkerColor(ringHex: number, accentHex: number): void {
+  markerRingMat.color.setHex(ringHex);
+  markerAccentMat.color.setHex(accentHex);
 }
 
 function cloneVec3(v: Vec3): Vec3 {
@@ -254,7 +292,7 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, segment.points);
     marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(Math.max(1, weapon.blastRadius * 0.28));
-    markerMat.color.setHex(0xff5522);
+    setMarkerColor(0xff5522, 0xffa077);
     marker.visible = true;
     return;
   }
@@ -268,7 +306,7 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, segment.points);
     marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(0.65);
-    markerMat.color.setHex(0x88ddff);
+    setMarkerColor(0x88ddff, 0xcfeeff);
     marker.visible = true;
 
     if (segment.reason === 'split') {
@@ -302,7 +340,7 @@ export function updateTrajectoryPreview(
       placePoints(fragmentDots, second.points);
       marker.position.set(first.endPoint.x, first.endPoint.y, first.endPoint.z);
       marker.scale.setScalar(0.55);
-      markerMat.color.setHex(0xffd96a);
+      setMarkerColor(0xffd96a, 0xfff0a8);
       marker.visible = true;
     }
     return;
@@ -330,7 +368,7 @@ export function updateTrajectoryPreview(
 
     marker.position.set(burstPoint.x, burstPoint.y, burstPoint.z);
     marker.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
-    markerMat.color.setHex(0xff7a29);
+    setMarkerColor(0xff7a29, 0xffb37a);
     marker.visible = true;
     return;
   }
@@ -342,7 +380,7 @@ export function updateTrajectoryPreview(
       : simulateSegment(startPos, startVel).endPoint;
     marker.position.set(impact.x, impact.y, impact.z);
     marker.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
-    markerMat.color.setHex(0xffd04d);
+    setMarkerColor(0xffd04d, 0xffe9a0);
     marker.visible = true;
     return;
   }
@@ -360,7 +398,7 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
     marker.position.set(end.x, end.y, end.z);
     marker.scale.setScalar(0.45);
-    markerMat.color.setHex(0xcff8ff);
+    setMarkerColor(0xcff8ff, 0xffffff);
     marker.visible = true;
     return;
   }
@@ -383,7 +421,7 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, segment.points);
     marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
-    markerMat.color.setHex(0xff6a00);
+    setMarkerColor(0xff6a00, 0xffa552);
     marker.visible = true;
     return;
   }
@@ -394,7 +432,7 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, segment.points);
     marker.position.set(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.scale.setScalar(0.55);
-    markerMat.color.setHex(0xb8ff66);
+    setMarkerColor(0xb8ff66, 0xe4ffb2);
     marker.visible = true;
     return;
   }

@@ -53,25 +53,64 @@ export function isShiftHeld(): boolean {
 const mouse = new THREE.Vector2();
 let mouseDown = false;
 let rightMousePressed = false;
+let pointerLocked = false;
+
+/** NDC sensitivity: 1.0 means a mouse move of half the window width moves
+ *  the virtual aim point by 1 NDC unit (i.e. from center to edge). Higher
+ *  = twitchier. Feels right around 1.4 on a typical 800dpi mouse; we will
+ *  likely surface this in the settings panel later. */
+const POINTER_SENSITIVITY = 1.4;
+
+function getCanvas(): HTMLCanvasElement | null {
+  return document.querySelector('canvas');
+}
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement !== null;
+  // Recenter the virtual aim each time we (re)acquire the lock, so the
+  // crosshair starts under the tank instead of wherever the OS cursor
+  // happened to be sitting when we grabbed it.
+  if (pointerLocked) mouse.set(0, 0);
+});
 
 window.addEventListener('mousemove', (e) => {
+  if (pointerLocked) {
+    const dx = (e.movementX * POINTER_SENSITIVITY) / (window.innerWidth * 0.5);
+    const dy = (e.movementY * POINTER_SENSITIVITY) / (window.innerHeight * 0.5);
+    mouse.x = Math.max(-1, Math.min(1, mouse.x + dx));
+    // Screen-down = NDC-down → invert Y so pulling the mouse forward pushes
+    // the aim point deeper into the world, matching third-person intuition.
+    mouse.y = Math.max(-1, Math.min(1, mouse.y - dy));
+    return;
+  }
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
 });
 
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0) mouseDown = true;
+  if (e.button === 0) {
+    // While unlocked, the first left-click only grabs the pointer lock —
+    // it doesn't also fire, otherwise players would blow themselves up on
+    // every focus/unfocus. Once locked, clicks fire as normal.
+    if (!pointerLocked) {
+      getCanvas()?.requestPointerLock?.();
+      return;
+    }
+    mouseDown = true;
+  } else if (e.button === 2) {
+    rightMousePressed = true;
+  }
 });
 
 window.addEventListener('mouseup', (e) => {
   if (e.button === 0) mouseDown = false;
 });
 
-window.addEventListener('mousedown', (e) => {
-  if (e.button === 2) rightMousePressed = true;
-});
-
 window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+export function isPointerLocked(): boolean {
+  return pointerLocked;
+}
 
 export function getMouseNDC(): THREE.Vector2 {
   return mouse;
@@ -157,17 +196,6 @@ export function setAimContext(px: number, py: number, pz: number, bodyRot: numbe
 }
 export function getAimContext(): AimContext {
   return aimContext;
-}
-
-// ── Pointer lock for seamless mouse control ──
-const canvas = document.querySelector('canvas');
-
-export function requestPointerLock(): void {
-  if (canvas) {
-    canvas.addEventListener('click', () => {
-      // Don't request lock on first click, use it for shooting
-    });
-  }
 }
 
 const raycaster = new THREE.Raycaster();
