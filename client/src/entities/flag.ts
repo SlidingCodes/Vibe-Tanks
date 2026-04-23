@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import countries from './countries.json';
+import countries from '@shared/countries.json';
 
 export const FLAGS = Object.entries(countries).map(([id, name]) => ({
   id: id.toLowerCase(),

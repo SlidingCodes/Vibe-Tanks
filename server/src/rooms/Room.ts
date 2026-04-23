@@ -18,6 +18,7 @@ import {
   Vec3,
   WeaponDefinition,
 } from '@shared/types/index';
+import countries from '@shared/countries.json';
 import {
   TANK_MAX_HP,
   MIN_PLAYERS_TO_START,
@@ -589,8 +590,15 @@ export class Room {
       burningOwner: null,
     });
 
-    const flags = ['it', 'es', 'fr', 'de', 'us', 'gb', 'jp'];
-    const randomFlag = flags[Math.floor(Math.random() * flags.length)];
+    // Pick a unique flag for the bot from the full countries list
+    const usedFlags = Array.from(this.tanks.values()).map(t => t.flagId?.toLowerCase()).filter(Boolean);
+    const countryCodes = Object.keys(countries).map(k => k.toLowerCase());
+    const availableFlags = countryCodes.filter(f => !usedFlags.includes(f));
+    
+    const randomFlag = availableFlags.length > 0 
+      ? availableFlags[Math.floor(Math.random() * availableFlags.length)]
+      : countryCodes[Math.floor(Math.random() * countryCodes.length)];
+
     this.spawnTank(botId, playerName, undefined, randomFlag);
     const tank = this.tanks.get(botId)!;
     this.io.to(this.id).emit('player_spawned', tank);

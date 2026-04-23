@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import randomNames from './randomNames.json';
+import countries from '@shared/countries.json';
 import { getTankTextures, configureHullMaterial } from '../entities/tankTextures';
 import {
   buildHullGeometry,
