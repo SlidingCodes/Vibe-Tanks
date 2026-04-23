@@ -7,6 +7,7 @@ import {
   buildBarrelGeometry,
   buildRoadWheelsGeometry,
 } from '../entities/tankGeometry';
+import { FLAGS, createFlagMesh } from '../entities/flag';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -16,6 +17,7 @@ const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4']
  *  outer showLogin() flow can retarget the team tint and tear down cleanly. */
 function createTankPreview(canvas: HTMLCanvasElement): {
   setColor: (hex: string) => void;
+  setFlag: (id: string) => void;
   stop: () => void;
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -137,7 +139,17 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   );
   barrel.position.y = 0.2;
   barrel.castShadow = true;
+  barrel.castShadow = true;
   turretGroup.add(barrel);
+  
+  let currentFlag: THREE.Group | null = null;
+  const setFlag = (id: string) => {
+    if (currentFlag) turretGroup.remove(currentFlag);
+    currentFlag = createFlagMesh(id);
+    currentFlag.position.set(0.24, 0.4, -0.28); // mirror antenna position, a bit lower to start at turret top
+    turretGroup.add(currentFlag);
+  };
+
   group.add(turretGroup);
 
   // Tread textures are cloned so their `.offset.y` can advance without
@@ -206,6 +218,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       bodyMat.color.set(hex);
       turretMat.color.set(hex);
     },
+    setFlag,
     stop: () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
@@ -226,6 +239,7 @@ function pickRandomName(): string {
 export interface LoginResult {
   name: string;
   color: string;
+  flagId: string;
 }
 
 /** Block until the player submits a name + color. */
@@ -234,16 +248,19 @@ export function showLogin(): Promise<LoginResult> {
     const overlay = document.getElementById('login-overlay') as HTMLDivElement;
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
+    const flagSwatches = document.getElementById('flag-swatches') as HTMLDivElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
     nameInput.value = pickRandomName();
     nameInput.placeholder = pickRandomName();
 
     const preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
+    preview.setFlag(selectedFlag);
 
     swatches.innerHTML = '';
     PALETTE.forEach((hex) => {
@@ -260,13 +277,66 @@ export function showLogin(): Promise<LoginResult> {
       swatches.appendChild(el);
     });
 
+    flagSwatches.innerHTML = '';
+    FLAGS.forEach((f) => {
+      const el = document.createElement('div');
+      el.className = 'flag-swatch';
+      el.title = f.name;
+      // We can use a CSS gradient or just the canvas texture dataUrl if we want to be fancy.
+      // But for now, let's just use the canvas drawing logic to create a thumbnail.
+      const thumbCanvas = document.createElement('canvas');
+      thumbCanvas.width = 60;
+      thumbCanvas.height = 40;
+      const ctx = thumbCanvas.getContext('2d')!;
+      // Draw a mini version of the flag
+      if (f.id === 'italy') {
+        ctx.fillStyle = '#008d46'; ctx.fillRect(0,0,20,40);
+        ctx.fillStyle = '#fff'; ctx.fillRect(20,0,20,40);
+        ctx.fillStyle = '#d2232c'; ctx.fillRect(40,0,20,40);
+      } else if (f.id === 'spain') {
+        ctx.fillStyle = '#aa151b'; ctx.fillRect(0,0,60,10);
+        ctx.fillStyle = '#f1bf00'; ctx.fillRect(0,10,60,20);
+        ctx.fillStyle = '#aa151b'; ctx.fillRect(0,30,60,10);
+      } else if (f.id === 'france') {
+        ctx.fillStyle = '#002395'; ctx.fillRect(0,0,20,40);
+        ctx.fillStyle = '#fff'; ctx.fillRect(20,0,20,40);
+        ctx.fillStyle = '#ed2939'; ctx.fillRect(40,0,20,40);
+      } else if (f.id === 'germany') {
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,60,13.3);
+        ctx.fillStyle = '#d00'; ctx.fillRect(0,13.3,60,13.3);
+        ctx.fillStyle = '#ffce00'; ctx.fillRect(0,26.6,60,13.3);
+      } else if (f.id === 'usa') {
+        for(let i=0;i<13;i++){ ctx.fillStyle = i%2===0?'#b22234':'#fff'; ctx.fillRect(0,i*40/13,60,40/13+1); }
+        ctx.fillStyle = '#3c3b6e'; ctx.fillRect(0,0,24,20);
+      } else if (f.id === 'uk') {
+        ctx.fillStyle = '#012169'; ctx.fillRect(0,0,60,40);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(60,40); ctx.stroke(); ctx.beginPath(); ctx.moveTo(60,0); ctx.lineTo(0,40); ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.fillRect(26,0,8,40); ctx.fillRect(0,16,60,8);
+        ctx.fillStyle = '#c8102e'; ctx.fillRect(28,0,4,40); ctx.fillRect(0,18,60,4);
+      } else if (f.id === 'japan') {
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,60,40);
+        ctx.fillStyle = '#bc002d'; ctx.beginPath(); ctx.arc(30,20,10,0,Math.PI*2); ctx.fill();
+      }
+
+      el.style.backgroundImage = `url(${thumbCanvas.toDataURL()})`;
+
+      if (f.id === selectedFlag) el.classList.add('selected');
+      el.addEventListener('click', () => {
+        selectedFlag = f.id;
+        flagSwatches.querySelectorAll('.flag-swatch').forEach((e) => e.classList.remove('selected'));
+        el.classList.add('selected');
+        preview.setFlag(f.id);
+      });
+      flagSwatches.appendChild(el);
+    });
+
     const done = () => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
       overlay.style.display = 'none';
       submit.removeEventListener('click', done);
       nameInput.removeEventListener('keydown', onKey);
       preview.stop();
-      resolve({ name, color: selected });
+      resolve({ name, color: selected, flagId: selectedFlag });
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };
 

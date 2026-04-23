@@ -50,6 +50,7 @@ export interface TankState {
   kills: number;
   deaths: number;
   color: string;
+  flagId?: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the
    *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
@@ -350,7 +351,7 @@ export interface ShotResult {
 
 // ── Network events: client → server ──
 export interface ClientEvents {
-  join_room: (data: { playerName: string; color?: string }) => void;
+  join_room: (data: { playerName: string; color?: string; flagId?: string }) => void;
   respawn_request: () => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;

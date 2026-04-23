@@ -147,6 +147,14 @@
     }
     .color-swatch:hover { transform: scale(1.08); }
     .color-swatch.selected { border-color: #fff; }
+    #flag-swatches { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px; }
+    .flag-swatch {
+      width: 100%; aspect-ratio: 3 / 2; border-radius: 2px; cursor: pointer;
+      border: 2px solid rgba(255,255,255,0.1); background-size: cover; background-position: center;
+      transition: transform 0.08s, border-color 0.15s;
+    }
+    .flag-swatch:hover { transform: scale(1.08); border-color: rgba(255,255,255,0.5); }
+    .flag-swatch.selected { border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.3); }
     #login-panel button {
       margin-top: 24px; width: 100%; padding: 12px; font-family: inherit; font-size: 14px;
       background: #4f4; color: #000; border: 0; border-radius: 4px; cursor: pointer;
@@ -554,6 +562,8 @@
       <input id="login-name" type="text" maxlength="16" autocomplete="off" />
       <label>COLOR</label>
       <div id="color-swatches"></div>
+      <label>FLAG</label>
+      <div id="flag-swatches"></div>
       <button id="login-submit">JOIN BATTLE</button>
     </div>
   </div>

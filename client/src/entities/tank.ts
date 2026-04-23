@@ -10,6 +10,7 @@ import {
   buildBarrelGeometry,
   buildRoadWheelsGeometry,
 } from './tankGeometry';
+import { createFlagMesh } from './flag';
 
 const TILT_SMOOTH = 0.25;
 const SERVER_BROADCAST_INTERVAL = 1 / TICK_RATE;
@@ -62,6 +63,7 @@ export interface TankMesh {
   prevLongitudinalSpeed: number;    // Signed forward speed from prior sample
   motionSampleDt: number;           // Seconds covered by the latest motion sample
   motionDirty: boolean;             // True when state changed and motion should be re-sampled
+  flagGroup?: THREE.Group;
 }
 
 
@@ -152,6 +154,13 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   barrel.position.y = 0.2;
   barrel.castShadow = true;
   turretGroup.add(barrel);
+
+  let flagGroup: THREE.Group | undefined;
+  if (tank.flagId) {
+    flagGroup = createFlagMesh(tank.flagId);
+    flagGroup.position.set(0.24, 0.4, -0.28);
+    turretGroup.add(flagGroup);
+  }
 
   chassisGroup.add(turretGroup);
 
@@ -272,6 +281,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
     prevLongitudinalSpeed: getLongitudinalSpeed(tank),
     motionSampleDt: SERVER_BROADCAST_INTERVAL,
     motionDirty: false,
+    flagGroup,
   };
 
 
@@ -424,6 +434,19 @@ export function tickTankEffects(dt: number): void {
       for (const sp of tm.burningFlames) {
         sp.visible = false;
         (sp.material as THREE.SpriteMaterial).opacity = 0;
+      }
+    }
+    
+    // Animate flag
+    if (tm.flagGroup) {
+      const flag = tm.flagGroup.children.find(c => c instanceof THREE.Mesh && c.geometry instanceof THREE.PlaneGeometry) as THREE.Mesh;
+      if (flag) {
+        const speed = flag.userData.wobbleSpeed || 2;
+        const phase = flag.userData.wobblePhase || 0;
+        const t = performance.now() * 0.001 * speed + phase;
+        // Simple sine wobble for flag waving
+        flag.rotation.y = Math.sin(t) * 0.2;
+        flag.rotation.z = Math.cos(t * 1.5) * 0.1;
       }
     }
   }

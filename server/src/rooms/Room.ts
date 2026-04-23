@@ -321,7 +321,7 @@ export class Room {
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
     if (this.players.size >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
@@ -341,7 +341,7 @@ export class Room {
       burningOwner: null,
     });
 
-    this.spawnTank(playerId, playerName, color);
+    this.spawnTank(playerId, playerName, color, flagId);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
@@ -409,7 +409,7 @@ export class Room {
     }
   }
 
-  private spawnTank(playerId: PlayerId, playerName: string, color?: string): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
     const pos = this.findSpawnPosition();
     let safeColor: string;
     if (isValidHex(color)) {
@@ -445,6 +445,7 @@ export class Room {
       shieldActive: false,
       shieldAvailable: true,
       shieldTimeRemaining: 0,
+      flagId,
       burning: false,
     };
     this.tanks.set(playerId, tank);
@@ -588,7 +589,9 @@ export class Room {
       burningOwner: null,
     });
 
-    this.spawnTank(botId, playerName);
+    const flags = ['italy', 'spain', 'france', 'germany', 'usa', 'uk', 'japan'];
+    const randomFlag = flags[Math.floor(Math.random() * flags.length)];
+    this.spawnTank(botId, playerName, undefined, randomFlag);
     const tank = this.tanks.get(botId)!;
     this.io.to(this.id).emit('player_spawned', tank);
     this.io.to(this.id).emit('match_event', {
