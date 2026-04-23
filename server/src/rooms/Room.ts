@@ -244,7 +244,7 @@ export class Room {
     this.phase = MatchPhase.Leaderboard;
     // Set matchResetAt so clients see a 10s countdown
     this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
-    
+
     // Broadcast the room snapshot so clients see the Leaderboard phase
     // and the final scores/kills/deaths.
     this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
@@ -554,7 +554,7 @@ export class Room {
 
   private ensureFourTanks(): void {
     const TARGET_TANKS = 4;
-    
+
     // Remove bots if we have too many tanks
     if (this.players.size > TARGET_TANKS) {
       const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
@@ -785,11 +785,11 @@ export class Room {
     const damageTotals: DamageTotals = new Map();
     const carveTerrain = segment.reason === 'impact'
       ? applyImpact({
-          point: segment.endPoint,
-          blastRadius: weapon.blastRadius,
-          damage: weapon.damage,
-          terrainDamage: weapon.terrainDamage,
-        }, this.getTankList(), damageTotals)
+        point: segment.endPoint,
+        blastRadius: weapon.blastRadius,
+        damage: weapon.damage,
+        terrainDamage: weapon.terrainDamage,
+      }, this.getTankList(), damageTotals)
       : false;
 
     const result = createShotResult(tank.playerId, weapon.id, [
@@ -1503,12 +1503,12 @@ export class Room {
         // Predictive Firing Logic - Initiative Enhancement
         const weaponIndex = player.botWeaponIndex ?? 0;
         const weapon = WEAPONS[weaponIndex];
-        
+
         // Only run simulation if cooldown is ready to save performance
         if (now - player.lastFireTime >= weapon.cooldown) {
           // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
-          
+
           // Fire! The jitter ensures they only hit 40-60% of the time.
           this.performFire(tank, player, weapon, targetTank.position, result);
           player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);

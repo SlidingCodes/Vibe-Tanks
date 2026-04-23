@@ -18,7 +18,7 @@ export function getFlagTexture(flagId: string): THREE.Texture {
   const url = `https://flagcdn.com/w160/${flagId.toLowerCase()}.png`;
   const tex = loader.load(url);
   tex.colorSpace = THREE.SRGBColorSpace;
-  
+
   flagTextureCache.set(flagId, tex);
   return tex;
 }
