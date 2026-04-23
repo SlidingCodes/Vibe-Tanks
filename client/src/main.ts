@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { GRAVITY, TANK_TREAD_HALF_WIDTH, setGravity, DEFAULT_GRAVITY, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
+import { GRAVITY, TANK_TREAD_HALF_WIDTH, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
@@ -48,7 +48,7 @@ import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, SpecialEvent, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -136,8 +136,7 @@ window.addEventListener('resize', () => {
 
 let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
-let activeSpecialEvent: SpecialEvent = 'none';
-let hasReceivedInitialEvent = false;
+let hasPlayedWelcomeAnnounce = false;
 let latestTanks: TankState[] = [];
 let lastFireTime = 0;
 let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
@@ -155,14 +154,6 @@ let turboPreviouslyActive = false; // tracks inactive→active edge for sound + 
 
 // Tracks the alive→dead transition so the death screen only fades in once.
 let wasDead = false;
-
-const SPECIAL_EVENT_NAMES: Record<SpecialEvent, string> = {
-  none: 'No Special Event',
-  double_terrain_damage: 'Double Terrain Damage',
-  low_gravity: 'Low Gravity',
-  dense_fog: 'Dense Fog',
-  space_invaders: 'Space Invaders',
-};
 
 // ── Killcam ─────────────────────────────────────────────────────────
 // When I die to another player, the camera spectates the killer (with a
@@ -191,11 +182,7 @@ function endKillcam(): void {
 
 function updateSceneScale(terrainWidth: number, terrainHeight: number): void {
   const worldMax = Math.max(terrainWidth, terrainHeight);
-  if (activeSpecialEvent === 'dense_fog') {
-    scene.fog = new THREE.Fog(FOG_COLOR, 10, 45);
-  } else {
-    scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
-  }
+  scene.fog = new THREE.Fog(FOG_COLOR, Math.max(60, worldMax * 0.8), Math.max(120, worldMax * 1.9));
   updateCameraScale(terrainWidth, terrainHeight);
   lighting.updateForTerrain(terrainWidth, terrainHeight);
 }
@@ -238,30 +225,12 @@ socket.on('connect', () => {
 });
 
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
-  const previousEvent = activeSpecialEvent;
   snapshot = snap;
-  activeSpecialEvent = snap.specialEvent;
   latestTanks = snap.tanks;
-  setGravity(activeSpecialEvent === 'low_gravity' ? -4.0 : DEFAULT_GRAVITY);
-  
-  if (activeSpecialEvent === 'dense_fog') {
-    scene.fog = new THREE.Fog(FOG_COLOR, 10, 45);
-  }
 
-  if (!hasReceivedInitialEvent || activeSpecialEvent !== previousEvent) {
-    hud.triggerSpecialEventBanner(activeSpecialEvent);
-    
-    const eventName = SPECIAL_EVENT_NAMES[activeSpecialEvent];
-    if (!hasReceivedInitialEvent) {
-      // First announcement: "Vibe Tanks! [Event Name]"
-      const welcome = eventName ? `VIBE TANKS! ${eventName}` : 'VIBE TANKS!';
-      playAnnouncer(welcome);
-    } else if (eventName) {
-      // Mid-game event change: "[Event Name]!"
-      playSpeech(eventName);
-    }
-    
-    hasReceivedInitialEvent = true;
+  if (!hasPlayedWelcomeAnnounce) {
+    playAnnouncer('VIBE TANKS!');
+    hasPlayedWelcomeAnnounce = true;
   }
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
@@ -803,15 +772,13 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const debris = voxelDebris;
       const scorch = voxelScorch;
       setTimeout(() => {
-        const radius = step.blastRadius * (activeSpecialEvent === 'double_terrain_damage' ? 2 : 1);
+        const radius = step.blastRadius;
         // Sample debris origins BEFORE carving (they must still be solid).
         debris?.spawnFromCarve(grid, step.endPoint, radius);
         grid.carveSphere(step.endPoint, radius);
         // Mirror the carve into the client Rapier world so the local KCC
         // collider matches the server and the freshly opened crater is
-        // present under the tank on the very next prediction tick. Use
-        // `radius` (not `step.blastRadius`) so the double_terrain_damage
-        // event's doubled carve is reflected in the physics world too.
+        // present under the tank on the very next prediction tick.
         clientPhysics?.invalidateSphere(step.endPoint, radius);
         // Scorch extends past the blast radius so the burn ring is visible
         // well outside the crater. Strength=1 + wider radius means even a

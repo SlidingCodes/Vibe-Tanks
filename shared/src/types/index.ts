@@ -10,9 +10,6 @@ export enum MatchPhase {
   Leaderboard = 'leaderboard',
 }
 
-// ── Special Events ──
-export type SpecialEvent = 'none' | 'double_terrain_damage' | 'low_gravity' | 'dense_fog' | 'space_invaders';
-
 // ── Vectors ──
 export interface Vec3 {
   x: number;
@@ -122,8 +119,7 @@ export type ShotVisualStyle =
   | 'rail'
   | 'mortar_shell'
   | 'mine_deploy'
-  | 'mine_burst'
-  | 'space_invaders_beam';
+  | 'mine_burst';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -295,8 +291,6 @@ export interface MatchSnapshot {
   terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
-  /** The currently active special event for this match. */
-  specialEvent: SpecialEvent;
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
 }

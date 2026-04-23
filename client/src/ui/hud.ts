@@ -13,7 +13,6 @@ const deathKiller = document.getElementById('death-killer')!;
 const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonElement;
 const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
 const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
-const specialEventBanner = document.getElementById('special-event-banner') as HTMLDivElement;
 const turboBar = document.getElementById('turbo-bar') as HTMLDivElement;
 const turboVfx = document.getElementById('turbo-vfx') as HTMLDivElement;
 const shieldBar = document.getElementById('shield-bar') as HTMLDivElement;
@@ -321,36 +320,6 @@ export function triggerHitFeedback(killed = false): void {
     setTimeout(() => p.remove(), 600);
   }
 }
-
-/** Triggers the UI banner announcing a new special event. */
-export function triggerSpecialEventBanner(eventName: string): void {
-  if (!specialEventBanner) return;
-  
-  if (eventName === 'none') {
-    specialEventBanner.textContent = `NO SPECIAL EVENT`;
-    specialEventBanner.style.setProperty('--event-color', '#fff');
-  } else {
-    const formattedName = eventName.split('_').map(word => word.toUpperCase()).join(' ');
-    specialEventBanner.textContent = `NEW EVENT: ${formattedName}`;
-    
-    if (eventName === 'low_gravity') {
-      specialEventBanner.style.setProperty('--event-color', '#4af');
-    } else if (eventName === 'dense_fog') {
-      specialEventBanner.style.setProperty('--event-color', '#aaa');
-    } else if (eventName === 'double_terrain_damage') {
-      specialEventBanner.style.setProperty('--event-color', '#fa0');
-    } else if (eventName === 'space_invaders') {
-      specialEventBanner.style.setProperty('--event-color', '#39ff14');
-    } else {
-      specialEventBanner.style.setProperty('--event-color', '#fff');
-    }
-  }
-  
-  specialEventBanner.classList.remove('show');
-  void specialEventBanner.offsetWidth; // Force reflow
-  specialEventBanner.classList.add('show');
-}
-
 
 export function showGameOver(winnerId: string): void {
   waitingOverlay.style.display = 'block';

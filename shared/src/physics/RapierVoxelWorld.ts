@@ -165,12 +165,6 @@ export class RapierVoxelWorld {
     this.rebuildAll();
   }
 
-  /** Update the world's Y gravity at runtime. Used by the special-event
-   *  system (e.g. `low_gravity` halves gravity for one match). */
-  setGravity(y: number): void {
-    this.world.gravity = { x: 0, y, z: 0 };
-  }
-
   getHeight(x: number, z: number): number {
     return this.grid.getHeight(x, z);
   }
