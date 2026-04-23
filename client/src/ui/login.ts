@@ -249,6 +249,7 @@ export function showLogin(): Promise<LoginResult> {
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
     const flagSwatches = document.getElementById('flag-swatches') as HTMLDivElement;
+    const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
 
@@ -282,6 +283,7 @@ export function showLogin(): Promise<LoginResult> {
       const el = document.createElement('div');
       el.className = 'flag-swatch';
       el.title = f.name;
+      el.dataset.name = f.name.toLowerCase();
       el.style.backgroundImage = `url(https://flagcdn.com/w80/${f.id.toLowerCase()}.png)`;
 
       if (f.id === selectedFlag) el.classList.add('selected');
@@ -294,11 +296,27 @@ export function showLogin(): Promise<LoginResult> {
       flagSwatches.appendChild(el);
     });
 
+    const onFilterFlags = () => {
+      const query = flagSearch.value.toLowerCase();
+      const items = flagSwatches.querySelectorAll('.flag-swatch');
+      items.forEach((item) => {
+        const el = item as HTMLDivElement;
+        const name = el.dataset.name || '';
+        if (name.includes(query)) {
+          el.style.display = 'block';
+        } else {
+          el.style.display = 'none';
+        }
+      });
+    };
+    flagSearch.addEventListener('input', onFilterFlags);
+
     const done = () => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
       overlay.style.display = 'none';
       submit.removeEventListener('click', done);
       nameInput.removeEventListener('keydown', onKey);
+      flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
       resolve({ name, color: selected, flagId: selectedFlag });
     };

@@ -140,6 +140,7 @@
       color: #fff; outline: none;
     }
     #login-panel input[type=text]:focus { border-color: rgba(120, 180, 255, 0.7); }
+    #flag-search { margin-top: 6px !important; font-size: 13px !important; padding: 6px 10px !important; }
     #color-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
     .color-swatch {
       width: 100%; aspect-ratio: 1 / 1; border-radius: 4px; cursor: pointer;
@@ -568,6 +569,7 @@
       <label>COLOR</label>
       <div id="color-swatches"></div>
       <label>FLAG</label>
+      <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
       <button id="login-submit">JOIN BATTLE</button>
     </div>
