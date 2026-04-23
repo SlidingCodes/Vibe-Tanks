@@ -244,7 +244,7 @@ export interface LoginResult {
 
 /** Block until the player submits a name + color. */
 export function showLogin(): Promise<LoginResult> {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const overlay = document.getElementById('login-overlay') as HTMLDivElement;
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
@@ -258,6 +258,23 @@ export function showLogin(): Promise<LoginResult> {
     let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
     nameInput.value = pickRandomName();
     nameInput.placeholder = pickRandomName();
+
+    // Try to auto-detect country via IP with a 2s timeout
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+      clearTimeout(tid);
+      const data = await res.json();
+      if (data && data.country_code) {
+        const detected = data.country_code.toLowerCase();
+        if (FLAGS.find((f) => f.id === detected)) {
+          selectedFlag = detected;
+        }
+      }
+    } catch (e) {
+      // Fallback to random is already set
+    }
 
     const preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
@@ -283,6 +300,7 @@ export function showLogin(): Promise<LoginResult> {
       const el = document.createElement('div');
       el.className = 'flag-swatch';
       el.title = f.name;
+      el.dataset.code = f.id;
       el.dataset.name = f.name.toLowerCase();
       el.style.backgroundImage = `url(https://flagcdn.com/w80/${f.id.toLowerCase()}.png)`;
 
