@@ -36,17 +36,24 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   // Warm horizon fog so the ground plane fades into the CSS gradient sky.
   scene.fog = new THREE.Fog(0x1e2838, 14, 42);
 
-  // Camera sits forward-and-right of the tank, lookAt pushed rightwards so
-  // the tank slides onto the left half of the screen in the final framing.
+  // Camera sits forward-and-right of the tank. On desktop the framing pushes
+  // the tank onto the left half so the side panel has room; on mobile
+  // (<=720px, panel stacks at the bottom) the camera recenters horizontally
+  // and tilts lower so the tank reads in the upper half of the viewport.
   const camera = new THREE.PerspectiveCamera(38, 2, 0.1, 80);
-  camera.position.set(2.0, 1.7, 5.2);
-  camera.lookAt(1.4, 0.7, 0);
 
   const resize = (): void => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
+    if (w <= 720) {
+      camera.position.set(0, 2.2, 5.4);
+      camera.lookAt(0, 0.35, 0);
+    } else {
+      camera.position.set(1.0, 1.7, 5.5);
+      camera.lookAt(0.1, 0.7, 0);
+    }
     camera.updateProjectionMatrix();
   };
 

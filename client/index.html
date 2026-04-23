@@ -171,12 +171,20 @@
     }
     #login-panel button:hover { background: #6f6; }
     @media (max-width: 720px) {
-      #login-title { font-size: 30px; letter-spacing: 6px; top: 22px; }
+      #login-title { font-size: 28px; letter-spacing: 5px; top: 14px; }
       #login-panel {
-        right: 16px; left: 16px; width: auto;
-        top: auto; bottom: 22px; transform: none;
-        padding: 20px 22px;
+        right: 12px; left: 12px; width: auto;
+        top: auto; bottom: 12px; transform: none;
+        padding: 14px 16px;
       }
+      #login-panel label { margin: 0 0 4px; font-size: 11px; }
+      #login-panel label:not(:first-child) { margin-top: 10px; }
+      #login-panel input[type=text] { padding: 8px 10px; font-size: 14px; }
+      #flag-swatches {
+        grid-template-columns: repeat(6, 1fr);
+        max-height: 72px; margin-top: 6px;
+      }
+      #login-panel button { margin-top: 14px; padding: 10px; }
     }
     /* Damage popups — stacked animation layers so rise + shake + flicker
        don't stomp each other's transform property. */
