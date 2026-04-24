@@ -35,6 +35,20 @@
       transition: transform 0.06s linear, opacity 0.2s linear, background 0.08s linear;
       pointer-events: none;
     }
+    /* Current-weapon ammo counter — parked under the cooldown strip.
+       Hidden when the selected slot is the infinite default weapon. */
+    #ammo-counter {
+      position: absolute; top: calc(62% + 14px); left: 50%;
+      transform: translateX(-50%);
+      font-family: monospace; font-weight: bold;
+      font-size: 16px; color: #e8d8a0;
+      text-shadow: 0 0 3px #000, 0 0 3px #000;
+      letter-spacing: 2px;
+      pointer-events: none;
+    }
+    #ammo-counter::before { content: 'AMMO '; font-size: 10px; opacity: 0.7; letter-spacing: 1px; }
+    #ammo-counter.low { color: #f0a450; }
+    #ammo-counter.empty { color: #c06040; }
     #health-bar {
       position: absolute; top: 16px; left: 16px;
       width: 200px; height: 18px; border-radius: 3px;
@@ -74,12 +88,12 @@
        white so the rack reads as a row of loaded rounds with the active
        one spotlit. */
     .weapon-chip {
-      width: 34px; height: 34px; padding: 0;
+      width: 42px; height: 42px; padding: 0;
       border: 1px solid rgba(120, 130, 100, 0.55);
       border-radius: 2px;
       background: linear-gradient(180deg, rgba(38,40,34,0.82) 0%, rgba(22,24,20,0.88) 100%);
       display: inline-flex; align-items: center; justify-content: center;
-      position: relative; opacity: 0.85;
+      position: relative; opacity: 0.85; overflow: hidden;
       box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5);
       transition: border-color 0.1s linear, opacity 0.1s linear, background 0.1s linear;
     }
@@ -90,7 +104,7 @@
       box-shadow: inset 0 0 0 1px rgba(216,176,88,0.5), 0 0 6px rgba(216,176,88,0.35);
     }
     .weapon-icon {
-      width: 24px; height: 24px; display: block;
+      width: 26px; height: 26px; display: block;
       filter: drop-shadow(0 1px 1px rgba(0,0,0,0.7));
     }
     .weapon-chip .weapon-slot {
@@ -104,8 +118,32 @@
     .weapon-chip.selected .weapon-slot {
       color: #f0d88a;
     }
-    body.mobile .weapon-chip { width: 44px; height: 44px; }
-    body.mobile .weapon-icon { width: 30px; height: 30px; }
+    .weapon-chip .weapon-ammo {
+      position: absolute; bottom: 3px; right: 3px;
+      font-family: monospace; font-size: 11px; font-weight: bold;
+      color: #e8d8a0;
+      letter-spacing: 0.3px;
+      text-shadow: 0 0 2px #000, 0 0 2px #000;
+      pointer-events: none; line-height: 1;
+    }
+    .weapon-chip .weapon-ammo.infinite {
+      color: #bcc0a0; font-size: 14px; bottom: 2px;
+    }
+    .weapon-chip .weapon-ammo.low { color: #f0a450; }
+    /* Per-weapon cooldown strip — amber → khaki gradient fills left-to-right
+       as the shared fire timer elapses. Zero width when the chip is fully
+       cooled down (invisible), so ready weapons look crisp. */
+    .weapon-chip .weapon-cd {
+      position: absolute; left: 0; bottom: 0; height: 2px;
+      width: calc(100% * (1 - var(--cd-fill, 1)));
+      background: linear-gradient(90deg, #8c6820 0%, #e8c464 100%);
+      opacity: 0.85;
+      pointer-events: none;
+      transition: width 0.06s linear;
+    }
+    body.mobile .weapon-chip { width: 52px; height: 52px; }
+    body.mobile .weapon-icon { width: 34px; height: 34px; }
+    body.mobile .weapon-chip .weapon-ammo { font-size: 13px; }
     #controls-hint {
       position: absolute; bottom: 74px; left: 50%; transform: translateX(-50%);
       font-size: 12px; opacity: 0.5; pointer-events: none;
@@ -623,6 +661,7 @@
   </div>
   <div id="hud">
     <div id="cooldown-ring"></div>
+    <div id="ammo-counter" style="display:none"></div>
 
     <div id="left-bars">
       <div id="shield-wrap" style="display:none">

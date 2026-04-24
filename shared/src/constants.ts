@@ -45,6 +45,24 @@ export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
 export const SERVER_PORT = 3001;
 
+// ── Weapon pickups ────────────────────────────────────────────────────────
+/** Max concurrent pickups present in the world. */
+export const PICKUP_MAX_CONCURRENT = 6;
+/** Average seconds between pickup spawns when below the cap. */
+export const PICKUP_SPAWN_INTERVAL = 15;
+/** XZ distance below which a tank collects a pickup. */
+export const PICKUP_COLLECT_RADIUS = 2.5;
+/** How long a pickup lingers on the ground before de-spawning. */
+export const PICKUP_GROUND_LIFETIME = 45;
+/** Altitude above the terrain at which a pickup spawns before drifting down
+ *  under parachute. */
+export const PICKUP_DROP_HEIGHT = 30;
+/** Descent speed while parachuting (world-units / second). */
+export const PICKUP_FALL_SPEED = 4;
+/** Probability (0–1) that a freshly spawned pickup is a weapon crate as
+ *  opposed to a plain ammo pack. */
+export const PICKUP_WEAPON_CHANCE = 0.55;
+
 // ── Airborne / ragdoll tuning ─────────────────────────────────────────────
 /** Delta-v magnitude at which a blast impulse flips the tank from grounded
  *  to airborne. Below the threshold the impulse is absorbed by the tracks

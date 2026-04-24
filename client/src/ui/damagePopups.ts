@@ -31,6 +31,35 @@ function tierFor(amount: number, killed: boolean): Tier {
   return { fontSize: 20, durationMs: 1200, color: '#ffdd33', glow: false, shake: false, fire: false };
 }
 
+/** Floating pickup confirmation: "+AMMO SEEKER ×2", "+WEAPON NAPALM" etc.
+ *  Uses the same rise + fade animation as damage popups so tanks that
+ *  grabbed a crate get a readable Pocket-Tanks-style confirmation. */
+export function spawnPickupToast(tankGroup: THREE.Object3D, text: string, color: string): void {
+  const outer = document.createElement('div');
+  outer.style.pointerEvents = 'none';
+
+  const rise = document.createElement('div');
+  rise.className = 'damage-popup-rise';
+  rise.style.animationDuration = '1600ms';
+
+  const inner = document.createElement('span');
+  inner.className = 'damage-popup-text glow';
+  inner.style.fontSize = '22px';
+  inner.style.color = color;
+  inner.style.textShadow = `0 0 6px ${color}, 0 0 12px ${color}, 0 0 3px #000, 1px 1px 0 #000`;
+  inner.style.letterSpacing = '0.5px';
+  inner.textContent = text;
+
+  rise.appendChild(inner);
+  outer.appendChild(rise);
+
+  const obj = new CSS2DObject(outer);
+  obj.position.set(0, 2.2, 0);
+  tankGroup.add(obj);
+
+  setTimeout(() => tankGroup.remove(obj), 1600);
+}
+
 export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, killed: boolean): void {
   if (amount <= 0 && !killed) return;
 

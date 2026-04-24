@@ -1,4 +1,5 @@
-import { TankState, WeaponDefinition } from '@shared/types/index';
+import { TankState, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
+import { WEAPONS } from '@shared/weapons';
 
 const healthBar = document.getElementById('health-bar') as HTMLDivElement;
 const healthFill = document.getElementById('health-fill') as HTMLDivElement;
@@ -227,6 +228,21 @@ export function setCooldown(fraction: number): void {
   cooldownRing.style.setProperty('--cd-color', `rgb(${r},${g},${b})`);
 }
 
+/** Update the selected-weapon ammo readout next to the cooldown ring.
+ *  Pass 'infinite' to hide it. */
+export function setSelectedWeaponAmmo(ammo: number | 'infinite'): void {
+  const el = document.getElementById('ammo-counter');
+  if (!el) return;
+  if (ammo === 'infinite') {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = String(ammo);
+  el.classList.toggle('low', ammo <= 2);
+  el.classList.toggle('empty', ammo <= 0);
+}
+
 function getWeaponRoleLabel(weapon: WeaponDefinition): string {
   switch (weapon.behavior) {
     case 'airburst':
@@ -257,17 +273,25 @@ function getWeaponSlotLabel(index: number): string {
   return index === 9 ? '0' : String(index + 1);
 }
 
+/** Render the weapon chip rack from the tank's current inventory. Each chip
+ *  shows slot number, icon, ammo readout (∞ for the default weapon, digit
+ *  otherwise) and a tiny per-weapon cooldown bar kept in sync via
+ *  updateWeaponCooldowns each frame. */
 export function setWeapons(
-  weapons: WeaponDefinition[],
+  inventory: WeaponInventorySlot[],
   selectedWeaponId: string,
   onSelect?: (slot: number) => void,
 ): void {
   weaponHud.innerHTML = '';
-  weapons.forEach((weapon, index) => {
+  inventory.forEach((slotEntry, index) => {
+    const weapon = WEAPONS.find((w) => w.id === slotEntry.weaponId);
+    if (!weapon) return;
     const chip = document.createElement('button');
     chip.type = 'button';
+    chip.dataset.weaponId = weapon.id;
     chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-    chip.title = `[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
+    const ammoLabel = slotEntry.ammo === 'infinite' ? '∞' : String(slotEntry.ammo);
+    chip.title = `[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)} · ${ammoLabel}`;
     const slot = document.createElement('span');
     slot.className = 'weapon-slot';
     slot.textContent = getWeaponSlotLabel(index);
@@ -277,12 +301,39 @@ export function setWeapons(
     icon.alt = '';
     icon.className = 'weapon-icon';
     chip.appendChild(icon);
+    const ammo = document.createElement('span');
+    ammo.className = 'weapon-ammo';
+    if (slotEntry.ammo === 'infinite') {
+      ammo.classList.add('infinite');
+      ammo.textContent = '∞';
+    } else {
+      ammo.textContent = String(slotEntry.ammo);
+      if (slotEntry.ammo <= 2) ammo.classList.add('low');
+    }
+    chip.appendChild(ammo);
+    const cd = document.createElement('span');
+    cd.className = 'weapon-cd';
+    chip.appendChild(cd);
     if (onSelect) {
       chip.addEventListener('click', () => onSelect(index));
       chip.addEventListener('touchstart', (e) => { e.preventDefault(); onSelect(index); }, { passive: false });
     }
     weaponHud.appendChild(chip);
   });
+}
+
+/** Refresh the per-chip cooldown bars. Call every render frame with the
+ *  same lastFireTime value main.ts already tracks. */
+export function updateWeaponCooldowns(lastFireTime: number, now: number): void {
+  const elapsed = Math.max(0, now - lastFireTime);
+  for (const chip of weaponHud.querySelectorAll<HTMLElement>('.weapon-chip')) {
+    const weaponId = chip.dataset.weaponId;
+    if (!weaponId) continue;
+    const weapon = WEAPONS.find((w) => w.id === weaponId);
+    if (!weapon) continue;
+    const progress = Math.min(1, elapsed / weapon.cooldown);
+    chip.style.setProperty('--cd-fill', progress.toFixed(3));
+  }
 }
 
 export function showWaiting(show: boolean): void {

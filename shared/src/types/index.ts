@@ -89,6 +89,9 @@ export interface TankState {
   /** True while the tank is taking napalm damage (or has been in the last
    *  short timer window). Drives the on-tank flame VFX. */
   burning: boolean;
+  /** Current weapon loadout for this tank. Slot 0 is always the default
+   *  infinite weapon. Consumable slots are removed when ammo hits 0. */
+  inventory: WeaponInventorySlot[];
 }
 
 // ── Weapons ──
@@ -174,7 +177,22 @@ export interface WeaponDefinition {
   terrainDamage: number;
   behavior: WeaponBehavior;
   cooldown: number;
+  /** Rounds granted when this weapon is first added to a loadout or dropped as
+   *  a pickup. 'infinite' marks the always-on default weapon that can never
+   *  run out and is always in slot 0. */
+  startAmmo: number | 'infinite';
+  /** Cap applied when refilling ammo via pickups. Undefined when
+   *  startAmmo === 'infinite'. */
+  maxAmmo?: number;
   behaviorConfig?: WeaponBehaviorConfig;
+}
+
+/** One slot in a tank's weapon inventory. Slot 0 always holds the default
+ *  infinite weapon; other slots are consumables that disappear when
+ *  ammo hits 0. */
+export interface WeaponInventorySlot {
+  weaponId: string;
+  ammo: number | 'infinite';
 }
 
 // ── Terrain ──
@@ -246,10 +264,31 @@ export interface HazardState {
   timeRemaining: number;
 }
 
+// ── Weapon pickups ──
+export type PickupKind = 'weapon' | 'ammo';
+
+export interface PickupState {
+  pickupId: string;
+  kind: PickupKind;
+  /** Set when kind === 'weapon'. The weapon contained in the crate. */
+  weaponId?: string;
+  position: Vec3;
+  /** Seconds remaining before the crate touches down. 0 = already landed.
+   *  Purely cosmetic — the collision check runs regardless. */
+  fallTimeRemaining: number;
+}
+
+/** Result of a pickup being collected, for HUD feedback. */
+export type PickupCollectOutcome =
+  | { kind: 'weapon_added'; weaponId: string; ammo: number }
+  | { kind: 'weapon_refilled'; weaponId: string; amount: number }
+  | { kind: 'ammo_refilled'; weaponId: string; amount: number };
+
 export interface RoomStateUpdate {
   tanks: TankState[];
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  pickups: PickupState[];
 }
 
 // ── Tread track history ──
@@ -292,6 +331,7 @@ export interface MatchSnapshot {
   terrainPresetLabel: string;
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
+  pickups: PickupState[];
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
 }
@@ -398,4 +438,13 @@ export interface ServerEvents {
   damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
+  /** Fired when a new pickup drops into the world. */
+  pickup_spawned: (pickup: PickupState) => void;
+  /** Fired when a tank collects (or the pickup times out).
+   *  outcome is undefined when the pickup simply expired. */
+  pickup_collected: (data: {
+    pickupId: string;
+    playerId?: PlayerId;
+    outcome?: PickupCollectOutcome;
+  }) => void;
 }

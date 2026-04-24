@@ -6,6 +6,9 @@ import {
   MatchPhase,
   MatchSnapshot,
   MovementInput,
+  PickupCollectOutcome,
+  PickupKind,
+  PickupState,
   PlayerId,
   RoomStateUpdate,
   ServerEvents,
@@ -17,6 +20,7 @@ import {
   TrackHistoryPoint,
   Vec3,
   WeaponDefinition,
+  WeaponInventorySlot,
 } from '@shared/types/index';
 import countries from '@shared/countries.json';
 import {
@@ -28,6 +32,13 @@ import {
   GRAVITY,
   TURBO_DURATION,
   TURBO_COOLDOWN,
+  PICKUP_MAX_CONCURRENT,
+  PICKUP_SPAWN_INTERVAL,
+  PICKUP_COLLECT_RADIUS,
+  PICKUP_GROUND_LIFETIME,
+  PICKUP_DROP_HEIGHT,
+  PICKUP_FALL_SPEED,
+  PICKUP_WEAPON_CHANCE,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -39,7 +50,7 @@ import {
   getTerrainSettingsForPreset,
   SEA_LEVEL,
 } from '@shared/terrain';
-import { WEAPONS } from '@shared/weapons';
+import { WEAPONS, INVENTORY_MAX_SLOTS, createRandomLoadout } from '@shared/weapons';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { FireGrid } from '@shared/terrain/FireGrid';
 import { HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
@@ -124,6 +135,11 @@ interface PlayerState {
    *  residual "sticky" damage for kills after the victim walked out of
    *  the fire. `null` = orphaned (e.g. owner disconnected). */
   burningOwner: PlayerId | null;
+  /** Current weapon loadout. Slot 0 is always the infinite default weapon;
+   *  slots 1..INVENTORY_MAX_SLOTS-1 hold consumable weapons that vanish
+   *  from the array when ammo hits 0. The same array reference is stored
+   *  on the tank's TankState so broadcasts stay in sync without a copy. */
+  inventory: WeaponInventorySlot[];
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -166,6 +182,17 @@ interface ScheduledStrike {
   spawnHeight: number;
 }
 
+interface ActivePickupRuntime extends PickupState {
+  /** Ground y the crate settles on (terrain height at spawn). Used to
+   *  clamp the parachute descent. */
+  groundY: number;
+  /** Epoch seconds at which the pickup expires if nobody collects it. */
+  expiresAt: number;
+  /** Wire view reused every broadcast tick — mirrors the mutable fields
+   *  above, same pattern as projectile/hazard runtimes. */
+  wire: PickupState;
+}
+
 export class Room {
   id: string;
   io: Server;
@@ -193,12 +220,14 @@ export class Room {
   players: Map<PlayerId, PlayerState> = new Map();
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
+  private activePickups: Map<string, ActivePickupRuntime> = new Map();
   /** Cached public views rebuilt only on insert/delete (not per tick). The
    *  broadcast path reuses these arrays as-is, and per-tick tank/projectile/
    *  hazard updates sync fields into the matching wire object in place. */
   private tankList: TankState[] = [];
   private wireProjectiles: ActiveProjectileState[] = [];
   private wireHazards: HazardState[] = [];
+  private wirePickups: PickupState[] = [];
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
@@ -207,6 +236,9 @@ export class Room {
   private nextProjectileId = 1;
   private nextHazardId = 1;
   private nextStrikeId = 1;
+  private nextPickupId = 1;
+  /** Sim-time (seconds) at which the next pickup will spawn. */
+  private nextPickupSpawnAt = 0;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
   private matchResetAt: number = 0; // epoch seconds
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
@@ -302,6 +334,10 @@ export class Room {
         player.input.seq = 0;
         player.burningUntil = 0;
         player.burningOwner = null;
+        // Fresh random loadout every match. Reassign the reference on both
+        // PlayerState and TankState so broadcasts reflect the new slots.
+        player.inventory = createRandomLoadout();
+        tank.inventory = player.inventory;
       }
       this.physics.resetTank(pid, tank.position, 0);
     }
@@ -340,6 +376,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
+      inventory: createRandomLoadout(),
     });
 
     this.spawnTank(playerId, playerName, color, flagId);
@@ -422,6 +459,7 @@ export class Room {
       safeColor = unusedColor || TANK_COLORS[this.tanks.size % TANK_COLORS.length];
     }
     const safeName = sanitizeName(playerName);
+    const player = this.players.get(playerId);
     const tank: TankState = {
       playerId,
       playerName: safeName,
@@ -448,6 +486,8 @@ export class Room {
       shieldTimeRemaining: 0,
       flagId,
       burning: false,
+      // Shared reference with PlayerState — one mutation, both sides see it.
+      inventory: player?.inventory ?? createRandomLoadout(),
     };
     this.tanks.set(playerId, tank);
     this.refreshTankList();
@@ -480,11 +520,21 @@ export class Room {
       const player = this.players.get(socket.id);
       if (!tank || !tank.alive || !player) return;
 
-      const weapon = WEAPONS.find((w) => w.id === data.weaponId) ?? WEAPONS[0];
+      // Must own the weapon in the current loadout. Fire requests for
+      // weapons the client never had (stale selection / exploit) are dropped
+      // silently without consuming ammo or triggering a cooldown.
+      const slot = player.inventory.find((s) => s.weaponId === data.weaponId);
+      if (!slot) return;
+      if (slot.ammo !== 'infinite' && slot.ammo <= 0) return;
+
+      const weapon = WEAPONS.find((w) => w.id === data.weaponId);
+      if (!weapon) return;
+
       const now = Date.now() / 1000;
       if (now - player.lastFireTime < weapon.cooldown) return;
-      player.lastFireTime = now;
 
+      this.consumeAmmo(player, weapon.id);
+      player.lastFireTime = now;
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
@@ -593,6 +643,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
+      inventory: createRandomLoadout(),
     });
 
     // Pick a unique flag for the bot from the full countries list
@@ -943,6 +994,204 @@ export class Room {
     }
   }
 
+  /** Decrement the consumable slot for this weapon by 1 and drop the slot
+   *  from the inventory when it hits 0. No-op for the infinite default
+   *  weapon. Caller must have already verified the slot exists + has ammo. */
+  private consumeAmmo(player: PlayerState, weaponId: string): void {
+    const idx = player.inventory.findIndex((s) => s.weaponId === weaponId);
+    if (idx < 0) return;
+    const slot = player.inventory[idx];
+    if (slot.ammo === 'infinite') return;
+    slot.ammo -= 1;
+    if (slot.ammo <= 0) player.inventory.splice(idx, 1);
+  }
+
+  // ── Weapon pickups ────────────────────────────────────────────────────
+
+  private registerPickup(partial: Omit<ActivePickupRuntime, 'wire'>): ActivePickupRuntime {
+    const wire: PickupState = {
+      pickupId: partial.pickupId,
+      kind: partial.kind,
+      weaponId: partial.weaponId,
+      position: partial.position,
+      fallTimeRemaining: partial.fallTimeRemaining,
+    };
+    const runtime = partial as ActivePickupRuntime;
+    runtime.wire = wire;
+    this.activePickups.set(runtime.pickupId, runtime);
+    this.wirePickups.push(wire);
+    return runtime;
+  }
+
+  private unregisterPickup(pickupId: string, byPlayerId?: PlayerId, outcome?: PickupCollectOutcome): void {
+    const runtime = this.activePickups.get(pickupId);
+    if (!runtime) return;
+    this.activePickups.delete(pickupId);
+    const idx = this.wirePickups.indexOf(runtime.wire);
+    if (idx >= 0) this.wirePickups.splice(idx, 1);
+    this.io.to(this.id).emit('pickup_collected', { pickupId, playerId: byPlayerId, outcome });
+  }
+
+  private tickPickups(dt: number): void {
+    const nowSec = Date.now() / 1000;
+
+    if (this.simTime >= this.nextPickupSpawnAt && this.activePickups.size < PICKUP_MAX_CONCURRENT) {
+      const spawned = this.spawnRandomPickup();
+      if (spawned) {
+        this.io.to(this.id).emit('pickup_spawned', spawned.wire);
+      }
+      // Add mild jitter (±40%) so drops don't metronome.
+      this.nextPickupSpawnAt = this.simTime + PICKUP_SPAWN_INTERVAL * (0.6 + Math.random() * 0.8);
+    }
+
+    for (const [pickupId, pickup] of this.activePickups) {
+      if (pickup.fallTimeRemaining > 0) {
+        pickup.fallTimeRemaining = Math.max(0, pickup.fallTimeRemaining - dt);
+        pickup.position.y = Math.max(pickup.groundY, pickup.position.y - PICKUP_FALL_SPEED * dt);
+        if (pickup.position.y <= pickup.groundY + 0.01) {
+          pickup.position.y = pickup.groundY;
+          pickup.fallTimeRemaining = 0;
+          pickup.expiresAt = nowSec + PICKUP_GROUND_LIFETIME;
+        }
+        pickup.wire.position = pickup.position;
+        pickup.wire.fallTimeRemaining = pickup.fallTimeRemaining;
+      } else if (nowSec >= pickup.expiresAt) {
+        this.unregisterPickup(pickupId);
+        continue;
+      }
+
+      // Proximity check against any alive tank — first contact collects.
+      for (const tank of this.tanks.values()) {
+        if (!tank.alive) continue;
+        const dx = tank.position.x - pickup.position.x;
+        const dz = tank.position.z - pickup.position.z;
+        if (dx * dx + dz * dz >= PICKUP_COLLECT_RADIUS * PICKUP_COLLECT_RADIUS) continue;
+        // Height gate — don't auto-collect from far below during the drop.
+        const dy = tank.position.y + 0.8 - pickup.position.y;
+        if (Math.abs(dy) > 4) continue;
+        const player = this.players.get(tank.playerId);
+        if (!player) continue;
+        const outcome = this.applyPickupToPlayer(pickup, player);
+        if (outcome) {
+          this.unregisterPickup(pickupId, tank.playerId, outcome);
+          break;
+        }
+        // No effect (e.g. full inventory + unfamiliar weapon crate) — the
+        // crate stays in the world for another tank.
+      }
+    }
+  }
+
+  private spawnRandomPickup(): ActivePickupRuntime | null {
+    const cellSize = this.voxels.cellSize;
+    const mapW = this.voxels.sizeX * cellSize;
+    const mapH = this.voxels.sizeZ * cellSize;
+    const margin = 12;
+    let x = 0, z = 0, groundY = 0;
+    let found = false;
+    for (let i = 0; i < 20; i++) {
+      const tx = margin + Math.random() * (mapW - margin * 2);
+      const tz = margin + Math.random() * (mapH - margin * 2);
+      const h = this.voxels.getHeight(tx, tz);
+      if (h < SEA_LEVEL + 1.2) continue; // avoid water / beach
+      let tooClose = false;
+      for (const other of this.activePickups.values()) {
+        const ox = other.position.x - tx;
+        const oz = other.position.z - tz;
+        if (ox * ox + oz * oz < 8 * 8) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      x = tx; z = tz; groundY = h;
+      found = true;
+      break;
+    }
+    if (!found) return null;
+
+    const isWeaponCrate = Math.random() < PICKUP_WEAPON_CHANCE;
+    let kind: PickupKind;
+    let weaponId: string | undefined;
+    if (isWeaponCrate) {
+      const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
+      kind = 'weapon';
+      weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+    } else {
+      kind = 'ammo';
+    }
+
+    const pickupId = `pickup_${this.nextPickupId++}`;
+    const startY = groundY + PICKUP_DROP_HEIGHT;
+    const fallTime = PICKUP_DROP_HEIGHT / PICKUP_FALL_SPEED;
+    return this.registerPickup({
+      pickupId,
+      kind,
+      weaponId,
+      position: { x, y: startY, z },
+      fallTimeRemaining: fallTime,
+      groundY,
+      expiresAt: Date.now() / 1000 + PICKUP_GROUND_LIFETIME + fallTime,
+    });
+  }
+
+  /** Resolve a pickup against a player's inventory. Returns the outcome to
+   *  broadcast, or null if the pickup had no effect (weapon crate landing
+   *  on a player who already has a full inventory + doesn't own that weapon
+   *  — the crate stays world-side so someone else can grab it). */
+  private applyPickupToPlayer(pickup: ActivePickupRuntime, player: PlayerState): PickupCollectOutcome | null {
+    if (pickup.kind === 'weapon' && pickup.weaponId) {
+      const weapon = WEAPONS.find((w) => w.id === pickup.weaponId);
+      if (!weapon || weapon.startAmmo === 'infinite') return null;
+      const existing = player.inventory.find((s) => s.weaponId === pickup.weaponId);
+      if (existing) {
+        if (existing.ammo === 'infinite') return null;
+        const cap = weapon.maxAmmo ?? Number(weapon.startAmmo);
+        const before = existing.ammo;
+        if (before >= cap) return null; // already capped — crate stays
+        const amount = Math.min(cap - before, Number(weapon.startAmmo));
+        existing.ammo = before + amount;
+        return { kind: 'weapon_refilled', weaponId: weapon.id, amount };
+      }
+      if (player.inventory.length < INVENTORY_MAX_SLOTS) {
+        const startAmmo = Number(weapon.startAmmo);
+        player.inventory.push({ weaponId: weapon.id, ammo: startAmmo });
+        return { kind: 'weapon_added', weaponId: weapon.id, ammo: startAmmo };
+      }
+      return null; // full inventory + not owned — leave crate for others
+    }
+
+    // ammo pack: prefer refilling a weapon the player already has, but if
+    // every consumable slot is already capped, fall through to granting a
+    // brand-new weapon (if there's room) so the pickup always feels useful.
+    const consumables = player.inventory.filter(
+      (s): s is WeaponInventorySlot & { ammo: number } => s.ammo !== 'infinite',
+    );
+    const refillable = consumables.find((s) => {
+      const d = WEAPONS.find((w) => w.id === s.weaponId);
+      if (!d || d.startAmmo === 'infinite') return false;
+      const cap = d.maxAmmo ?? Number(d.startAmmo);
+      return s.ammo < cap;
+    });
+    if (refillable) {
+      const def = WEAPONS.find((w) => w.id === refillable.weaponId)!;
+      const cap = def.maxAmmo ?? Number(def.startAmmo);
+      const before = refillable.ammo;
+      const amount = Math.min(cap - before, Number(def.startAmmo));
+      refillable.ammo = before + amount;
+      return { kind: 'ammo_refilled', weaponId: refillable.weaponId, amount };
+    }
+
+    if (player.inventory.length < INVENTORY_MAX_SLOTS) {
+      const poolDefs = WEAPONS.filter(
+        (w) => w.startAmmo !== 'infinite' && !player.inventory.some((s) => s.weaponId === w.id),
+      );
+      if (poolDefs.length === 0) return null;
+      const pick = poolDefs[Math.floor(Math.random() * poolDefs.length)];
+      const startAmmo = Number(pick.startAmmo);
+      player.inventory.push({ weaponId: pick.id, ammo: startAmmo });
+      return { kind: 'weapon_added', weaponId: pick.id, ammo: startAmmo };
+    }
+    return null;
+  }
+
   private respawnTank(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
     const player = this.players.get(playerId);
@@ -973,6 +1222,8 @@ export class Room {
     player.burningOwner = null;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    player.inventory = createRandomLoadout();
+    tank.inventory = player.inventory;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -1000,6 +1251,7 @@ export class Room {
       this.tickProjectiles(simDt);
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
+      this.tickPickups(simDt);
     }, targetTickMs);
 
     this.broadcastInterval = setInterval(() => {
@@ -1514,8 +1766,16 @@ export class Room {
         }
 
         // Predictive Firing Logic - Initiative Enhancement
-        const weaponIndex = player.botWeaponIndex ?? 0;
-        const weapon = WEAPONS[weaponIndex];
+        // Pick a weapon from the bot's current inventory; fall back to
+        // standard if the chosen slot vanished (ammo ran out last tick).
+        if (player.inventory.length === 0) continue;
+        const slotIdx = (player.botWeaponIndex ?? 0) % player.inventory.length;
+        const slot = player.inventory[slotIdx];
+        const weapon = WEAPONS.find((w) => w.id === slot.weaponId);
+        if (!weapon) {
+          player.botWeaponIndex = 0;
+          continue;
+        }
 
         // Only run simulation if cooldown is ready to save performance
         if (now - player.lastFireTime >= weapon.cooldown) {
@@ -1523,8 +1783,12 @@ export class Room {
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
 
           // Fire! The jitter ensures they only hit 40-60% of the time.
+          this.consumeAmmo(player, weapon.id);
           this.performFire(tank, player, weapon, targetTank.position, result);
-          player.botWeaponIndex = Math.floor(Math.random() * WEAPONS.length);
+          // Reshuffle slot index against the (possibly shrunken) inventory.
+          player.botWeaponIndex = player.inventory.length > 0
+            ? Math.floor(Math.random() * player.inventory.length)
+            : 0;
         }
       } else {
         // No target? Roam the map.
@@ -1598,8 +1862,11 @@ export class Room {
   private clearCombatState(): void {
     this.activeProjectiles.clear();
     this.activeHazards.clear();
+    this.activePickups.clear();
     this.wireProjectiles.length = 0;
     this.wireHazards.length = 0;
+    this.wirePickups.length = 0;
+    this.nextPickupSpawnAt = this.simTime + PICKUP_SPAWN_INTERVAL;
   }
 
   private getStateUpdate(): RoomStateUpdate {
@@ -1607,6 +1874,7 @@ export class Room {
       tanks: this.tankList,
       projectiles: this.wireProjectiles,
       hazards: this.wireHazards,
+      pickups: this.wirePickups,
     };
   }
 
@@ -1620,6 +1888,7 @@ export class Room {
       terrainPresetLabel: TERRAIN_PRESETS[this.terrainPresetId].label,
       projectiles: state.projectiles,
       hazards: state.hazards,
+      pickups: state.pickups,
       resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
     };
   }
