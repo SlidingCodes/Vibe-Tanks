@@ -264,6 +264,46 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xd85c18,
         explosionScale: 0.9,
       };
+    case 'digger_shell':
+      return {
+        projectileRadius: 0.22,
+        projectileColor: 0x8a6a40,   // weathered brass
+        emissiveColor: 0xd08040,
+        trailColor: 0x6a584a,        // earthy smoke
+        trailSize: 0.42,
+        pathColor: 0x8a6a40,
+        pathOpacity: 0.14,
+        explosionColor: 0xd07030,
+        explosionScale: 0.55,
+      };
+    case 'wall_shell':
+      // Utility round: heavy, no bang. The "impact" spawns a wall, so the
+      // explosion FX is dialled down to a dust-puff signature.
+      return {
+        projectileRadius: 0.28,
+        projectileColor: 0x6a655c,   // gunmetal
+        emissiveColor: 0x9a9388,
+        trailColor: 0x80766a,        // dusty grey-beige
+        trailSize: 0.5,
+        pathColor: 0x78705c,
+        pathOpacity: 0.14,
+        explosionColor: 0xa89868,    // khaki dust
+        explosionScale: 0.18,
+      };
+    case 'ramp_shell':
+      // Same utility class as wall, tuned toward earthy brass so the two
+      // read as siblings in the HUD.
+      return {
+        projectileRadius: 0.26,
+        projectileColor: 0x7a6a50,   // olive khaki
+        emissiveColor: 0xb08a54,
+        trailColor: 0x70665a,
+        trailSize: 0.48,
+        pathColor: 0x7a6a50,
+        pathOpacity: 0.14,
+        explosionColor: 0xa8763a,    // brass dust
+        explosionScale: 0.18,
+      };
     case 'standard':
     default:
       return {

@@ -7,18 +7,20 @@ import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
+import { VoxelBuilt } from './scene/voxelBuilt';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { createTrackDecal, TrackDecalHandle } from './scene/trackDecal';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
+  setTankBuriedOutlineVisible,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, spectateTank, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
@@ -37,7 +39,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick,
+  isShiftHeld, consumeRightClick, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -421,6 +423,7 @@ let renderSmootherPrimed = false;
  *  by the smoothed render values. Avoids a per-frame allocation. */
 let viewState: TankState | null = null;
 let voxelScorch: VoxelScorch | null = null;
+let voxelBuilt: VoxelBuilt | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
  *  line segment from the previous tread position to the current one, so the
@@ -461,6 +464,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
+  // Built-material overlay mirrors scorch but for wall/ramp deposits. Also
+  // client-only and reset on every snapshot — late joiners see existing
+  // walls in the natural palette, which is a visible but acceptable seam.
+  voxelBuilt = new VoxelBuilt(voxelGrid);
   // Tread tracks are client-only, drawn into a top-down CanvasTexture that
   // the terrain shader samples in planar XZ UVs. Higher resolution than the
   // voxel grid, so two cingoli ~1.4 units apart render as distinct lines.
@@ -469,10 +476,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   trackDecal = createTrackDecal(voxelGrid);
   lastTreadPosByPlayer.clear();
   if (!surfaceNets) {
-    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal);
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
     surfaceNets.setVisible(surfaceNetsVisible);
   } else {
-    surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal);
+    surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
     surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
@@ -582,6 +589,10 @@ window.addEventListener('keydown', (ev) => {
     console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
   } else if (k === 'r' && !ev.repeat) {
     socket.emit('force_reset_match');
+  } else if (k === 'b' && !ev.repeat) {
+    // Dev: flip server-side bot auto-fill. Server removes existing bots
+    // on disable and refills empty slots on re-enable.
+    socket.emit('toggle_bots');
   }
 });
 
@@ -836,31 +847,102 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const sn = surfaceNets;
       const debris = voxelDebris;
       const scorch = voxelScorch;
+      const builtMat = voxelBuilt;
       setTimeout(() => {
-        const radius = step.blastRadius;
-        // Sample debris origins BEFORE carving (they must still be solid).
-        debris?.spawnFromCarve(grid, step.endPoint, radius);
-        grid.carveSphere(step.endPoint, radius);
-        // Mirror the carve into the client Rapier world so the local KCC
-        // collider matches the server and the freshly opened crater is
-        // present under the tank on the very next prediction tick.
-        clientPhysics?.invalidateSphere(step.endPoint, radius);
-        // Scorch extends past the blast radius so the burn ring is visible
-        // well outside the crater. Strength=1 + wider radius means even a
-        // single hit saturates enough voxels for the 8-corner average at
-        // SN vertices to read cleanly.
-        scorch?.addSphere(step.endPoint, radius * 1.9, 1.0);
-        // Only invalidate cuberille chunks when that view is actually visible.
-        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, radius);
-        // Mark surface-nets chunks dirty — flushDirtyChunks() rebuilds them
-        // once per frame before render, even if multiple missiles land this frame.
-        sn?.invalidateSphere(step.endPoint, radius * 1.9);
-        onMinimapCarve(grid, step.endPoint, radius);
+        const op = step.terrainOp ?? { kind: 'carve_sphere' as const };
+        const center = step.endPoint;
+        switch (op.kind) {
+          case 'carve_sphere': {
+            const radius = step.blastRadius;
+            // Sample debris origins BEFORE carving (they must still be solid).
+            debris?.spawnFromCarve(grid, center, radius);
+            grid.carveSphere(center, radius);
+            clientPhysics?.invalidateSphere(center, radius);
+            scorch?.addSphere(center, radius * 1.9, 1.0);
+            if (cuberilleVisible) cuberille?.invalidateSphere(center, radius);
+            sn?.invalidateSphere(center, radius * 1.9);
+            onMinimapCarve(grid, center, radius);
+            break;
+          }
+          case 'carve_cone': {
+            // Sample debris along the forward cone before carving.
+            const midPoint = {
+              x: center.x + op.direction.x * op.length * 0.5,
+              y: center.y + op.direction.y * op.length * 0.5,
+              z: center.z + op.direction.z * op.length * 0.5,
+            };
+            debris?.spawnFromCarve(grid, midPoint, op.baseRadius);
+            grid.carveCone(center, op.direction, op.length, op.baseRadius);
+            const invR = op.length * 0.5 + op.baseRadius + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            scorch?.addSphere(midPoint, invR * 1.2, 0.7);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.4);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
+          case 'carve_capsule': {
+            const endPoint = {
+              x: center.x + op.axis.x * op.length,
+              y: center.y + op.axis.y * op.length,
+              z: center.z + op.axis.z * op.length,
+            };
+            const midPoint = {
+              x: (center.x + endPoint.x) * 0.5,
+              y: (center.y + endPoint.y) * 0.5,
+              z: (center.z + endPoint.z) * 0.5,
+            };
+            debris?.spawnFromCarve(grid, midPoint, op.radius);
+            grid.carveCapsule(center, endPoint, op.radius);
+            const invR = op.length * 0.5 + op.radius + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            // Scorch the tunnel interior so it reads as a burnt dig-out,
+            // but weaker than a blast — the digger is mechanical, not HE.
+            scorch?.addSphere(midPoint, invR * 1.1, 0.55);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.4);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
+          case 'add_wall': {
+            const halfW = op.width / 2;
+            const halfH = op.height / 2;
+            const halfT = op.thickness / 2;
+            grid.addOrientedBox(center, op.forward, halfW, halfH, halfT);
+            builtMat?.stampOrientedBox(center, op.forward, halfW, halfH, halfT);
+            const invCenter = {
+              x: center.x,
+              y: center.y + halfH,
+              z: center.z,
+            };
+            const invR = Math.max(halfW, halfH, halfT) + 1;
+            clientPhysics?.invalidateSphere(invCenter, invR);
+            if (cuberilleVisible) cuberille?.invalidateSphere(invCenter, invR);
+            sn?.invalidateSphere(invCenter, invR * 1.2);
+            onMinimapCarve(grid, invCenter, invR);
+            break;
+          }
+          case 'add_ramp': {
+            grid.addRamp(center, op.forward, op.length, op.width, op.height);
+            builtMat?.stampRamp(center, op.forward, op.length, op.width, op.height);
+            const midPoint = {
+              x: center.x + op.forward.x * op.length * 0.5,
+              y: center.y + op.height * 0.5,
+              z: center.z + op.forward.z * op.length * 0.5,
+            };
+            const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.2);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
+        }
         // No preemptive airborne flip: the client Rapier KCC runs every
-        // animate frame against the just-invalidated colliders, so a
-        // crater opening under the tank shows up as "not grounded" on
-        // the very next prediction tick (~16 ms). Server reconciles via
-        // the standard state_update path.
+        // animate frame against the just-invalidated colliders, so any
+        // terrain change under the tank shows up on the very next
+        // prediction tick. Server reconciles via the standard state_update
+        // path.
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
@@ -1250,7 +1332,44 @@ function animate(): void {
       setEnemyPositions(enemies);
     }
 
-    const aimDirect = getVirtualAimDirect();
+    // Buried detection: sample the voxel density at the local tank's hull
+    // centre. When solid, we toggle a short-boom "buried camera" mode and
+    // the through-walls outline so the player can still see where their
+    // tank is, and swap the aim path to a direct NDC→yaw/pitch so the
+    // reticle doesn't chase terrain raycasts into the surrounding wall.
+    let buriedLocal = false;
+    if (voxelGrid) {
+      const cs = voxelGrid.cellSize;
+      const bodyY = myTankMesh.group.position.y + LOCAL_HULL_RADIUS;
+      const ix = Math.floor(myTankMesh.group.position.x / cs);
+      const iy = Math.floor(bodyY / cs) - voxelGrid.minYCells;
+      const iz = Math.floor(myTankMesh.group.position.z / cs);
+      buriedLocal = voxelGrid.isSolid(ix, iy, iz);
+      setTankBuriedOutlineVisible(myId, buriedLocal);
+      setCameraBuriedMode(buriedLocal);
+      setCameraBoomMultiplier(1);
+    }
+
+    // Buried aim: the world-raycast path slams into the wall the tank is
+    // stuck inside, giving a 1-metre aim target right above the player →
+    // barrel pitches to ~90° and shells spawn inside solid geometry.
+    // Synthesize a direct-aim from the mouse NDC instead: X drives a
+    // turret yaw around the body, Y drives pitch.
+    let buriedAimOverride: { yaw: number; pitch: number } | null = null;
+    if (buriedLocal) {
+      const ndc = getMouseNDC();
+      const bodyYaw = predictedState.bodyRotation;
+      // Map NDC.x ∈ [-1, 1] → yaw offset ∈ [-π, π] so the player can
+      // spin the turret to face any wall around them by sweeping the
+      // mouse.
+      const yawOffset = ndc.x * Math.PI;
+      buriedAimOverride = {
+        yaw: bodyYaw + yawOffset,
+        pitch: Math.max(-0.4, Math.min(0.4, ndc.y * 0.5)),
+      };
+    }
+
+    const aimDirect = buriedAimOverride ?? getVirtualAimDirect();
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
       const v = selectedWeapon.projectileSpeed;
@@ -1354,6 +1473,7 @@ function animate(): void {
     hud.updateWeaponCooldowns(lastFireByWeapon, now);
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
+
     followTank(
       myTankMesh.group.position,
       predictedState.bodyRotation,
@@ -1363,6 +1483,11 @@ function animate(): void {
     );
   } else {
     hideTrajectoryPreview();
+    // Dead / no predicted tank: drop the outline and revert camera state
+    // so the next life starts with a clean follow pose.
+    setTankBuriedOutlineVisible(myId, false);
+    setCameraBuriedMode(false);
+    setCameraBoomMultiplier(1);
     if (killcamKillerId) {
       const killerMesh = getAllTankMeshes().get(killcamKillerId);
       if (killerMesh) {

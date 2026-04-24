@@ -34,6 +34,11 @@ export interface SurfaceNetsChunkMesh {
   /** Optional per-vertex RGB colors in [0,1]. Only emitted when options.scorchAt
    *  is provided to buildSurfaceNetsChunk. length = 3 * vertexCount. */
   colors?: Float32Array;
+  /** Optional per-vertex "built" weight in [0,1]. Only emitted when
+   *  options.builtAt is provided. One float per vertex — the 8-corner
+   *  average of the built overlay, so the client shader can fully override
+   *  the dirt/rock albedo with a concrete tone for wall / ramp deposits. */
+  builtWeights?: Float32Array;
 }
 
 export interface SurfaceNetsOptions {
@@ -41,6 +46,11 @@ export interface SurfaceNetsOptions {
    *  per-vertex base color is darkened toward BURNT proportional to the
    *  8-corner scorch average around each dual cube. */
   scorchAt?: (ix: number, iy: number, iz: number) => number;
+  /** Optional "built material" sampler (voxel index → 0..255). When
+   *  provided, vertices with a high 8-corner built average take on a
+   *  concrete-grey tint instead of the natural terrain palette — used by
+   *  the wall/ramp weapons so deposits read as fresh construction. */
+  builtAt?: (ix: number, iy: number, iz: number) => number;
   /** Min/max terrain elevation in world units. When provided, the per-vertex
    *  base color follows a gray (low) → brown (mid) → green (high) palette
    *  matching the original heightmap renderer. */
@@ -78,6 +88,10 @@ const [BURNT_R, BURNT_G, BURNT_B] = srgbHex(0x080503);
 // Bedrock — neutral medium grey, distinctly stony vs the elevation palette's
 // low-tone grey. Blends in over a half-cell band beneath bedrockTopY.
 const [BED_R, BED_G, BED_B] = srgbHex(0x6a6a6a);
+// Built material: concrete / dressed-stone. Warmer than bedrock so walls
+// and ramps don't vanish in deep craters, but cleanly grey so they never
+// confuse with natural dirt/green terrain.
+const [BUILT_R, BUILT_G, BUILT_B] = srgbHex(0xa8a49a);
 // Clean, warm sand tone for the shoreline.
 const [SAND_R, SAND_G, SAND_B] = srgbHex(0xdbc19a);
 const BEDROCK_BLEND_HEIGHT = 0.5;
@@ -118,10 +132,16 @@ export function buildSurfaceNetsChunk(
   const normals: number[] = [];
   const indices: number[] = [];
   const colors: number[] = [];
+  const builtWeights: number[] = [];
   const scorchAt = options.scorchAt;
+  const builtAt = options.builtAt;
   const elevationRange = options.elevationRange;
   const bedrockTopY = options.bedrockTopY;
-  const emitColors = scorchAt !== undefined || elevationRange !== undefined || bedrockTopY !== undefined;
+  const emitColors =
+    scorchAt !== undefined ||
+    builtAt !== undefined ||
+    elevationRange !== undefined ||
+    bedrockTopY !== undefined;
   const elevMin = elevationRange ? elevationRange.min : 0;
   const elevSpan = elevationRange ? Math.max(1e-3, elevationRange.max - elevationRange.min) : 1;
 
@@ -242,6 +262,30 @@ export function buildSurfaceNetsChunk(
           r = r + (BURNT_R - r) * s;
           g = g + (BURNT_G - g) * s;
           b = b + (BURNT_B - b) * s;
+          // Built overlay takes over the tint fully when the 8-corner
+          // average is saturated — keeps walls/ramps cleanly concrete-grey
+          // regardless of the elevation band they happen to sit in. We
+          // also emit the raw weight as a separate vertex attribute so the
+          // client's textured path can override the whole albedo (vertex
+          // color alone only nudges the tint in that pipeline).
+          let builtW = 0;
+          if (builtAt) {
+            const bAvg = (
+              builtAt(ci,     cj,     ck    ) +
+              builtAt(ci + 1, cj,     ck    ) +
+              builtAt(ci,     cj + 1, ck    ) +
+              builtAt(ci + 1, cj + 1, ck    ) +
+              builtAt(ci,     cj,     ck + 1) +
+              builtAt(ci + 1, cj,     ck + 1) +
+              builtAt(ci,     cj + 1, ck + 1) +
+              builtAt(ci + 1, cj + 1, ck + 1)
+            ) / (8 * 255);
+            builtW = bAvg > 1 ? 1 : bAvg;
+            const w = builtW;
+            r = r + (BUILT_R - r) * w;
+            g = g + (BUILT_G - g) * w;
+            b = b + (BUILT_B - b) * w;
+          }
           if (bedrockTopY !== undefined) {
             // Smoothly take over below bedrockTopY: 1 at the surface, 0 a
             // BEDROCK_BLEND_HEIGHT band above. Anything well below is fully grey.
@@ -251,6 +295,7 @@ export function buildSurfaceNetsChunk(
             b = b + (BED_B - b) * m;
           }
           colors.push(r, g, b);
+          builtWeights.push(builtAt ? builtW : 0);
         }
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
@@ -307,6 +352,9 @@ export function buildSurfaceNetsChunk(
   };
   if (emitColors && colors.length > 0) {
     result.colors = new Float32Array(colors);
+  }
+  if (builtAt && builtWeights.length > 0) {
+    result.builtWeights = new Float32Array(builtWeights);
   }
   return result;
 }

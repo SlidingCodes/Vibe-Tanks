@@ -13,7 +13,9 @@ import {
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
+  ShotStep,
   TankState,
+  TerrainOp,
   TerrainPresetId,
   TerrainSettings,
   TrackHistory,
@@ -247,6 +249,9 @@ export class Room {
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
+  /** Dev toggle: when false, bots are removed and never refilled. Flipped
+   *  by the `toggle_bots` client event (default B key on the client). */
+  private botsEnabled: boolean = true;
 
   constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
     this.id = id;
@@ -566,6 +571,13 @@ export class Room {
       this.resetMatch();
     });
 
+    socket.on('toggle_bots', () => {
+      this.botsEnabled = !this.botsEnabled;
+      // eslint-disable-next-line no-console
+      console.log(`[bots] ${this.botsEnabled ? 'enabled' : 'disabled'} by ${socket.id}`);
+      this.ensureFourTanks();
+    });
+
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -610,6 +622,14 @@ export class Room {
 
   private ensureFourTanks(): void {
     const TARGET_TANKS = 4;
+
+    // With bots disabled, drop every existing bot and stop filling. Human
+    // players keep their slots.
+    if (!this.botsEnabled) {
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      for (const [botId] of bots) this.removeBot(botId);
+      return;
+    }
 
     // Remove bots if we have too many tanks
     if (this.players.size > TARGET_TANKS) {
@@ -687,6 +707,85 @@ export class Room {
     return step.startDelay + Math.max(0, (step.trajectory.length - 1) * sampleDt);
   }
 
+  /**
+   * Commit a step's terrain mutation against the authoritative voxel grid
+   * and refresh any Rapier chunks that intersect its footprint. The default
+   * op (undefined) preserves the original sphere-carve behaviour that every
+   * pre-terraforming weapon relies on; terraforming steps ship a TerrainOp
+   * describing the exact shape to apply.
+   */
+  private applyTerrainStep(step: ShotStep): void {
+    const op: TerrainOp = step.terrainOp ?? { kind: 'carve_sphere' };
+    const center = step.endPoint;
+    switch (op.kind) {
+      case 'carve_sphere': {
+        const r = step.blastRadius;
+        this.voxels.carveSphere(center, r);
+        this.physics.invalidateSphere(center, r);
+        break;
+      }
+      case 'carve_cone': {
+        this.voxels.carveCone(center, op.direction, op.length, op.baseRadius);
+        // Anchor the invalidation on the cone's midpoint so the sphere
+        // covers both the entry crater and the tip of the tunnel.
+        const mid: Vec3 = {
+          x: center.x + op.direction.x * op.length * 0.5,
+          y: center.y + op.direction.y * op.length * 0.5,
+          z: center.z + op.direction.z * op.length * 0.5,
+        };
+        const invR = op.length * 0.5 + op.baseRadius + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
+      case 'carve_capsule': {
+        const end: Vec3 = {
+          x: center.x + op.axis.x * op.length,
+          y: center.y + op.axis.y * op.length,
+          z: center.z + op.axis.z * op.length,
+        };
+        this.voxels.carveCapsule(center, end, op.radius);
+        const mid: Vec3 = {
+          x: (center.x + end.x) * 0.5,
+          y: (center.y + end.y) * 0.5,
+          z: (center.z + end.z) * 0.5,
+        };
+        const invR = op.length * 0.5 + op.radius + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
+      case 'add_wall': {
+        const halfW = op.width / 2;
+        const halfH = op.height / 2;
+        const halfT = op.thickness / 2;
+        // addOrientedBox centres the box on `center.y + halfH` → base sits
+        // on `center.y` (the impact point). Using addBox with the AABB of
+        // the rotated rectangle would deposit a square at 45° shots.
+        const boxCentre: Vec3 = { x: center.x, y: center.y, z: center.z };
+        this.voxels.addOrientedBox(boxCentre, op.forward, halfW, halfH, halfT);
+        const invCenter: Vec3 = {
+          x: center.x,
+          y: center.y + halfH,
+          z: center.z,
+        };
+        const invR = Math.max(halfW, halfH, halfT) + 1;
+        this.physics.invalidateSphere(invCenter, invR);
+        break;
+      }
+      case 'add_ramp': {
+        this.voxels.addRamp(center, op.forward, op.length, op.width, op.height);
+        // Invalidation sphere at the ramp's visual centre.
+        const mid: Vec3 = {
+          x: center.x + op.forward.x * op.length * 0.5,
+          y: center.y + op.height * 0.5,
+          z: center.z + op.forward.z * op.length * 0.5,
+        };
+        const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
+    }
+  }
+
   private scheduleShotResult(result: ShotResult, ownerId: PlayerId, weaponId: string): number {
     this.io.to(this.id).emit('shot_resolved', result);
 
@@ -697,8 +796,7 @@ export class Room {
       if (!step.carveTerrain) continue;
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        this.voxels.carveSphere(step.endPoint, step.blastRadius);
-        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+        this.applyTerrainStep(step);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -719,8 +817,7 @@ export class Room {
     let appliedCarve = false;
     for (const step of result.steps) {
       if (!step.carveTerrain) continue;
-      this.voxels.carveSphere(step.endPoint, step.blastRadius);
-      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+      this.applyTerrainStep(step);
       appliedCarve = true;
     }
     if (appliedCarve) this.regroundAliveTanks();
@@ -1427,13 +1524,22 @@ export class Room {
     // before KCC queries the terrain. Overlapping carves in the same tick
     // (splitter, simultaneous shots) collapse to one rebuild per chunk.
     this.physics.flushDirtyChunks();
-    this.physics.applyTankInputs(dt);
+
+    // Buried state: a tank whose hull centre sits in a solid voxel (walled
+    // in by a freshly dropped wall/ramp, or scrolled under by a terraform)
+    // must not fall through the world while the KCC can't find a way out.
+    // We detect it *before* applyTankInputs, pass the set as skipIds to
+    // freeze the body, and short-circuit the drown / airborne checks in
+    // the readback loop. The player digs out by shooting.
+    const buriedIds = this.computeBuriedTanks();
+    this.physics.applyTankInputs(dt, buriedIds);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
 
-      this.physics.readbackTank(pid, tank);
+      const buried = buriedIds.has(pid);
+      if (!buried) this.physics.readbackTank(pid, tank);
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
@@ -1442,8 +1548,10 @@ export class Room {
       if (player) tank.lastAppliedSeq = player.input.seq;
       // Airborne is now a pure readout of the body's contact state —
       // broadcast to clients for HUD / mesh effects, not used as a
-      // separate simulation path.
-      tank.airborne = !this.physics.isGrounded(pid);
+      // separate simulation path. Buried tanks are forced ground-true:
+      // their body is pinned, so any airborne flag would trigger a ragdoll
+      // render on the client that's not actually happening.
+      tank.airborne = buried ? false : !this.physics.isGrounded(pid);
 
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
@@ -1454,29 +1562,34 @@ export class Room {
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
       // Tilt from the voxel gradient — visual only, the Rapier body's
-      // X/Z rotations are locked.
-      this.alignTankTilt(tank, cellSize);
+      // X/Z rotations are locked. Buried tanks keep whatever tilt they
+      // had when they were engulfed.
+      if (!buried) this.alignTankTilt(tank, cellSize);
 
-      if (player && !tank.airborne) {
+      if (player && !tank.airborne && !buried) {
         const newSample = appendTrackSample(this.trackHistory, pid, tank, player.lastTrackSampleAt);
         if (newSample) player.lastTrackSampleAt = newSample;
       }
 
-      // Deep water suicide.
-      const drownDepth = 2.4;
-      if (tank.position.y < SEA_LEVEL - drownDepth) {
-        tank.hp = 0;
-        tank.alive = false;
-        if (player) {
-          player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+      // Deep water suicide. Buried tanks skip this — a tank walled in by a
+      // ramp on shore would otherwise drown because its Y happens to fall
+      // under the sea-level threshold inside the ramp.
+      if (!buried) {
+        const drownDepth = 2.4;
+        if (tank.position.y < SEA_LEVEL - drownDepth) {
+          tank.hp = 0;
+          tank.alive = false;
+          if (player) {
+            player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+          }
+          this.io.to(this.id).emit('match_event', {
+            kind: 'suicide',
+            victimId: pid,
+            name: tank.playerName,
+            color: tank.color,
+            weaponId: 'water',
+          });
         }
-        this.io.to(this.id).emit('match_event', {
-          kind: 'suicide',
-          victimId: pid,
-          name: tank.playerName,
-          color: tank.color,
-          weaponId: 'water',
-        });
       }
     }
   }
@@ -1690,6 +1803,24 @@ export class Room {
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, carveTerrain, damageTotals);
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
+  }
+
+  /** Set of alive tanks whose hull-centre voxel is solid — i.e. they've been
+   *  engulfed by a wall / ramp deposit. The physics step skips them so their
+   *  bodies stay pinned at the last translation instead of freefalling
+   *  through a terrain the KCC can't resolve its way out of. */
+  private computeBuriedTanks(): Set<PlayerId> {
+    const out = new Set<PlayerId>();
+    const cs = this.voxels.cellSize;
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      const centreY = tank.position.y + HULL_RADIUS;
+      const ix = Math.floor(tank.position.x / cs);
+      const iy = Math.floor(centreY / cs) - this.voxels.minYCells;
+      const iz = Math.floor(tank.position.z / cs);
+      if (this.voxels.isSolid(ix, iy, iz)) out.add(pid);
+    }
+    return out;
   }
 
   private regroundAliveTanks(): void {

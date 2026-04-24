@@ -183,6 +183,80 @@ export const WEAPONS: WeaponDefinition[] = [
       mineTerrainDamage: 2.8,
     },
   },
+  {
+    // Digger: burrows a forward cone into whatever the shell hits. Modest
+    // splash damage so it rewards hitting a tank directly, but its real
+    // purpose is terrain — tunnelling through walls and letting a buried
+    // tank shoot itself out.
+    id: 'digger',
+    name: 'Digger',
+    projectileSpeed: 22,
+    blastRadius: 2.6,
+    damage: 18,
+    // Impact always carves even without a terrainDamage number — the cone
+    // op below drives the actual terrain removal. Keep this > 0 so the
+    // base applyImpact path also opens a small crater at the entry.
+    terrainDamage: 2.2,
+    behavior: 'digger',
+    cooldown: 1.8,
+    startAmmo: 4,
+    maxAmmo: 8,
+    behaviorConfig: {
+      // Drive-through tunnel: uniform radius so the tank (hull r=0.8,
+      // tread span ~1.8) fits through the ENTRY too, not just the exit.
+      // Length 10 keeps the near/far caps far enough apart to punch a
+      // through-tunnel on typical walls/craters.
+      diggerTunnelLength: 10,
+      diggerTunnelRadius: 3.5,
+    },
+  },
+  {
+    // Wall: fire-and-forget cover. Deposits a barricade at the impact
+    // perpendicular to the shot direction. No damage — pure utility.
+    id: 'wall',
+    name: 'Wall',
+    projectileSpeed: 18,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'wall',
+    cooldown: 3.0,
+    startAmmo: 3,
+    maxAmmo: 6,
+    behaviorConfig: {
+      wallWidth: 6,
+      wallHeight: 3.2,
+      // A 1-cell thick wall disappears on non-axis angles because cell
+      // centres fall outside the ±halfT band (only the single i+j=k
+      // anti-diagonal row is inside at 45°). Keep this ≥ 2 so a diagonal
+      // shot still deposits a coherent wall ~2 cells thick.
+      wallThickness: 2.2,
+    },
+  },
+  {
+    // Ramp: drive-up wedge rising along the shot direction from the
+    // impact point. Useful for crossing craters or popping up onto
+    // elevated ground.
+    id: 'ramp',
+    name: 'Ramp',
+    projectileSpeed: 18,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'ramp',
+    cooldown: 3.0,
+    startAmmo: 3,
+    maxAmmo: 6,
+    behaviorConfig: {
+      // Drivable wedge — wide enough for the tank (hull radius 0.8,
+      // track span ~1.8) with margin, long enough to keep the slope
+      // under ~17° (tanh ≈ rampHeight/rampLength) so the KCC's 89°
+      // climb limit is nowhere near binding.
+      rampLength: 12,
+      rampWidth: 5,
+      rampHeight: 3.5,
+    },
+  },
 ];
 
 /** Max number of slots in a tank's weapon inventory (default + consumables). */

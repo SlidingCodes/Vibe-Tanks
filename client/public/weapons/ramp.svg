@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="rpBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c0b890"/>
+      <stop offset="1" stop-color="#5a4f30"/>
+    </linearGradient>
+    <linearGradient id="rpShade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a89868"/>
+      <stop offset="1" stop-color="#6a5f3a"/>
+    </linearGradient>
+    <linearGradient id="rpGround" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a6a3a"/>
+      <stop offset="1" stop-color="#3a4a2a"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="52" width="60" height="10" fill="url(#rpGround)" stroke="#1a1814" stroke-width="1.2"/>
+  <g stroke="#1a1814" stroke-width="1.4" stroke-linejoin="round">
+    <path d="M6 52 L58 52 L58 16 Z" fill="url(#rpBody)"/>
+    <path d="M58 16 L58 52 L54 52 L54 20 Z" fill="url(#rpShade)"/>
+  </g>
+  <g stroke="#1a1814" stroke-width="0.9" opacity="0.7" fill="none">
+    <path d="M14 49 L18 47.5"/>
+    <path d="M22 46 L26 44.5"/>
+    <path d="M30 43 L34 41.5"/>
+    <path d="M38 40 L42 38.5"/>
+    <path d="M46 37 L50 35.5"/>
+  </g>
+  <g stroke="#a8763a" stroke-width="1.4" opacity="0.85" fill="none">
+    <path d="M46 30 L54 22"/>
+    <path d="M52 34 L58 28"/>
+  </g>
+</svg>

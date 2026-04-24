@@ -3,6 +3,7 @@ import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE, SurfaceNetsOptions } from '@shared/terrain/surfaceNetsMesher';
 import { Vec3 } from '@shared/types/index';
 import { VoxelScorch } from './voxelScorch';
+import { VoxelBuilt } from './voxelBuilt';
 import { TrackDecalHandle } from './trackDecal';
 
 const CHUNK_SIZE = SURFACE_NETS_CHUNK_SIZE;
@@ -65,6 +66,14 @@ const VERTEX_TINT_MAX = 1.4;
 // the surface layer.
 const BEDROCK_DARKEN = 0.45;
 
+// Built-material override color (linear-space). Warm dressed-stone grey —
+// walls and ramps collapse to this regardless of elevation band / slope so
+// deposits stand out clearly against the dirt/green/sand palette.
+const BUILT_ALBEDO = new THREE.Color(0x7a7871).convertSRGBToLinear();
+// Roughness floor for built material — smoother than dirt so highlights
+// carry across the wall face.
+const BUILT_ROUGHNESS = 0.55;
+
 // Macro colour variation frequency (world-units^-1). A slow-varying fbm
 // shifts the whole albedo cool↔warm across regions so the same texture
 // tile doesn't read as identical across the map. No extra texture fetches.
@@ -80,6 +89,9 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
   if (data.colors) {
     geom.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
   }
+  if (data.builtWeights) {
+    geom.setAttribute('built', new THREE.BufferAttribute(data.builtWeights, 1));
+  }
   geom.setIndex(new THREE.BufferAttribute(data.indices, 1));
   // Explicit bounding sphere so Three.js can frustum-cull this chunk when
   // it's behind the camera. Without it, three recomputes on each pass but
@@ -91,7 +103,7 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
 export interface SurfaceNetsHandle {
   group: THREE.Group;
   dispose(): void;
-  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, trackDecal?: TrackDecalHandle | null): void;
+  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, trackDecal?: TrackDecalHandle | null, built?: VoxelBuilt): void;
   invalidateSphere(center: Vec3, radius: number): void;
   /** Rebuild all chunks dirtied since the last flush. Call once per frame
    *  before renderer.render() to batch multiple same-frame invalidations. */
@@ -124,6 +136,7 @@ export function createSurfaceNetsTerrain(
   scene: THREE.Scene,
   scorch?: VoxelScorch,
   trackDecal?: TrackDecalHandle | null,
+  built?: VoxelBuilt,
 ): SurfaceNetsHandle {
   // Always vertex-coloured: the mesher emits a heightmap-style gray/brown/
   // green palette + an optional scorch overlay. Tread tracks live in a
@@ -204,11 +217,15 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uMacroColorWarm = { value: MACRO_COLOR_WARM };
     shader.uniforms.uBedrockTopY = uBedrockTopY;
     shader.uniforms.uBedrockDarken = uBedrockDarken;
+    shader.uniforms.uBuiltAlbedo = { value: BUILT_ALBEDO };
+    shader.uniforms.uBuiltRoughness = { value: BUILT_ROUGHNESS };
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
+attribute float built;
+varying float vBuilt;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;`,
       )
@@ -217,7 +234,8 @@ varying vec3 vWorldNormal;`,
         `#include <begin_vertex>
 vec4 _vtWorldPos = modelMatrix * vec4(transformed, 1.0);
 vWorldPos = _vtWorldPos.xyz;
-vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
+vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+vBuilt = built;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -226,6 +244,9 @@ vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
         `#include <common>
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
+varying float vBuilt;
+uniform vec3 uBuiltAlbedo;
+uniform float uBuiltRoughness;
 uniform sampler2D uTrackMap;
 uniform vec2 uTrackWorldMin;
 uniform vec2 uTrackWorldSize;
@@ -371,6 +392,17 @@ if (uUseTextures > 0.5) {
   diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
 }
 
+// --- built-material override (walls, ramps). Iso-surface vertices have
+//     four solid corners and four empty corners, so the raw 8-corner
+//     average tops out around 0.5 even on a fully built wall. Smoothstep
+//     the weight so any vertex whose neighbourhood is majority-built
+//     snaps toward full stone — otherwise a linear mix leaves deposits
+//     reading half-dirt.
+if (vBuilt > 0.001) {
+  float vt_bw = smoothstep(0.15, 0.45, vBuilt);
+  diffuseColor.rgb = mix(diffuseColor.rgb, uBuiltAlbedo, vt_bw);
+}
+
 // --- tread-track decal (always on; sits on top of whichever base path ran) ---
 if (uTrackEnabled > 0.5) {
   vec2 trackUv = (vWorldPos.xz - uTrackWorldMin) / uTrackWorldSize;
@@ -385,7 +417,12 @@ if (uTrackEnabled > 0.5) {
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
 // Tie roughness to the detail noise so highlights break up across terrain.
-roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);`,
+roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);
+// Built material: smoother than dirt so the stone catches a cleaner
+// highlight. Same smoothstep curve as the albedo override so roughness
+// matches it vertex-for-vertex — otherwise rough dirt + stone color
+// looks like painted dirt.
+roughnessFactor = mix(roughnessFactor, uBuiltRoughness, smoothstep(0.15, 0.45, vBuilt));`,
       )
       .replace(
         '#include <normal_fragment_maps>',
@@ -426,11 +463,13 @@ if (uUseTextures > 0.5) {
   const dirtyChunks = new Set<string>();
   let activeGrid = grid;
   let activeScorch = scorch;
+  let activeBuilt = built;
   let activeElevation = computeElevationRange(grid);
   const meshOptions = (): SurfaceNetsOptions => ({
     elevationRange: activeElevation,
     bedrockTopY: activeGrid.bedrockSurfaceY,
     ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
+    ...(activeBuilt ? { builtAt: (ix, iy, iz) => activeBuilt!.sampleAt(ix, iy, iz) } : {}),
   });
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
@@ -464,9 +503,10 @@ if (uUseTextures > 0.5) {
     chunks.clear();
   }
 
-  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
+  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null, b?: VoxelBuilt): void {
     activeGrid = g;
     if (s !== undefined) activeScorch = s;
+    if (b !== undefined) activeBuilt = b;
     if (t !== undefined) {
       uTrackMap.value = t?.texture ?? null;
       uTrackEnabled.value = t ? 1 : 0;
@@ -555,9 +595,9 @@ if (uUseTextures > 0.5) {
       uRockNormal.value.dispose();
       scene.remove(group);
     },
-    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
+    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null, b?: VoxelBuilt): void {
       dirtyChunks.clear();
-      rebuildAll(g, s, t);
+      rebuildAll(g, s, t, b);
     },
     invalidateSphere,
     flushDirtyChunks,

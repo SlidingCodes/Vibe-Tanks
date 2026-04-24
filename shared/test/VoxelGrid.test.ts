@@ -195,4 +195,154 @@ describe('VoxelGrid', () => {
       expect(y).toBe(g.bedrockSurfaceY);
     });
   });
+
+  describe('addBox', () => {
+    it('raises a solid column above flat ground where there was none', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const beforeH = g.getHeight(16, 16);
+      g.addBox({ x: 14, y: 2, z: 14 }, { x: 18, y: 5, z: 18 });
+      const afterH = g.getHeight(16, 16);
+      expect(afterH - beforeH).toBeGreaterThan(2);
+    });
+
+    it('does not lower density outside the box (additive only)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Pick a cell well outside the box.
+      const before = g.getDensity(4, 18, 4);
+      g.addBox({ x: 14, y: 2, z: 14 }, { x: 18, y: 5, z: 18 });
+      const after = g.getDensity(4, 18, 4);
+      expect(after).toBe(before);
+    });
+
+    it('partially fills a previously carved crater (additive over low density)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      g.carveSphere({ x: 16, y: 2, z: 16 }, 3);
+      const carvedDensity = g.getDensity(16, 18, 16); // above the carved zone
+      g.addBox({ x: 13, y: 0, z: 13 }, { x: 19, y: 4, z: 19 });
+      const filled = g.getDensity(16, 18, 16);
+      // The addBox overlaps the old crater and must raise the density there.
+      expect(filled).toBeGreaterThan(carvedDensity);
+    });
+  });
+
+  describe('carveCapsule', () => {
+    it('opens a uniform-radius tunnel from start to end', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(8));
+      const before = g.getHeight(16, 16);
+      // Horizontal capsule at y=6 with radius 3 — top lip reaches y=9, so
+      // the carve breaks through the y=8 surface at every point along the
+      // axis and the column height drops. A cone with zero-radius apex
+      // would leave the start column largely untouched.
+      g.carveCapsule({ x: 10, y: 6, z: 16 }, { x: 22, y: 6, z: 16 }, 3);
+      const startH = g.getHeight(12, 16);
+      const midH = g.getHeight(16, 16);
+      const endH = g.getHeight(20, 16);
+      expect(before - startH).toBeGreaterThan(2);
+      expect(before - midH).toBeGreaterThan(2);
+      expect(before - endH).toBeGreaterThan(2);
+      expect(Math.abs(startH - endH)).toBeLessThan(1);
+    });
+
+    it('leaves terrain outside the radius untouched', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(4));
+      const before = g.getHeight(4, 4);
+      g.carveCapsule({ x: 16, y: 3, z: 16 }, { x: 22, y: 3, z: 16 }, 2);
+      const after = g.getHeight(4, 4);
+      expect(Math.abs(after - before)).toBeLessThan(0.01);
+    });
+
+    it('does not carve into bedrock', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const bedrockBefore = g.getDensity(16, BEDROCK_DEPTH_CELLS - 1, 16);
+      g.carveCapsule({ x: 14, y: -12, z: 16 }, { x: 18, y: -12, z: 16 }, 4);
+      const bedrockAfter = g.getDensity(16, BEDROCK_DEPTH_CELLS - 1, 16);
+      expect(bedrockAfter).toBe(bedrockBefore);
+    });
+  });
+
+  describe('addOrientedBox', () => {
+    it('raises terrain height across the width axis (perpendicular to forward)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Forward +X → width axis is Z. Wall: halfW=3 (6 wide on Z), halfH=1.5
+      // (3 tall on Y), halfT=0.6 (1.2 thick on X). Centered at (16, 2, 16).
+      g.addOrientedBox(
+        { x: 16, y: 2, z: 16 },
+        { x: 1, y: 0, z: 0 },
+        3, 1.5, 0.6,
+      );
+      // Sample along +Z away from centre (along the wall): should be raised.
+      const alongWall = g.getHeight(16, 18);
+      const offEnd = g.getHeight(16, 24);
+      expect(alongWall).toBeGreaterThan(offEnd + 1);
+    });
+
+    it('preserves the rectangular footprint at 45° (no square bloat)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const inv = 1 / Math.sqrt(2);
+      // Wall: halfW=3, halfH=1.5, halfT=0.6. Forward on the diagonal
+      // +X+Z → thickness axis runs NE-SW, width runs NW-SE.
+      g.addOrientedBox(
+        { x: 16, y: 2, z: 16 },
+        { x: inv, y: 0, z: inv },
+        3, 1.5, 0.6,
+      );
+      const baseHeight = g.getHeight(4, 4); // far from the wall
+      // Sample 3 cells along the forward axis — outside the thin wall.
+      const offForward = g.getHeight(16 + 3 * inv, 16 + 3 * inv);
+      // Sample on the wall's midline. At 45° the cell-centre lattice only
+      // hosts the wall along the integer-sum anti-diagonal (ix+iz=31), so a
+      // bilinear query between two such cells catches 50% wall material —
+      // enough to halve the gap between natural ground and the wall top.
+      const onWidth = g.getHeight(14.5, 16.5);
+      expect(Math.abs(offForward - baseHeight)).toBeLessThan(0.4);
+      expect(onWidth - baseHeight).toBeGreaterThan(1);
+    });
+
+    it('no-ops with a zero-length forward', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const snap = Uint8Array.from(g.data);
+      g.addOrientedBox({ x: 16, y: 2, z: 16 }, { x: 0, y: 1, z: 0 }, 3, 1.5, 0.6);
+      expect(g.data).toEqual(snap);
+    });
+  });
+
+  describe('addRamp', () => {
+    it('produces a surface that rises along the forward direction', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Ramp rises +X from x=12 → x=20, width 4 around z=16, height 3.
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 1, y: 0, z: 0 }, 8, 4, 3);
+      const near = g.getHeight(13, 16);
+      const mid = g.getHeight(16, 16);
+      const far = g.getHeight(19, 16);
+      expect(mid).toBeGreaterThan(near);
+      expect(far).toBeGreaterThan(mid);
+    });
+
+    it('does not modify terrain outside the ramp footprint', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const before = g.getHeight(4, 4);
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 1, y: 0, z: 0 }, 8, 4, 3);
+      const after = g.getHeight(4, 4);
+      expect(Math.abs(after - before)).toBeLessThan(0.01);
+    });
+
+    it('no-ops with a zero-length forward', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const snap = Uint8Array.from(g.data);
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 0, y: 0, z: 0 }, 8, 4, 3);
+      expect(g.data).toEqual(snap);
+    });
+  });
 });

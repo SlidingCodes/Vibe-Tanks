@@ -318,6 +318,309 @@ export class VoxelGrid {
     }
   }
 
+  /**
+   * Additive box fill: raises density inside an axis-aligned box with a
+   * 1-cell smooth rim at the boundary so Surface Nets finds a clean iso
+   * crossing on each face. Existing density is never *lowered* — the op
+   * paints new material on top of what's already there, leaving craters
+   * elsewhere in the AABB alone. Used by the `wall` weapon to pop a
+   * barricade up out of the ground.
+   */
+  addBox(min: Vec3, max: Vec3): void {
+    const cs = this.cellSize;
+    // +1 cell of slack on every side so the boundary smoothstep has room.
+    const ixMin = Math.max(0, Math.floor(min.x / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(max.x / cs) + 1);
+    const iyMin = Math.max(0, Math.floor(min.y / cs) - this.minYCells - 1);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(max.y / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(min.z / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(max.z / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          // Axis-aligned box SDF: positive inside, negative outside.
+          const dxIn = Math.min(wx - min.x, max.x - wx);
+          const dyIn = Math.min(wy - min.y, max.y - wy);
+          const dzIn = Math.min(wz - min.z, max.z - wz);
+          let signed: number;
+          if (dxIn >= 0 && dyIn >= 0 && dzIn >= 0) {
+            signed = Math.min(dxIn, dyIn, dzIn);
+          } else {
+            const ex = dxIn < 0 ? -dxIn : 0;
+            const ey = dyIn < 0 ? -dyIn : 0;
+            const ez = dzIn < 0 ? -dzIn : 0;
+            signed = -Math.sqrt(ex * ex + ey * ey + ez * ez);
+          }
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
+   * Additive oriented-box fill: raises density inside a rectangular box
+   * rotated around its Y-axis by `forward` (projected onto XZ). `forward`
+   * is the thickness axis — the box is `2*halfT` deep along it — and the
+   * perpendicular XZ vector is the width axis (`2*halfW` wide). Height
+   * `2*halfH` is vertical, measured from the base at `center.y` upward
+   * (i.e. the box sits on the ground with its bottom face at `center.y`).
+   *
+   * The difference from `addBox` is that this routine runs the SDF in
+   * the rotated local frame, so a diagonal `forward` produces a real
+   * rotated wall rather than the AABB of the rotation (which is a cube
+   * when the shot angle is 45°). Used by the `wall` weapon.
+   */
+  addOrientedBox(center: Vec3, forward: Vec3, halfW: number, halfH: number, halfT: number): void {
+    if (halfW <= 0 || halfH <= 0 || halfT <= 0) return;
+    const fLenSq = forward.x * forward.x + forward.z * forward.z;
+    if (fLenSq < 1e-5) return;
+    const fLen = Math.sqrt(fLenSq);
+    const fx = forward.x / fLen;
+    const fz = forward.z / fLen;
+    // Right axis perpendicular to forward in XZ.
+    const rx = -fz;
+    const rz = fx;
+
+    // World-space AABB enclosing the rotated box.
+    const extX = halfW * Math.abs(rx) + halfT * Math.abs(fx);
+    const extZ = halfW * Math.abs(rz) + halfT * Math.abs(fz);
+    const minX = center.x - extX;
+    const maxX = center.x + extX;
+    const minZ = center.z - extZ;
+    const maxZ = center.z + extZ;
+    const minY = center.y;
+    const maxY = center.y + 2 * halfH;
+
+    const cs = this.cellSize;
+    const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
+    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells - 1);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      const h = wy - center.y - halfH; // 0 at box centre, ±halfH at faces
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          const px = wx - center.x;
+          const pz = wz - center.z;
+          // Project into the rotated local frame.
+          const u = px * rx + pz * rz; // along width
+          const v = px * fx + pz * fz; // along thickness (forward)
+          // Axis-aligned slabs in the local frame.
+          const slabU = halfW - Math.abs(u);
+          const slabV = halfT - Math.abs(v);
+          const slabY = halfH - Math.abs(h);
+          let signed = slabU;
+          if (slabV < signed) signed = slabV;
+          if (slabY < signed) signed = slabY;
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
+   * Additive wedge fill: the top surface rises from `base.y` at the back
+   * (`u = 0`) to `base.y + height` at the front (`u = length`), with
+   * lateral width `width` perpendicular to `forward` (projected onto XZ).
+   * Used by the `ramp` weapon.
+   *
+   * Unlike a prism, this wedge has no explicit floor — the SDF fills every
+   * voxel under the slanted top that's inside the width band, all the way
+   * down to the bedrock guard. The additive rule (`max(new, existing)`)
+   * does the rest: voxels already solid from existing terrain are
+   * untouched, voxels empty below the top surface get filled to the exact
+   * drive-up height. The net effect is a mound that takes whatever
+   * column-level the natural ground was at and lifts it to the ramp top,
+   * eliminating the "vertical step" the bounded-bottom version produced
+   * on uneven terrain.
+   *
+   * Slanted top uses a slab distance without the cosine correction of a
+   * true SDF; overshoots the iso crossing by cos(slope). Visually harmless.
+   */
+  addRamp(base: Vec3, forward: Vec3, length: number, width: number, height: number): void {
+    if (length <= 0 || width <= 0 || height <= 0) return;
+    const fLenSq = forward.x * forward.x + forward.z * forward.z;
+    if (fLenSq < 1e-5) return;
+    const fLen = Math.sqrt(fLenSq);
+    const nx = forward.x / fLen;
+    const nz = forward.z / fLen;
+    // Right vector perpendicular to forward in XZ.
+    const rx = -nz;
+    const rz = nx;
+
+    const cs = this.cellSize;
+    const halfW = width / 2;
+    const corners: Array<[number, number]> = [
+      [0, halfW], [0, -halfW],
+      [length, halfW], [length, -halfW],
+    ];
+    let minX = Infinity, maxX = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+    for (const [u, v] of corners) {
+      const wx = base.x + u * nx + v * rx;
+      const wz = base.z + u * nz + v * rz;
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wz < minZ) minZ = wz;
+      if (wz > maxZ) maxZ = wz;
+    }
+    const maxY = base.y + height;
+
+    const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
+    // Extend down to the bedrock guard: we want the additive op to *lift*
+    // every column, not stop at some arbitrary floor. Voxels inside
+    // existing terrain are already 255 so no work is wasted there.
+    const iyMin = BEDROCK_DEPTH_CELLS;
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+    const invLength = 1 / length;
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      const wRel = wy - base.y;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          const px = wx - base.x;
+          const pz = wz - base.z;
+          const u = px * nx + pz * nz;
+          const v = px * rx + pz * rz;
+          const topY = u * height * invLength;
+          // Four slab faces — no floor. Back and front faces, side faces,
+          // and the slanted top. Cells below the ramp top but within the
+          // XZ footprint get filled all the way down (additive, so pre-
+          // existing ground keeps its density).
+          const slabU0 = u;                  // back face
+          const slabU1 = length - u;         // far face
+          const slabV = halfW - Math.abs(v); // side faces
+          const slabUp = topY - wRel;        // slanted top
+          let signed = slabU0;
+          if (slabU1 < signed) signed = slabU1;
+          if (slabV < signed) signed = slabV;
+          if (slabUp < signed) signed = slabUp;
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
+   * Smooth capsule carve: a cylinder of uniform `radius` running from `start`
+   * to `end`, plus hemispherical caps on both ends. Used by the `digger`
+   * weapon to hollow a tank-sized drive-through tunnel — a cone's apex is a
+   * point, which makes the tunnel entrance narrower than the tank even when
+   * the far end is wide. Falloff/rim-jitter mirror `carveSphere` so the
+   * resulting tunnel walls look like the rest of the voxel terrain.
+   */
+  carveCapsule(start: Vec3, end: Vec3, radius: number): void {
+    if (radius <= 0) return;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dz = end.z - start.z;
+    const lenSq = dx * dx + dy * dy + dz * dz;
+    if (lenSq <= 1e-6) {
+      this.carveSphere(start, radius);
+      return;
+    }
+    const invLen = 1 / Math.sqrt(lenSq);
+    const ax = dx * invLen;
+    const ay = dy * invLen;
+    const az = dz * invLen;
+    const length = 1 / invLen;
+    const cs = this.cellSize;
+    const RIM_AMP = 0.035;
+    const effRadius = radius * (1 + RIM_AMP);
+
+    const minX = Math.min(start.x, end.x) - effRadius;
+    const maxX = Math.max(start.x, end.x) + effRadius;
+    const minY = Math.min(start.y, end.y) - effRadius;
+    const maxY = Math.max(start.y, end.y) + effRadius;
+    const minZ = Math.min(start.z, end.z) - effRadius;
+    const maxZ = Math.max(start.z, end.z) + effRadius;
+
+    const ixMin = Math.max(0, Math.floor(minX / cs));
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs));
+    const izMin = Math.max(0, Math.floor(minZ / cs));
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs));
+    const iyMin = Math.max(BEDROCK_DEPTH_CELLS, Math.floor(minY / cs) - this.minYCells);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells);
+    if (iyMin > iyMax) return;
+
+    const invR = 1 / radius;
+    const phase = (start.x * 12.9898 + start.z * 78.233 + start.y * 37.719) % (2 * Math.PI);
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          // Closest point on the axis segment to (wx, wy, wz).
+          const px = wx - start.x;
+          const py = wy - start.y;
+          const pz = wz - start.z;
+          let t = px * ax + py * ay + pz * az;
+          if (t < 0) t = 0;
+          else if (t > length) t = length;
+          const qx = start.x + ax * t;
+          const qy = start.y + ay * t;
+          const qz = start.z + az * t;
+          const ddx = wx - qx;
+          const ddy = wy - qy;
+          const ddz = wz - qz;
+          const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+          if (d2 <= 1e-6) {
+            this.data[this.index(ix, iy, iz)] = 0;
+            continue;
+          }
+          const d = Math.sqrt(d2);
+          const u = d * invR;
+          // Angular jitter around the axis so tunnel walls don't read as
+          // cylindrically mathematical. Phase projects any axis-perp
+          // direction to a scalar angle.
+          const theta = Math.atan2(ddz, ddx);
+          const rimOffset = Math.cos(theta * 4 + phase) * (RIM_AMP * 0.7);
+          const uEff = u + rimOffset;
+          if (uEff >= 1) continue;
+          const idx = this.index(ix, iy, iz);
+          let keep: number;
+          if (uEff < 0.85) keep = 0;
+          else {
+            const tt = (uEff - 0.85) / 0.15;
+            keep = tt * tt * (3 - 2 * tt);
+          }
+          const existing = this.data[idx];
+          const newD = Math.round(existing * keep);
+          if (newD < existing) this.data[idx] = newD;
+        }
+      }
+    }
+  }
+
   /** Wire-format snapshot of the full grid. `data` is the Uint8Array's buffer. */
   toSnapshot(): VoxelSnapshot {
     return {
