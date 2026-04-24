@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getAllTankMeshes } from './tank';
 import {
   ActiveProjectileState,
@@ -9,6 +10,29 @@ import {
 } from '@shared/types/index';
 import { AtmosphereHandle } from '../scene/atmosphere';
 import { getParticleTextures } from '../scene/particles';
+
+/** Build a true tank-shell geometry: cylindrical body + conical nose,
+ *  merged into a single BufferGeometry oriented with the nose along +Z so
+ *  Object3D.lookAt(behind) aims it down-trajectory. The radius parameter
+ *  drives the body radius; total length is ~3.6×radius. */
+function buildShellGeometry(radius: number): THREE.BufferGeometry {
+  const bodyLen = radius * 2.4;
+  const noseLen = radius * 1.4;
+  const body = new THREE.CylinderGeometry(radius, radius, bodyLen, 12);
+  body.rotateX(Math.PI / 2);
+  const nose = new THREE.ConeGeometry(radius, noseLen, 12);
+  nose.rotateX(Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2 + noseLen / 2);
+  // Center the merged shell so the origin sits roughly at the
+  // body/nose join — looks natural when oriented in flight.
+  body.translate(0, 0, -bodyLen / 4);
+  nose.translate(0, 0, -bodyLen / 4);
+  const merged = mergeGeometries([body, nose]);
+  body.dispose();
+  nose.dispose();
+  if (!merged) throw new Error('buildShellGeometry: mergeGeometries returned null');
+  return merged;
+}
 
 
 const SECONDS_PER_SAMPLE = 4 / 60;
@@ -70,175 +94,187 @@ const shots: ActiveShotStep[] = [];
 const replicatedProjectiles = new Map<string, ReplicatedProjectileVisual>();
 const hazardVisuals = new Map<string, HazardVisual>();
 
+// Military-restyle palette (chore/weapons-visual-redesign):
+//   body  = gunmetal/olive/brass — the shell in daylight
+//   emissive = dim hot-ember spot on the nose (no neon glow)
+//   trail = desaturated smoke drawn with the smokePuff texture (see
+//           createProjectileVisual) — color is a mid-grey tint applied
+//           to the smoke sprite
+//   path  = faint tracer-line along the pre-computed trajectory; kept
+//           at low opacity so it reads as a hint, not a laser
+//   explosionColor drives the fire-core tint in showExplosion
 function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
   switch (style) {
     case 'big_blast':
       return {
         projectileRadius: 0.34,
-        projectileColor: 0xffdd77,
-        emissiveColor: 0xff6611,
-        trailColor: 0xff8844,
-        trailSize: 0.28,
-        pathColor: 0xff5522,
-        pathOpacity: 0.4,
-        explosionColor: 0xff5522,
+        projectileColor: 0x8e7a52,   // heavy brass
+        emissiveColor: 0xff5a14,
+        trailColor: 0x6a6458,        // warm grey smoke
+        trailSize: 0.55,
+        pathColor: 0x8c6a3a,
+        pathOpacity: 0.18,
+        explosionColor: 0xff5a14,
         explosionScale: 0.9,
       };
     case 'splitter_parent':
       return {
         projectileRadius: 0.22,
-        projectileColor: 0x99e6ff,
-        emissiveColor: 0x2299ff,
-        trailColor: 0x66ccff,
-        trailSize: 0.18,
-        pathColor: 0x55bbff,
-        pathOpacity: 0.35,
-        explosionColor: 0x99ddff,
+        projectileColor: 0x6a8898,   // cool steel
+        emissiveColor: 0x5ac0dc,
+        trailColor: 0x606670,        // cool grey smoke
+        trailSize: 0.42,
+        pathColor: 0x6a8898,
+        pathOpacity: 0.16,
+        explosionColor: 0x9ac8dc,
         explosionScale: 0.55,
       };
     case 'splitter_fragment':
       return {
         projectileRadius: 0.14,
-        projectileColor: 0xc7ff7a,
-        emissiveColor: 0x5eff66,
-        trailColor: 0x9dff8a,
-        trailSize: 0.13,
-        pathColor: 0x76ff76,
-        pathOpacity: 0.25,
-        explosionColor: 0xb8ff7a,
+        projectileColor: 0x8aa078,   // olive-sage
+        emissiveColor: 0x78c848,
+        trailColor: 0x6a7060,
+        trailSize: 0.3,
+        pathColor: 0x8aa078,
+        pathOpacity: 0.12,
+        explosionColor: 0x88b448,
         explosionScale: 0.55,
       };
     case 'bouncer_parent':
       return {
         projectileRadius: 0.22,
-        projectileColor: 0xfff68c,
-        emissiveColor: 0xffcc33,
-        trailColor: 0xfff27a,
-        trailSize: 0.18,
-        pathColor: 0xffdc55,
-        pathOpacity: 0.35,
-        explosionColor: 0xffee88,
+        projectileColor: 0xa89050,   // brass-gold
+        emissiveColor: 0xf8b020,
+        trailColor: 0x70685a,
+        trailSize: 0.42,
+        pathColor: 0xa89050,
+        pathOpacity: 0.16,
+        explosionColor: 0xf8b020,
         explosionScale: 0.5,
       };
     case 'bouncer_bounce':
       return {
         projectileRadius: 0.2,
-        projectileColor: 0xffad5c,
-        emissiveColor: 0xff6a00,
-        trailColor: 0xffb870,
-        trailSize: 0.18,
-        pathColor: 0xff9640,
-        pathOpacity: 0.35,
-        explosionColor: 0xff7a29,
+        projectileColor: 0xb0703a,   // copper
+        emissiveColor: 0xe05820,
+        trailColor: 0x706050,
+        trailSize: 0.42,
+        pathColor: 0xb0703a,
+        pathOpacity: 0.16,
+        explosionColor: 0xe05820,
         explosionScale: 0.7,
       };
     case 'drill_entry':
       return {
         projectileRadius: 0.24,
-        projectileColor: 0x8f785f,
-        emissiveColor: 0x5d4634,
-        trailColor: 0x9f8a73,
-        trailSize: 0.16,
-        pathColor: 0x7d6149,
-        pathOpacity: 0.3,
-        explosionColor: 0x6c5845,
+        projectileColor: 0x68584a,   // earth
+        emissiveColor: 0x4a3a30,
+        trailColor: 0x56483c,
+        trailSize: 0.36,
+        pathColor: 0x68584a,
+        pathOpacity: 0.14,
+        explosionColor: 0x5a4838,
         explosionScale: 0.35,
       };
     case 'drill_burst':
       return {
         projectileRadius: 0.16,
-        projectileColor: 0xff8a3d,
-        emissiveColor: 0xff4d00,
-        trailColor: 0xffae6c,
-        trailSize: 0.18,
-        pathColor: 0xff8a3d,
-        pathOpacity: 0.25,
-        explosionColor: 0xff6a00,
+        projectileColor: 0x8a5030,   // dark orange
+        emissiveColor: 0xd84818,
+        trailColor: 0x6a554a,
+        trailSize: 0.42,
+        pathColor: 0x8a5030,
+        pathOpacity: 0.12,
+        explosionColor: 0xd84818,
         explosionScale: 0.85,
       };
     case 'napalm_shell':
       return {
         projectileRadius: 0.22,
-        projectileColor: 0xffbb55,
-        emissiveColor: 0xff5500,
-        trailColor: 0xff8844,
-        trailSize: 0.2,
-        pathColor: 0xff7733,
-        pathOpacity: 0.3,
-        explosionColor: 0xff4400,
+        projectileColor: 0x8a6448,   // dark amber
+        emissiveColor: 0xe85818,
+        trailColor: 0x6a5a48,
+        trailSize: 0.48,
+        pathColor: 0x8a6448,
+        pathOpacity: 0.14,
+        explosionColor: 0xe85818,
         explosionScale: 0.55,
       };
     case 'seeker':
       return {
         projectileRadius: 0.24,
-        projectileColor: 0x7df3ff,
-        emissiveColor: 0x14b7ff,
-        trailColor: 0x7be4ff,
-        trailSize: 0.2,
-        pathColor: 0x55d8ff,
-        pathOpacity: 0.25,
-        explosionColor: 0x89ecff,
+        projectileColor: 0x6a8090,   // steel blue
+        emissiveColor: 0x4088c0,
+        trailColor: 0x606c78,
+        trailSize: 0.48,
+        pathColor: 0x6a8090,
+        pathOpacity: 0.12,
+        explosionColor: 0x8fb4c8,
         explosionScale: 0.75,
       };
     case 'rail':
+      // Rail uses its pathLine as the primary visual (beam). The beam
+      // stays bright so it still reads as a high-energy round, but is
+      // desaturated toward steel-blue rather than neon cyan.
       return {
         projectileRadius: 0.08,
-        projectileColor: 0xffffff,
-        emissiveColor: 0x88ddff,
-        trailColor: 0xaeeeff,
-        trailSize: 0.1,
-        pathColor: 0xc9f7ff,
-        pathOpacity: 0.95,
-        explosionColor: 0xdafcff,
+        projectileColor: 0xcfe8f0,
+        emissiveColor: 0x8cb8cc,
+        trailColor: 0xa8c4d0,
+        trailSize: 0.14,
+        pathColor: 0xcfe8f0,
+        pathOpacity: 0.92,
+        explosionColor: 0xd8f0f8,
         explosionScale: 0.45,
       };
     case 'mortar_shell':
       return {
         projectileRadius: 0.28,
-        projectileColor: 0xffd480,
-        emissiveColor: 0xff8a3d,
-        trailColor: 0xffc070,
-        trailSize: 0.22,
-        pathColor: 0xff9b47,
-        pathOpacity: 0.3,
-        explosionColor: 0xff7a1a,
+        projectileColor: 0x8a7458,   // khaki
+        emissiveColor: 0xd89030,
+        trailColor: 0x6a6050,
+        trailSize: 0.52,
+        pathColor: 0x8a7458,
+        pathOpacity: 0.14,
+        explosionColor: 0xe8981a,
         explosionScale: 0.85,
       };
     case 'mine_deploy':
       return {
         projectileRadius: 0.2,
-        projectileColor: 0xc4ff62,
-        emissiveColor: 0x6baa2c,
-        trailColor: 0xd5ff8a,
-        trailSize: 0.14,
-        pathColor: 0xc0ff7a,
-        pathOpacity: 0.25,
-        explosionColor: 0x9fd95b,
+        projectileColor: 0x4a5a3a,   // olive drab
+        emissiveColor: 0x6a8038,
+        trailColor: 0x5a5f48,
+        trailSize: 0.32,
+        pathColor: 0x4a5a3a,
+        pathOpacity: 0.12,
+        explosionColor: 0x7a8a4a,
         explosionScale: 0.3,
       };
     case 'mine_burst':
       return {
         projectileRadius: 0.16,
-        projectileColor: 0xffea70,
-        emissiveColor: 0xff9a00,
-        trailColor: 0xffe07a,
-        trailSize: 0.16,
-        pathColor: 0xffd35c,
-        pathOpacity: 0.25,
-        explosionColor: 0xffb000,
+        projectileColor: 0xa8842a,   // amber
+        emissiveColor: 0xd85c18,
+        trailColor: 0x70604a,
+        trailSize: 0.38,
+        pathColor: 0xa8842a,
+        pathOpacity: 0.14,
+        explosionColor: 0xd85c18,
         explosionScale: 0.9,
       };
     case 'standard':
     default:
       return {
         projectileRadius: 0.2,
-        projectileColor: 0xffcc33,
-        emissiveColor: 0xff5500,
-        trailColor: 0xffaa33,
-        trailSize: 0.18,
-        pathColor: 0xff8800,
-        pathOpacity: 0.5,
-        explosionColor: 0xff4400,
+        projectileColor: 0x8a7a68,   // warm gunmetal
+        emissiveColor: 0xff7820,
+        trailColor: 0x6a665c,
+        trailSize: 0.4,
+        pathColor: 0x8a7a68,
+        pathOpacity: 0.18,
+        explosionColor: 0xff7020,
         explosionScale: 0.65,
       };
   }
@@ -247,11 +283,12 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
 function getVisualSpec(style: ShotStep['visualStyle'], colorOverride: number | null = null): VisualSpec {
   const spec = getVisualSpecBase(style);
   if (colorOverride !== null) {
-    spec.projectileColor = colorOverride;
+    // Only tint the team-identification cues (nose hot-spot + the faint
+    // pre-computed trajectory line). Body, smoke trail, and fire-core
+    // stay palette-driven so shells read as military rounds regardless
+    // of shooter color.
     spec.emissiveColor = colorOverride;
-    spec.trailColor = colorOverride;
     spec.pathColor = colorOverride;
-    spec.explosionColor = colorOverride;
   }
   return spec;
 }
@@ -278,11 +315,16 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
 
   if (step.visualStyle !== 'rail') {
-    const geo = new THREE.SphereGeometry(spec.projectileRadius, 10, 10);
+    // Real tank-shell silhouette (cylinder body + conical nose) instead of
+    // a stretched sphere. Material is matte gunmetal with a soft warm
+    // emissive so the nose reads as recently-fired without glowing.
+    const geo = buildShellGeometry(spec.projectileRadius);
     const mat = new THREE.MeshStandardMaterial({
       color: spec.projectileColor,
       emissive: spec.emissiveColor,
-      emissiveIntensity: 1.2,
+      emissiveIntensity: 0.45,
+      metalness: 0.6,
+      roughness: 0.5,
     });
     const mesh = new THREE.Mesh(geo, mat);
     const first = step.points[0];
@@ -290,20 +332,33 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
     scene.add(mesh);
     step.mesh = mesh;
 
+    // Smoke trail: same buffered Points pipeline as before, but drawn
+    // with the smoke_puff texture and normal blending so each sample
+    // reads as a puff of grey smoke instead of a bright tracer bead.
+    const { smokePuff } = getParticleTextures();
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute('position', new THREE.BufferAttribute(step.trailPositions, 3));
     trailGeo.setDrawRange(0, 0);
     const trailMat = new THREE.PointsMaterial({
+      map: smokePuff,
       color: spec.trailColor,
       size: spec.trailSize,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.55,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+      sizeAttenuation: true,
     });
     const trail = new THREE.Points(trailGeo, trailMat);
     scene.add(trail);
     step.trail = trail;
   }
 
+  // Pre-computed trajectory line — used as a "trail wake" only behind
+  // the projectile. Pre-allocated to the full point count, but the
+  // draw range starts at 0 and is grown each frame in
+  // updateProjectileAnimation. That way enemies don't get a free
+  // pre-impact spoiler showing exactly where the round will land.
   const pathGeo = new THREE.BufferGeometry();
   const pathArr = new Float32Array(step.points.length * 3);
   for (let i = 0; i < step.points.length; i++) {
@@ -312,6 +367,7 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
     pathArr[i * 3 + 2] = step.points[i].z;
   }
   pathGeo.setAttribute('position', new THREE.BufferAttribute(pathArr, 3));
+  pathGeo.setDrawRange(0, 0);
   const pathMat = new THREE.LineBasicMaterial({
     color: spec.pathColor,
     transparent: true,
@@ -405,11 +461,13 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
   const baseRadius = Math.max(0.7, step.blastRadius * spec.explosionScale);
 
-  // Three camera-facing sprite layers:
-  //  - fire_burst (additive) for the bright fire core — burns out fast
-  //  - fire_burst (additive, secondary tint) for hot inner glow
-  //  - smoke_puff (normal blend) that lingers after the fire, darkening
-  //    the sky where the blast happened — classic HE-round aftermath.
+  // Battlefield-style HE impact, built from four camera-facing layers:
+  //  - flash  : white-hot punch, peaks at frame 0 and burns out by ~frame 6
+  //  - fire   : orange fireball that takes over as the flash dies and
+  //             collapses by ~frame 20
+  //  - smoke  : two overlapping dark plumes that rise and linger for ~90f
+  //  - dust   : a low flat ring of kicked-up dirt at ground level that
+  //             expands outward and fades by ~frame 50
   const { fireBurst, smokePuff } = getParticleTextures();
 
   const fireMat = (tint: number, opacity: number, rot: number) =>
@@ -417,85 +475,117 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
       map: fireBurst, color: tint, transparent: true, opacity,
       depthWrite: false, blending: THREE.AdditiveBlending, rotation: rot,
     });
-  const smokeMat = (opacity: number, rot: number) =>
+  const smokeMat = (tint: number, opacity: number, rot: number) =>
     new THREE.SpriteMaterial({
-      map: smokePuff, color: 0x303030, transparent: true, opacity,
+      map: smokePuff, color: tint, transparent: true, opacity,
       depthWrite: false, blending: THREE.NormalBlending, rotation: rot,
     });
 
-  const back = new THREE.Sprite(fireMat(spec.explosionColor, 0.75, 0.6));
-  const front = new THREE.Sprite(fireMat(0xffd07a, 0.95, -0.4));
-  // Two overlapping smoke sprites at different scales so the aftermath
-  // reads as a real mushroom plume, not a single thin sheet.
-  const smoke1 = new THREE.Sprite(smokeMat(0, 0.2));
-  const smoke2 = new THREE.Sprite(smokeMat(0, -0.3));
+  const flash = new THREE.Sprite(fireMat(0xfff2c0, 1.0, 0));
+  const fire = new THREE.Sprite(fireMat(spec.explosionColor, 0.85, 0.4));
+  const smoke1 = new THREE.Sprite(smokeMat(0x2a2826, 0, 0.2));
+  const smoke2 = new THREE.Sprite(smokeMat(0x1e1c1a, 0, -0.3));
 
-  back.position.set(step.endPoint.x, step.endPoint.y + baseRadius * 0.35, step.endPoint.z);
-  front.position.copy(back.position);
-  smoke1.position.copy(back.position);
-  smoke2.position.copy(back.position);
-  back.scale.setScalar(baseRadius * 2.0 * 1.15);
-  front.scale.setScalar(baseRadius * 2.0 * 0.85);
-  smoke1.scale.setScalar(baseRadius * 2.4);
-  smoke2.scale.setScalar(baseRadius * 1.8);
-  scene.add(back);
-  scene.add(front);
+  const origin = new THREE.Vector3(step.endPoint.x, step.endPoint.y, step.endPoint.z);
+  flash.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.2, 0));
+  fire.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.35, 0));
+  smoke1.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.5, 0));
+  smoke2.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.4, 0));
+
+  flash.scale.setScalar(baseRadius * 1.8);
+  fire.scale.setScalar(baseRadius * 1.4);
+  smoke1.scale.setScalar(baseRadius * 1.6);
+  smoke2.scale.setScalar(baseRadius * 1.3);
+  scene.add(flash);
+  scene.add(fire);
   scene.add(smoke1);
   scene.add(smoke2);
+
+  // Ground dust ring: flat disc (double-sided ring geometry) that
+  // expands outward along the terrain. Additive-normal blend keeps it
+  // reading as lifted dust, not as a glowing halo.
+  const dustGeo = new THREE.RingGeometry(baseRadius * 0.5, baseRadius * 0.8, 28);
+  const dustMat = new THREE.MeshBasicMaterial({
+    map: smokePuff,
+    color: 0x7a6a54,
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const dust = new THREE.Mesh(dustGeo, dustMat);
+  dust.rotation.x = -Math.PI / 2;
+  dust.position.set(origin.x, origin.y + 0.08, origin.z);
+  scene.add(dust);
 
   let frame = 0;
   const animate = () => {
     frame++;
-    const grow = 1 + frame * 0.06;
-    const smokeGrow = 1 + frame * 0.04;
-    back.scale.setScalar(baseRadius * 2.0 * 1.15 * grow);
-    front.scale.setScalar(baseRadius * 2.0 * 0.85 * grow);
-    smoke1.scale.setScalar(baseRadius * 2.4 * smokeGrow);
-    smoke2.scale.setScalar(baseRadius * 1.8 * smokeGrow * 1.15);
-    smoke1.position.y += 0.05;
-    smoke2.position.y += 0.04;
 
-    const backMat = back.material as THREE.SpriteMaterial;
-    const frontMat = front.material as THREE.SpriteMaterial;
+    const flashMat = flash.material as THREE.SpriteMaterial;
+    const fireMatRef = fire.material as THREE.SpriteMaterial;
     const sM1 = smoke1.material as THREE.SpriteMaterial;
     const sM2 = smoke2.material as THREE.SpriteMaterial;
 
-    backMat.opacity = Math.max(0, 0.75 - frame * 0.032);
-    frontMat.opacity = Math.max(0, 0.95 - frame * 0.045);
-    // Smoke fades IN as the fire fades OUT, peaks around frame 15, then
-    // slowly fades OUT over the tail.
-    if (frame < 15) {
-      sM1.opacity = frame / 15 * 0.85;
-      sM2.opacity = frame / 15 * 0.65;
-    } else {
-      sM1.opacity = Math.max(0, 0.85 - (frame - 15) * 0.018);
-      sM2.opacity = Math.max(0, 0.65 - (frame - 15) * 0.014);
-    }
+    // Flash: snap to max scale, burn out fast (gone by ~frame 6).
+    flash.scale.setScalar(baseRadius * 1.8 * (1 + frame * 0.18));
+    flashMat.opacity = Math.max(0, 1.0 - frame * 0.18);
 
-    back.material.rotation += 0.01;
-    front.material.rotation -= 0.015;
-    smoke1.material.rotation += 0.004;
-    smoke2.material.rotation -= 0.006;
-    if (frame < 65) {
+    // Fire core: grows for 8 frames then collapses inward as it fades.
+    const fireGrow = frame < 8 ? 1 + frame * 0.12 : 1 + 8 * 0.12 - (frame - 8) * 0.03;
+    fire.scale.setScalar(baseRadius * 1.4 * Math.max(0.4, fireGrow));
+    fireMatRef.opacity = frame < 4
+      ? 0.85 + frame * 0.02
+      : Math.max(0, 0.95 - (frame - 4) * 0.055);
+    fireMatRef.rotation += 0.015;
+
+    // Smoke mushroom: fades in while the fire dies, rises, and slowly
+    // drifts outward. Peak opacity ~0.75, lingers until frame 90.
+    const smokeGrow = 1 + frame * 0.035;
+    smoke1.scale.setScalar(baseRadius * 1.6 * smokeGrow);
+    smoke2.scale.setScalar(baseRadius * 1.3 * smokeGrow * 1.15);
+    smoke1.position.y += 0.06;
+    smoke2.position.y += 0.05;
+    if (frame < 18) {
+      sM1.opacity = (frame / 18) * 0.78;
+      sM2.opacity = (frame / 18) * 0.62;
+    } else {
+      sM1.opacity = Math.max(0, 0.78 - (frame - 18) * 0.011);
+      sM2.opacity = Math.max(0, 0.62 - (frame - 18) * 0.009);
+    }
+    sM1.rotation += 0.003;
+    sM2.rotation -= 0.004;
+
+    // Dust skirt: expands fast then holds, fading out by frame 50.
+    const dustScale = 1 + frame * 0.09;
+    dust.scale.setScalar(dustScale);
+    dustMat.opacity = frame < 10
+      ? 0.55 + frame * 0.01
+      : Math.max(0, 0.65 - (frame - 10) * 0.017);
+
+    if (frame < 90) {
       requestAnimationFrame(animate);
     } else {
-      scene.remove(back);
-      scene.remove(front);
+      scene.remove(flash);
+      scene.remove(fire);
       scene.remove(smoke1);
       scene.remove(smoke2);
-      backMat.dispose();
-      frontMat.dispose();
+      scene.remove(dust);
+      flashMat.dispose();
+      fireMatRef.dispose();
       sM1.dispose();
       sM2.dispose();
+      dustGeo.dispose();
+      dustMat.dispose();
     }
   };
   animate();
 }
 
 function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
-  const color = step.colorOverride !== null ? step.colorOverride : 0x88ddff;
+  const color = step.colorOverride !== null ? step.colorOverride : 0x9ab4c0;
   const geo = new THREE.SphereGeometry(0.45, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(step.endPoint.x, step.endPoint.y, step.endPoint.z);
   scene.add(mesh);
@@ -517,9 +607,9 @@ function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showBounceFlash(step: ActiveShotStep, scene: THREE.Scene): void {
-  const color = step.colorOverride !== null ? step.colorOverride : 0xffe178;
+  const color = step.colorOverride !== null ? step.colorOverride : 0xe8c068;
   const geo = new THREE.SphereGeometry(0.35, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(step.endPoint.x, step.endPoint.y, step.endPoint.z);
   scene.add(mesh);
@@ -541,10 +631,10 @@ function showBounceFlash(step: ActiveShotStep, scene: THREE.Scene): void {
 }
 
 function showDeployFlash(step: ActiveShotStep, scene: THREE.Scene): void {
-  const defaultColor = step.visualStyle === 'drill_entry' ? 0x6b5848 : 0xbff071;
+  const defaultColor = step.visualStyle === 'drill_entry' ? 0x5a4a3a : 0x8aa060;
   const color = step.colorOverride !== null ? step.colorOverride : defaultColor;
   const geo = new THREE.RingGeometry(0.18, 0.4, 16);
-  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72, side: THREE.DoubleSide });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.62, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set(step.endPoint.x, step.endPoint.y + 0.04, step.endPoint.z);
@@ -570,25 +660,32 @@ function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.S
   const tm = getAllTankMeshes().get(state.ownerId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
   const spec = getVisualSpec(state.visualStyle, colorOverride);
-  const geo = new THREE.SphereGeometry(Math.max(0.12, spec.projectileRadius * 0.9), 10, 10);
+  const geo = buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
   const mat = new THREE.MeshStandardMaterial({
     color: spec.projectileColor,
     emissive: spec.emissiveColor,
-    emissiveIntensity: 1.15,
+    emissiveIntensity: 0.4,
+    metalness: 0.6,
+    roughness: 0.5,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(state.position.x, state.position.y, state.position.z);
   scene.add(mesh);
 
+  const { smokePuff } = getParticleTextures();
   const trailPositions = new Float32Array(18 * 3);
   const trailGeo = new THREE.BufferGeometry();
   trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
   trailGeo.setDrawRange(0, 0);
   const trailMat = new THREE.PointsMaterial({
+    map: smokePuff,
     color: spec.trailColor,
-    size: Math.max(0.12, spec.trailSize * 0.9),
+    size: Math.max(0.22, spec.trailSize * 0.85),
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.5,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    sizeAttenuation: true,
   });
   const trail = new THREE.Points(trailGeo, trailMat);
   scene.add(trail);
@@ -617,30 +714,34 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
   let core: THREE.Mesh | null = null;
 
   if (hazard.type === 'napalm') {
+    // Napalm field: keep fire colors (orange/amber) but less neon.
     ring = new THREE.Mesh(
       new THREE.CylinderGeometry(hazard.radius, hazard.radius * 0.76, 0.05, 24),
-      new THREE.MeshBasicMaterial({ color: 0xff6a00, transparent: true, opacity: 0.32 }),
+      new THREE.MeshBasicMaterial({ color: 0xc25418, transparent: true, opacity: 0.32 }),
     );
     core = new THREE.Mesh(
       new THREE.CylinderGeometry(hazard.radius * 0.58, hazard.radius * 0.42, 0.08, 18),
-      new THREE.MeshBasicMaterial({ color: 0xffaa33, transparent: true, opacity: 0.42 }),
+      new THREE.MeshBasicMaterial({ color: 0xd88028, transparent: true, opacity: 0.42 }),
     );
   } else if (hazard.type === 'mine') {
+    // Mine indicator: olive drab at rest, warm amber when armed (see
+    // update loop). Torus ring + small dome core for a low-profile
+    // ordnance look.
     ring = new THREE.Mesh(
       new THREE.TorusGeometry(Math.max(0.45, hazard.radius * 0.55), 0.08, 8, 20),
-      new THREE.MeshBasicMaterial({ color: 0xbef26f, transparent: true, opacity: 0.55 }),
+      new THREE.MeshBasicMaterial({ color: 0x7a8a5a, transparent: true, opacity: 0.55 }),
     );
     ring.rotation.x = Math.PI / 2;
     core = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0x82b84a, transparent: true, opacity: 0.9 }),
+      new THREE.MeshBasicMaterial({ color: 0x5a6a3a, transparent: true, opacity: 0.9 }),
     );
     core.position.y = 0.14;
   } else {
-    // mortar_marker
+    // Mortar marker: amber tactical ring on the ground.
     ring = new THREE.Mesh(
       new THREE.RingGeometry(Math.max(0.8, hazard.radius * 0.72), hazard.radius, 28),
-      new THREE.MeshBasicMaterial({ color: 0xffe070, transparent: true, opacity: 0.65, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: 0xd8a448, transparent: true, opacity: 0.58, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
   }
@@ -763,6 +864,26 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
     const p = interpTrajectory(step.points, sampleIdx);
     if (step.mesh) {
       step.mesh.position.set(p.x, p.y, p.z);
+      // Orient the shell along its direction of travel. Geometry is
+      // built with the nose along local +Z, and Object3D.lookAt() aims
+      // local -Z at the target — so we look at (position - forward), which
+      // sends +Z down-trajectory (the nose forward).
+      const segIdx = Math.max(0, Math.min(Math.floor(sampleIdx), step.points.length - 2));
+      const a = step.points[segIdx];
+      const b = step.points[segIdx + 1] ?? step.endPoint;
+      const fx = b.x - a.x, fy = b.y - a.y, fz = b.z - a.z;
+      if (fx * fx + fy * fy + fz * fz > 1e-8) {
+        step.mesh.lookAt(p.x - fx, p.y - fy, p.z - fz);
+      }
+    }
+
+    // Path line "tracer wake": draw only the segment from the launch
+    // point up to the current shell position. Drawing the full pre-
+    // computed trajectory would let observers read the impact point
+    // before the round even lands.
+    if (step.pathLine) {
+      const drawCount = Math.max(2, Math.min(step.points.length, Math.ceil(sampleIdx) + 1));
+      step.pathLine.geometry.setDrawRange(0, drawCount);
     }
 
     if (step.trail) {
@@ -791,6 +912,15 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
     const blend = Math.min(1, dt * 12);
     visual.currentPosition.lerp(visual.targetPosition, blend);
     visual.mesh.position.copy(visual.currentPosition);
+    // Same +Z-forward orientation as flight-animated shells.
+    const vx = visual.velocity.x, vy = visual.velocity.y, vz = visual.velocity.z;
+    if (vx * vx + vy * vy + vz * vz > 1e-6) {
+      visual.mesh.lookAt(
+        visual.currentPosition.x - vx,
+        visual.currentPosition.y - vy,
+        visual.currentPosition.z - vz,
+      );
+    }
 
     const trailLen = visual.trailPositions.length / 3;
     if (visual.trailCount < trailLen) {
@@ -826,15 +956,15 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         coreMat.opacity = 0.35 + Math.sin(visual.pulse * 8) * 0.1;
       }
     } else if (visual.type === 'mine') {
-      const activeColor = visual.colorOverride !== null ? visual.colorOverride : 0xffd84d;
-      const activeCoreColor = visual.colorOverride !== null ? visual.colorOverride : 0xff8f2a;
-      ringMat.color.setHex(visual.armed ? activeColor : 0xbef26f);
-      ringMat.opacity = visual.armed ? 0.78 : 0.42;
+      const activeColor = visual.colorOverride !== null ? visual.colorOverride : 0xd89028;
+      const activeCoreColor = visual.colorOverride !== null ? visual.colorOverride : 0xc25818;
+      ringMat.color.setHex(visual.armed ? activeColor : 0x7a8a5a);
+      ringMat.opacity = visual.armed ? 0.72 : 0.42;
       visual.ring.rotation.z += dt * 1.8;
       if (visual.core) {
         const coreMat = visual.core.material as THREE.MeshBasicMaterial;
-        coreMat.color.setHex(visual.armed ? activeCoreColor : 0x82b84a);
-        coreMat.opacity = visual.armed ? 0.95 : 0.75;
+        coreMat.color.setHex(visual.armed ? activeCoreColor : 0x5a6a3a);
+        coreMat.opacity = visual.armed ? 0.92 : 0.75;
       }
     } else {
       visual.group.rotation.y += dt * 0.9;

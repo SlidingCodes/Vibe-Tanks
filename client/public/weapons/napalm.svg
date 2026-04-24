@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
-    <radialGradient id="flame" cx="0.5" cy="0.9" r="0.9">
-      <stop offset="0" stop-color="#fff5b0"/>
-      <stop offset="0.35" stop-color="#ffc233"/>
-      <stop offset="0.7" stop-color="#ff5a0e"/>
-      <stop offset="1" stop-color="#8a1a00"/>
+    <radialGradient id="npFlame" cx="0.5" cy="0.9" r="0.9">
+      <stop offset="0" stop-color="#e8c878"/>
+      <stop offset="0.35" stop-color="#c87a28"/>
+      <stop offset="0.7" stop-color="#7a3a18"/>
+      <stop offset="1" stop-color="#3a1c0a"/>
     </radialGradient>
   </defs>
   <path d="M32 6
@@ -15,7 +15,7 @@
            C 48 54, 56 50, 54 40
            C 58 28, 46 26, 44 14
            C 40 22, 36 18, 32 6 Z"
-        fill="url(#flame)" stroke="#4a1200" stroke-width="1.5" stroke-linejoin="round"/>
+        fill="url(#npFlame)" stroke="#1a1814" stroke-width="1.5" stroke-linejoin="round"/>
   <path d="M32 22 C 28 34, 34 36, 32 46"
-        fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+        fill="none" stroke="#f0d088" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
 </svg>

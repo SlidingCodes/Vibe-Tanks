@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
-    <radialGradient id="ball" cx="0.35" cy="0.35" r="0.7">
-      <stop offset="0" stop-color="#ffe066"/>
-      <stop offset="0.6" stop-color="#e08a1e"/>
-      <stop offset="1" stop-color="#7a3900"/>
+    <radialGradient id="bnBall" cx="0.35" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#c89254"/>
+      <stop offset="0.6" stop-color="#7a4828"/>
+      <stop offset="1" stop-color="#3a200c"/>
     </radialGradient>
   </defs>
   <path d="M4 50 Q16 22 28 42 Q40 58 52 30"
-        fill="none" stroke="#f5c000" stroke-width="2"
+        fill="none" stroke="#7a8a4a" stroke-width="2"
         stroke-linecap="round" stroke-dasharray="3 3" opacity="0.85"/>
-  <circle cx="52" cy="30" r="9" fill="url(#ball)" stroke="#222" stroke-width="1.5"/>
-  <circle cx="49" cy="27" r="2.5" fill="#fff" opacity="0.7"/>
+  <circle cx="52" cy="30" r="9" fill="url(#bnBall)" stroke="#1a1814" stroke-width="1.5"/>
+  <circle cx="49" cy="27" r="2.5" fill="#e8c878" opacity="0.55"/>
 </svg>

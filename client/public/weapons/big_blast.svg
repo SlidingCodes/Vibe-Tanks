@@ -1,14 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
-    <radialGradient id="blast" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#fff"/>
-      <stop offset="0.25" stop-color="#ffe066"/>
-      <stop offset="0.6" stop-color="#ff8a1e"/>
-      <stop offset="1" stop-color="#b32b00"/>
+    <radialGradient id="bbBlast" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f0d088"/>
+      <stop offset="0.35" stop-color="#c87a28"/>
+      <stop offset="0.75" stop-color="#7a3a18"/>
+      <stop offset="1" stop-color="#3a1c0a"/>
     </radialGradient>
   </defs>
-  <g fill="url(#blast)" stroke="#5a1a00" stroke-width="1.5" stroke-linejoin="round">
+  <g fill="url(#bbBlast)" stroke="#1a1814" stroke-width="1.5" stroke-linejoin="round">
     <polygon points="32,4 38,18 52,10 44,26 60,24 46,32 60,40 44,38 52,54 38,46 32,60 26,46 12,54 20,38 4,40 18,32 4,24 20,26 12,10 26,18"/>
   </g>
-  <circle cx="32" cy="32" r="7" fill="#fff" opacity="0.85"/>
+  <circle cx="32" cy="32" r="6" fill="#e8c878" opacity="0.85"/>
+  <circle cx="32" cy="32" r="2.5" fill="#3a2410"/>
 </svg>

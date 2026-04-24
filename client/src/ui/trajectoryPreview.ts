@@ -99,9 +99,11 @@ function hideAuxReticles(): void {
 }
 
 function init(scene: THREE.Scene): void {
-  const geo = new THREE.SphereGeometry(0.12, 6, 6);
-  parentMat = new THREE.MeshBasicMaterial({ color: 0xffff66, transparent: true, opacity: 0.88 });
-  fragmentMat = new THREE.MeshBasicMaterial({ color: 0x7dd6ff, transparent: true, opacity: 0.82 });
+  // Smaller, slightly-translucent dots so the preview reads as "faint
+  // arc of incoming rounds" rather than a string of neon beads.
+  const geo = new THREE.SphereGeometry(0.09, 6, 6);
+  parentMat = new THREE.MeshBasicMaterial({ color: 0xd8b866, transparent: true, opacity: 0.75 });
+  fragmentMat = new THREE.MeshBasicMaterial({ color: 0x9ab4c0, transparent: true, opacity: 0.7 });
 
   for (let i = 0; i < MAX_PARENT_DOTS; i++) {
     const m = new THREE.Mesh(geo, parentMat);
@@ -335,21 +337,21 @@ export function updateTrajectoryPreview(
   const startVel: Vec3 = { x: vx, y: vy, z: vz };
 
   if (weapon.behavior === 'airburst') {
-    parentMat.color.setHex(0xffaa55);
+    parentMat.color.setHex(0xd89054);
     const segment = simulateSegment(startPos, startVel, {
       airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
     });
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.group.scale.setScalar(Math.max(1, weapon.blastRadius * 0.28));
-    setMarkerColor(0xff5522, 0xffa077);
+    setMarkerColor(0xd85820, 0xe8a070);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'split') {
-    parentMat.color.setHex(0x7dd6ff);
-    fragmentMat.color.setHex(0xbaff7b);
+    parentMat.color.setHex(0x9ab4c0);
+    fragmentMat.color.setHex(0x9ab478);
     const segment = simulateSegment(startPos, startVel, {
       splitTime: weapon.behaviorConfig?.splitTime ?? 0.7,
     });
@@ -376,10 +378,10 @@ export function updateTrajectoryPreview(
         if (i === 0) {
           placeMarker(end.x, end.y, end.z);
           marker.group.scale.setScalar(0.55);
-          setMarkerColor(0x88ddff, 0xcfeeff);
+          setMarkerColor(0x9ab4c0, 0xc0d0d6);
           marker.group.visible = true;
         } else if (i - 1 < MAX_AUX_RETICLES) {
-          placeReticle(auxReticles[i - 1], end.x, end.y, end.z, 0.55, 0x88ddff, 0xcfeeff);
+          placeReticle(auxReticles[i - 1], end.x, end.y, end.z, 0.55, 0x9ab4c0, 0xc0d0d6);
         }
       }
 
@@ -389,8 +391,8 @@ export function updateTrajectoryPreview(
   }
 
   if (weapon.behavior === 'bounce') {
-    parentMat.color.setHex(0xffec7a);
-    fragmentMat.color.setHex(0xffa65c);
+    parentMat.color.setHex(0xd8b868);
+    fragmentMat.color.setHex(0xc88c58);
     const first = simulateSegment(startPos, startVel);
     placePoints(parentDots, first.points);
 
@@ -404,15 +406,15 @@ export function updateTrajectoryPreview(
       // point itself so the player can still read the ricochet geometry.
       placeMarker(second.endPoint.x, second.endPoint.y, second.endPoint.z);
       marker.group.scale.setScalar(0.6);
-      setMarkerColor(0xffb347, 0xffd37a);
+      setMarkerColor(0xd8a058, 0xe8c078);
       marker.group.visible = true;
-      placeReticle(auxReticles[0], first.endPoint.x, first.endPoint.y, first.endPoint.z, 0.35, 0xffd96a, 0xfff0a8);
+      placeReticle(auxReticles[0], first.endPoint.x, first.endPoint.y, first.endPoint.z, 0.35, 0xd8b050, 0xe8c880);
     }
     return;
   }
 
   if (weapon.behavior === 'drill') {
-    parentMat.color.setHex(0x9c866c);
+    parentMat.color.setHex(0x8a7258);
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
 
@@ -433,25 +435,25 @@ export function updateTrajectoryPreview(
 
     placeMarker(burstPoint.x, burstPoint.y, burstPoint.z);
     marker.group.scale.setScalar(Math.max(0.7, (weapon.behaviorConfig?.drillBlastRadius ?? 3.5) * 0.24));
-    setMarkerColor(0xff7a29, 0xffb37a);
+    setMarkerColor(0xd0622c, 0xd89060);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'mortar') {
-    parentMat.color.setHex(0xffcc7a);
+    parentMat.color.setHex(0xc8a068);
     const impact = aimTarget
       ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
       : simulateSegment(startPos, startVel).endPoint;
     placeMarker(impact.x, impact.y, impact.z);
     marker.group.scale.setScalar(Math.max(1.2, (weapon.behaviorConfig?.mortarSpread ?? 5) * 0.26));
-    setMarkerColor(0xffd04d, 0xffe9a0);
+    setMarkerColor(0xd8a040, 0xe8c480);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'rail') {
-    parentMat.color.setHex(0xaff4ff);
+    parentMat.color.setHex(0xa8c8d4);
     const dir = normalize(startVel);
     const end = resolvedEndPoint
       ? { x: resolvedEndPoint.x, y: resolvedEndPoint.y, z: resolvedEndPoint.z }
@@ -463,13 +465,13 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
     placeMarker(end.x, end.y, end.z);
     marker.group.scale.setScalar(0.45);
-    setMarkerColor(0xcff8ff, 0xffffff);
+    setMarkerColor(0xc8e4ec, 0xe8f4f8);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'seeker') {
-    parentMat.color.setHex(0x7de6ff);
+    parentMat.color.setHex(0x7a9ab0);
     const dir = normalize(startVel);
     const end = {
       x: startPos.x + dir.x * 10,
@@ -479,29 +481,29 @@ export function updateTrajectoryPreview(
     placePoints(parentDots, makeLinePoints(startPos, end, 14));
     placeMarker(end.x, end.y, end.z);
     marker.group.scale.setScalar(0.5);
-    setMarkerColor(0x7de6ff, 0xcef4ff);
+    setMarkerColor(0x7a9ab0, 0xb0c4d0);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'napalm') {
-    parentMat.color.setHex(0xffb259);
+    parentMat.color.setHex(0xc88058);
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.group.scale.setScalar(Math.max(0.75, (weapon.behaviorConfig?.burnRadius ?? 4) * 0.2));
-    setMarkerColor(0xff6a00, 0xffa552);
+    setMarkerColor(0xc05820, 0xd88050);
     marker.group.visible = true;
     return;
   }
 
   if (weapon.behavior === 'mine') {
-    parentMat.color.setHex(0xbdf06a);
+    parentMat.color.setHex(0x8a9a58);
     const segment = simulateSegment(startPos, startVel);
     placePoints(parentDots, segment.points);
     placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
     marker.group.scale.setScalar(0.55);
-    setMarkerColor(0xb8ff66, 0xe4ffb2);
+    setMarkerColor(0x8aa058, 0xc0d090);
     marker.group.visible = true;
     return;
   }
@@ -510,12 +512,12 @@ export function updateTrajectoryPreview(
   // Without this the default weapon has no reticle at all, which is how the
   // bug first surfaced: the game starts on the first weapon slot and the
   // reticle only appeared once you switched to e.g. mortar or drill.
-  parentMat.color.setHex(0xffff66);
+  parentMat.color.setHex(0xd0b258);
   const segment = simulateSegment(startPos, startVel);
   placePoints(parentDots, segment.points);
   placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
   marker.group.scale.setScalar(Math.max(0.9, weapon.blastRadius * 0.3));
-  setMarkerColor(0xffcc44, 0xfff2a0);
+  setMarkerColor(0xd0a048, 0xe8c878);
   marker.group.visible = true;
 }
 
