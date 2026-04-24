@@ -302,9 +302,14 @@ export class Room {
     this.phase = MatchPhase.InProgress;
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
+    // simTime MUST be reset before clearCombatState: the latter stamps
+    // nextPickupSpawnAt = simTime + PICKUP_SPAWN_INTERVAL, and with the
+    // old ~300 s simTime still in play it ended up 315 s into match N+1
+    // — past that match's own duration, so pickups never dropped from
+    // the second match onward.
+    this.simTime = 0;
     this.clearCombatState();
     this.scheduledStrikes = [];
-    this.simTime = 0;
     this.terrainPresetId = getRandomTerrainPresetId();
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.terrainSeed = createRandomTerrainSeed();
