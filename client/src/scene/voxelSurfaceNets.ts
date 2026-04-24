@@ -392,12 +392,14 @@ if (uUseTextures > 0.5) {
   diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
 }
 
-// --- built-material override (walls, ramps). Collapses the final albedo
-//     fully to dressed-stone grey when the 8-corner built weight is 1, so
-//     deposits never read as "more dirt" regardless of texture or macro
-//     variation. Smooth mix so the wall→terrain seam stays clean.
+// --- built-material override (walls, ramps). Iso-surface vertices have
+//     four solid corners and four empty corners, so the raw 8-corner
+//     average tops out around 0.5 even on a fully built wall. Smoothstep
+//     the weight so any vertex whose neighbourhood is majority-built
+//     snaps toward full stone — otherwise a linear mix leaves deposits
+//     reading half-dirt.
 if (vBuilt > 0.001) {
-  float vt_bw = clamp(vBuilt, 0.0, 1.0);
+  float vt_bw = smoothstep(0.15, 0.45, vBuilt);
   diffuseColor.rgb = mix(diffuseColor.rgb, uBuiltAlbedo, vt_bw);
 }
 
@@ -417,8 +419,10 @@ if (uTrackEnabled > 0.5) {
 // Tie roughness to the detail noise so highlights break up across terrain.
 roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);
 // Built material: smoother than dirt so the stone catches a cleaner
-// highlight. Applied as a mix to avoid a seam where vBuilt ramps from 0→1.
-roughnessFactor = mix(roughnessFactor, uBuiltRoughness, clamp(vBuilt, 0.0, 1.0));`,
+// highlight. Same smoothstep curve as the albedo override so roughness
+// matches it vertex-for-vertex — otherwise rough dirt + stone color
+// looks like painted dirt.
+roughnessFactor = mix(roughnessFactor, uBuiltRoughness, smoothstep(0.15, 0.45, vBuilt));`,
       )
       .replace(
         '#include <normal_fragment_maps>',

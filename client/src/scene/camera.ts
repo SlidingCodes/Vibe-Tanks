@@ -22,10 +22,33 @@ let smoothedBoomMultiplier = 1;
 
 /** Set the camera boom multiplier (distance + height scaling applied to
  *  the current preset's offset). The actual camera eases toward this
- *  value across a few frames so the transition is smooth. Intended for
- *  the buried-tank zoom-out; pass 1 to revert to default. */
+ *  value across a few frames so the transition is smooth. */
 export function setCameraBoomMultiplier(mult: number): void {
-  boomMultiplierTarget = Math.max(0.5, Math.min(2.5, mult));
+  boomMultiplierTarget = Math.max(0.3, Math.min(2.5, mult));
+}
+
+// Buried mode: when the local tank is inside a solid voxel the normal
+// follow camera puts the eye deep in the surrounding wall, the player
+// sees only dirt, and the terrain-collision raycast slams the boom
+// against the wall instead of showing the tank. Instead we use a short
+// tight offset (close to the hull, slightly above) and *skip* the
+// terrain raycast — the tank's through-walls outline is visible above
+// the surrounding voxel material.
+let buriedMode = false;
+const BURIED_OFFSET = new THREE.Vector3(0, 3.2, -4.2);
+const BURIED_LOOK_OFFSET = new THREE.Vector3(0, 0.8, 0);
+
+export function setCameraBuriedMode(on: boolean): void {
+  if (buriedMode !== on) {
+    buriedMode = on;
+    // Force a re-seed of the smoothed boom so we don't interpolate
+    // through half the map on state transitions.
+    followInitialized = false;
+  }
+}
+
+export function isBuriedMode(): boolean {
+  return buriedMode;
 }
 
 export type CameraPresetId = 'classic' | 'wide' | 'tactical' | 'first_person';
@@ -169,9 +192,12 @@ export function followTank(
     return;
   }
 
+  const activeOffset = buriedMode ? BURIED_OFFSET : p.offset;
+  const activeLookOffset = buriedMode ? BURIED_LOOK_OFFSET : p.lookOffset;
+
   if (!followInitialized) {
     smoothedTankPos.copy(tankPos);
-    smoothedBoomDistance = p.offset.length();
+    smoothedBoomDistance = activeOffset.length();
     smoothedBoomMultiplier = boomMultiplierTarget;
     followInitialized = true;
   }
@@ -185,13 +211,18 @@ export function followTank(
   const boomMultBlend = 1 - Math.exp(-3 * dt);
   smoothedBoomMultiplier += (boomMultiplierTarget - smoothedBoomMultiplier) * boomMultBlend;
 
-  const scaledOffset = p.offset.clone().multiplyScalar(smoothedBoomMultiplier);
+  const scaledOffset = activeOffset.clone().multiplyScalar(smoothedBoomMultiplier);
   const rotated = scaledOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
   const boomFullLength = rotated.length();
   const boomDir = rotated.clone().divideScalar(boomFullLength);
-  const lookTarget = smoothedTankPos.clone().add(p.lookOffset);
+  const lookTarget = smoothedTankPos.clone().add(activeLookOffset);
 
-  const safeDistance = raycastBoomAgainstTerrain(lookTarget, boomDir, boomFullLength);
+  // Skip the terrain raycast in buried mode: the camera lives inside the
+  // surrounding voxels by design, and raycasting would slam it against
+  // the wall interior. The through-walls outline covers visibility.
+  const safeDistance = buriedMode
+    ? boomFullLength
+    : raycastBoomAgainstTerrain(lookTarget, boomDir, boomFullLength);
 
   // Fast push-in when terrain pinches the boom, slower ease-out when it clears
   // — avoids clipping through walls while keeping the release smooth.
@@ -209,9 +240,12 @@ export function followTank(
   camera.position.add(shakeOffset);
 
   // Safety net: after lerp+shake, hard-clamp against terrain so we never end
-  // up inside a wall mid-transition.
-  const floor = getTerrainHeight(camera.position.x, camera.position.z) + COLLISION_CLEARANCE;
-  if (camera.position.y < floor) camera.position.y = floor;
+  // up inside a wall mid-transition. Buried mode skips this too — the
+  // camera is intentionally below/inside terrain there.
+  if (!buriedMode) {
+    const floor = getTerrainHeight(camera.position.x, camera.position.z) + COLLISION_CLEARANCE;
+    if (camera.position.y < floor) camera.position.y = floor;
+  }
 
   camera.lookAt(lookTarget.add(lookShakeOffset));
 }

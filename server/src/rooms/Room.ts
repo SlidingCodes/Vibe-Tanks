@@ -1524,13 +1524,22 @@ export class Room {
     // before KCC queries the terrain. Overlapping carves in the same tick
     // (splitter, simultaneous shots) collapse to one rebuild per chunk.
     this.physics.flushDirtyChunks();
-    this.physics.applyTankInputs(dt);
+
+    // Buried state: a tank whose hull centre sits in a solid voxel (walled
+    // in by a freshly dropped wall/ramp, or scrolled under by a terraform)
+    // must not fall through the world while the KCC can't find a way out.
+    // We detect it *before* applyTankInputs, pass the set as skipIds to
+    // freeze the body, and short-circuit the drown / airborne checks in
+    // the readback loop. The player digs out by shooting.
+    const buriedIds = this.computeBuriedTanks();
+    this.physics.applyTankInputs(dt, buriedIds);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
 
-      this.physics.readbackTank(pid, tank);
+      const buried = buriedIds.has(pid);
+      if (!buried) this.physics.readbackTank(pid, tank);
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
@@ -1539,8 +1548,10 @@ export class Room {
       if (player) tank.lastAppliedSeq = player.input.seq;
       // Airborne is now a pure readout of the body's contact state —
       // broadcast to clients for HUD / mesh effects, not used as a
-      // separate simulation path.
-      tank.airborne = !this.physics.isGrounded(pid);
+      // separate simulation path. Buried tanks are forced ground-true:
+      // their body is pinned, so any airborne flag would trigger a ragdoll
+      // render on the client that's not actually happening.
+      tank.airborne = buried ? false : !this.physics.isGrounded(pid);
 
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
@@ -1551,29 +1562,34 @@ export class Room {
       else if (tank.position.z > mapH + borderPadding) tank.position.z = mapH + borderPadding;
 
       // Tilt from the voxel gradient — visual only, the Rapier body's
-      // X/Z rotations are locked.
-      this.alignTankTilt(tank, cellSize);
+      // X/Z rotations are locked. Buried tanks keep whatever tilt they
+      // had when they were engulfed.
+      if (!buried) this.alignTankTilt(tank, cellSize);
 
-      if (player && !tank.airborne) {
+      if (player && !tank.airborne && !buried) {
         const newSample = appendTrackSample(this.trackHistory, pid, tank, player.lastTrackSampleAt);
         if (newSample) player.lastTrackSampleAt = newSample;
       }
 
-      // Deep water suicide.
-      const drownDepth = 2.4;
-      if (tank.position.y < SEA_LEVEL - drownDepth) {
-        tank.hp = 0;
-        tank.alive = false;
-        if (player) {
-          player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+      // Deep water suicide. Buried tanks skip this — a tank walled in by a
+      // ramp on shore would otherwise drown because its Y happens to fall
+      // under the sea-level threshold inside the ramp.
+      if (!buried) {
+        const drownDepth = 2.4;
+        if (tank.position.y < SEA_LEVEL - drownDepth) {
+          tank.hp = 0;
+          tank.alive = false;
+          if (player) {
+            player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+          }
+          this.io.to(this.id).emit('match_event', {
+            kind: 'suicide',
+            victimId: pid,
+            name: tank.playerName,
+            color: tank.color,
+            weaponId: 'water',
+          });
         }
-        this.io.to(this.id).emit('match_event', {
-          kind: 'suicide',
-          victimId: pid,
-          name: tank.playerName,
-          color: tank.color,
-          weaponId: 'water',
-        });
       }
     }
   }
@@ -1787,6 +1803,24 @@ export class Room {
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, carveTerrain, damageTotals);
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
+  }
+
+  /** Set of alive tanks whose hull-centre voxel is solid — i.e. they've been
+   *  engulfed by a wall / ramp deposit. The physics step skips them so their
+   *  bodies stay pinned at the last translation instead of freefalling
+   *  through a terrain the KCC can't resolve its way out of. */
+  private computeBuriedTanks(): Set<PlayerId> {
+    const out = new Set<PlayerId>();
+    const cs = this.voxels.cellSize;
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      const centreY = tank.position.y + HULL_RADIUS;
+      const ix = Math.floor(tank.position.x / cs);
+      const iy = Math.floor(centreY / cs) - this.voxels.minYCells;
+      const iz = Math.floor(tank.position.z / cs);
+      if (this.voxels.isSolid(ix, iy, iz)) out.add(pid);
+    }
+    return out;
   }
 
   private regroundAliveTanks(): void {

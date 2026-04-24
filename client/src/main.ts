@@ -20,7 +20,7 @@ import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } f
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, spectateTank, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
@@ -39,7 +39,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick,
+  isShiftHeld, consumeRightClick, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupFullscreenButton } from './ui/fullscreen';
@@ -1332,7 +1332,44 @@ function animate(): void {
       setEnemyPositions(enemies);
     }
 
-    const aimDirect = getVirtualAimDirect();
+    // Buried detection: sample the voxel density at the local tank's hull
+    // centre. When solid, we toggle a short-boom "buried camera" mode and
+    // the through-walls outline so the player can still see where their
+    // tank is, and swap the aim path to a direct NDC→yaw/pitch so the
+    // reticle doesn't chase terrain raycasts into the surrounding wall.
+    let buriedLocal = false;
+    if (voxelGrid) {
+      const cs = voxelGrid.cellSize;
+      const bodyY = myTankMesh.group.position.y + LOCAL_HULL_RADIUS;
+      const ix = Math.floor(myTankMesh.group.position.x / cs);
+      const iy = Math.floor(bodyY / cs) - voxelGrid.minYCells;
+      const iz = Math.floor(myTankMesh.group.position.z / cs);
+      buriedLocal = voxelGrid.isSolid(ix, iy, iz);
+      setTankBuriedOutlineVisible(myId, buriedLocal);
+      setCameraBuriedMode(buriedLocal);
+      setCameraBoomMultiplier(1);
+    }
+
+    // Buried aim: the world-raycast path slams into the wall the tank is
+    // stuck inside, giving a 1-metre aim target right above the player →
+    // barrel pitches to ~90° and shells spawn inside solid geometry.
+    // Synthesize a direct-aim from the mouse NDC instead: X drives a
+    // turret yaw around the body, Y drives pitch.
+    let buriedAimOverride: { yaw: number; pitch: number } | null = null;
+    if (buriedLocal) {
+      const ndc = getMouseNDC();
+      const bodyYaw = predictedState.bodyRotation;
+      // Map NDC.x ∈ [-1, 1] → yaw offset ∈ [-π, π] so the player can
+      // spin the turret to face any wall around them by sweeping the
+      // mouse.
+      const yawOffset = ndc.x * Math.PI;
+      buriedAimOverride = {
+        yaw: bodyYaw + yawOffset,
+        pitch: Math.max(-0.4, Math.min(0.4, ndc.y * 0.5)),
+      };
+    }
+
+    const aimDirect = buriedAimOverride ?? getVirtualAimDirect();
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
       const v = selectedWeapon.projectileSpeed;
@@ -1437,22 +1474,6 @@ function animate(): void {
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
 
-    // Buried detection: sample the voxel density at the local tank's hull
-    // centre. When it flips to solid (e.g. after a wall or ramp drops on
-    // top), show the through-walls outline and ease the camera back so
-    // the player can frame their escape. getGridCell converts world
-    // coords to cell indices relative to minYCells.
-    if (voxelGrid) {
-      const cs = voxelGrid.cellSize;
-      const bodyY = myTankMesh.group.position.y + LOCAL_HULL_RADIUS;
-      const ix = Math.floor(myTankMesh.group.position.x / cs);
-      const iy = Math.floor(bodyY / cs) - voxelGrid.minYCells;
-      const iz = Math.floor(myTankMesh.group.position.z / cs);
-      const buried = voxelGrid.isSolid(ix, iy, iz);
-      setTankBuriedOutlineVisible(myId, buried);
-      setCameraBoomMultiplier(buried ? 1.35 : 1);
-    }
-
     followTank(
       myTankMesh.group.position,
       predictedState.bodyRotation,
@@ -1462,9 +1483,10 @@ function animate(): void {
     );
   } else {
     hideTrajectoryPreview();
-    // Dead / no predicted tank: drop the outline and revert camera zoom
+    // Dead / no predicted tank: drop the outline and revert camera state
     // so the next life starts with a clean follow pose.
     setTankBuriedOutlineVisible(myId, false);
+    setCameraBuriedMode(false);
     setCameraBoomMultiplier(1);
     if (killcamKillerId) {
       const killerMesh = getAllTankMeshes().get(killcamKillerId);
