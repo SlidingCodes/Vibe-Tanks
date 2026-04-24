@@ -461,6 +461,22 @@ export function triggerRecoil(playerId: string): void {
   tm.chassisTiltVel -= 18.0; // Much stronger kick back
 }
 
+/** Heat-tint the barrel emissive from cold (0, stock dark gunmetal) to
+ *  glowing red (1, just fired). Main.ts feeds this each frame with
+ *  `1 - cooldownProgress` for the selected weapon so the muzzle visibly
+ *  cools down as the player waits for the next shot. */
+export function setBarrelHeat(playerId: string, heat: number): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  const mat = tm.barrel.material as THREE.MeshStandardMaterial;
+  const h = Math.max(0, Math.min(1, heat));
+  // Sharpen the curve so the red fades quickly and the muzzle is black
+  // for most of the cooldown window, not just the last sliver.
+  const curve = h * h;
+  mat.emissive.setRGB(0.95 * curve, 0.12 * curve, 0.04 * curve);
+  mat.emissiveIntensity = 1.0;
+}
+
 
 /** Interpolate remote tanks each frame */
 export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {

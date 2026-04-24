@@ -12,7 +12,7 @@ import { createTrackDecal, TrackDecalHandle } from './scene/trackDecal';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
-  tickTankEffects, triggerRespawnAnim, updateTankNameLabels,
+  tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
@@ -139,7 +139,11 @@ let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
 let hasPlayedWelcomeAnnounce = false;
 let latestTanks: TankState[] = [];
-let lastFireTime = 0;
+/** Per-weapon last-fire timestamps (seconds, clock-relative). Each weapon
+ *  has its own cooldown so firing the standard shell doesn't gate a seeker
+ *  that's been fully charged for minutes. Mirrors the server's
+ *  PlayerState.lastFireByWeapon map. */
+const lastFireByWeapon = new Map<string, number>();
 let selectedWeaponId = 'standard';
 /** Local mirror of the server-authoritative inventory for the local tank.
  *  Rebuilt on each room_snapshot / state_update; drives the HUD chips and
@@ -1306,8 +1310,9 @@ function animate(): void {
       }
     }
 
+    const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
     if (consumeClick()) {
-      const timeSinceFire = now - lastFireTime;
+      const timeSinceFire = now - selLastFire;
       if (timeSinceFire >= selectedWeapon.cooldown) {
         // Ammo guard — the server re-checks, but rejecting client-side
         // keeps the player's "oh I'm out" feedback snappy (no dry-click
@@ -1319,15 +1324,18 @@ function animate(): void {
             weaponId: selectedWeapon.id,
             aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
           });
-          lastFireTime = now;
+          lastFireByWeapon.set(selectedWeapon.id, now);
           playShoot();
         }
       }
     }
 
-    const cooldownProgress = Math.min(1, (now - lastFireTime) / selectedWeapon.cooldown);
+    const cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
-    hud.updateWeaponCooldowns(lastFireTime, now);
+    hud.updateWeaponCooldowns(lastFireByWeapon, now);
+    // Muzzle heat: glowing red right after the shot, fades to black as
+    // the selected weapon's cooldown elapses.
+    setBarrelHeat(myId, 1 - cooldownProgress);
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
     followTank(

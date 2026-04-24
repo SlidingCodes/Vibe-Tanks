@@ -111,7 +111,10 @@ const FIRE_HULL_SAMPLE_OFFSETS: Array<[number, number]> = [
 interface PlayerState {
   socket?: Socket;
   input: MovementInput;
-  lastFireTime: number;
+  /** Per-weapon last-fire timestamps (epoch seconds). Each weapon has its
+   *  own cooldown clock, so sparking off a standard shot doesn't gate a
+   *  seeker that's been ready for minutes. Missing entry = never fired. */
+  lastFireByWeapon: Map<string, number>;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -366,7 +369,7 @@ export class Room {
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
-      lastFireTime: 0,
+      lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
@@ -531,10 +534,11 @@ export class Room {
       if (!weapon) return;
 
       const now = Date.now() / 1000;
-      if (now - player.lastFireTime < weapon.cooldown) return;
+      const prevFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
+      if (now - prevFire < weapon.cooldown) return;
 
       this.consumeAmmo(player, weapon.id);
-      player.lastFireTime = now;
+      player.lastFireByWeapon.set(weapon.id, now);
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
@@ -572,8 +576,9 @@ export class Room {
   }
 
   private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
-    player.lastFireTime = Date.now() / 1000;
-
+    // Caller (fire_request / tickBots) already stamped the per-weapon clock
+    // and ran ammo validation before dispatching here, so this method is
+    // purely the dispatch switch.
     switch (weapon.behavior) {
       case 'drill':
         this.fireDrill(tank, weapon);
@@ -633,7 +638,7 @@ export class Room {
 
     this.players.set(botId, {
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
-      lastFireTime: 0,
+      lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
@@ -1778,12 +1783,14 @@ export class Room {
         }
 
         // Only run simulation if cooldown is ready to save performance
-        if (now - player.lastFireTime >= weapon.cooldown) {
+        const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
+        if (now - prevBotFire >= weapon.cooldown) {
           // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
 
           // Fire! The jitter ensures they only hit 40-60% of the time.
           this.consumeAmmo(player, weapon.id);
+          player.lastFireByWeapon.set(weapon.id, now);
           this.performFire(tank, player, weapon, targetTank.position, result);
           // Reshuffle slot index against the (possibly shrunken) inventory.
           player.botWeaponIndex = player.inventory.length > 0
