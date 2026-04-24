@@ -183,6 +183,68 @@ export const WEAPONS: WeaponDefinition[] = [
       mineTerrainDamage: 2.8,
     },
   },
+  {
+    // Digger: burrows a forward cone into whatever the shell hits. Modest
+    // splash damage so it rewards hitting a tank directly, but its real
+    // purpose is terrain — tunnelling through walls and letting a buried
+    // tank shoot itself out.
+    id: 'digger',
+    name: 'Digger',
+    projectileSpeed: 22,
+    blastRadius: 2.6,
+    damage: 18,
+    // Impact always carves even without a terrainDamage number — the cone
+    // op below drives the actual terrain removal. Keep this > 0 so the
+    // base applyImpact path also opens a small crater at the entry.
+    terrainDamage: 2.2,
+    behavior: 'digger',
+    cooldown: 1.8,
+    startAmmo: 4,
+    maxAmmo: 8,
+    behaviorConfig: {
+      diggerTunnelLength: 6.5,
+      diggerTunnelRadius: 2.2,
+    },
+  },
+  {
+    // Wall: fire-and-forget cover. Deposits a barricade at the impact
+    // perpendicular to the shot direction. No damage — pure utility.
+    id: 'wall',
+    name: 'Wall',
+    projectileSpeed: 18,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'wall',
+    cooldown: 3.0,
+    startAmmo: 3,
+    maxAmmo: 6,
+    behaviorConfig: {
+      wallWidth: 6,
+      wallHeight: 3.2,
+      wallThickness: 1.2,
+    },
+  },
+  {
+    // Ramp: drive-up wedge rising along the shot direction from the
+    // impact point. Useful for crossing craters or popping up onto
+    // elevated ground.
+    id: 'ramp',
+    name: 'Ramp',
+    projectileSpeed: 18,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'ramp',
+    cooldown: 3.0,
+    startAmmo: 3,
+    maxAmmo: 6,
+    behaviorConfig: {
+      rampLength: 8,
+      rampWidth: 3.6,
+      rampHeight: 3,
+    },
+  },
 ];
 
 /** Max number of slots in a tank's weapon inventory (default + consumables). */

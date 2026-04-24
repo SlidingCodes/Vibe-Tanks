@@ -14,6 +14,20 @@ const COLLISION_CLEARANCE = 1.2;
 const COLLISION_PULL_IN = 0.6;
 const MIN_BOOM_DISTANCE = 2.8;
 
+// External boom multiplier (applied to the preset offset before terrain
+// raycast). Smoothed toward the latest target so zooming in/out reads as
+// a deliberate camera push rather than a snap. 1 = preset default.
+let boomMultiplierTarget = 1;
+let smoothedBoomMultiplier = 1;
+
+/** Set the camera boom multiplier (distance + height scaling applied to
+ *  the current preset's offset). The actual camera eases toward this
+ *  value across a few frames so the transition is smooth. Intended for
+ *  the buried-tank zoom-out; pass 1 to revert to default. */
+export function setCameraBoomMultiplier(mult: number): void {
+  boomMultiplierTarget = Math.max(0.5, Math.min(2.5, mult));
+}
+
 export type CameraPresetId = 'classic' | 'wide' | 'tactical' | 'first_person';
 
 interface CameraPreset {
@@ -158,6 +172,7 @@ export function followTank(
   if (!followInitialized) {
     smoothedTankPos.copy(tankPos);
     smoothedBoomDistance = p.offset.length();
+    smoothedBoomMultiplier = boomMultiplierTarget;
     followInitialized = true;
   }
 
@@ -167,7 +182,11 @@ export function followTank(
   smoothedTankPos.z += (tankPos.z - smoothedTankPos.z) * horizontalBlend;
   smoothedTankPos.y += (tankPos.y - smoothedTankPos.y) * verticalBlend;
 
-  const rotated = p.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
+  const boomMultBlend = 1 - Math.exp(-3 * dt);
+  smoothedBoomMultiplier += (boomMultiplierTarget - smoothedBoomMultiplier) * boomMultBlend;
+
+  const scaledOffset = p.offset.clone().multiplyScalar(smoothedBoomMultiplier);
+  const rotated = scaledOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), bodyRotation);
   const boomFullLength = rotated.length();
   const boomDir = rotated.clone().divideScalar(boomFullLength);
   const lookTarget = smoothedTankPos.clone().add(p.lookOffset);

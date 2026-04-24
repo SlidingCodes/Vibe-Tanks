@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="wlBrick" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a9388"/>
+      <stop offset="1" stop-color="#5a554c"/>
+    </linearGradient>
+    <linearGradient id="wlBrick2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a89868"/>
+      <stop offset="1" stop-color="#6a5f3a"/>
+    </linearGradient>
+    <linearGradient id="wlGround" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a6a3a"/>
+      <stop offset="1" stop-color="#3a4a2a"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="52" width="60" height="10" fill="url(#wlGround)" stroke="#1a1814" stroke-width="1.2"/>
+  <g stroke="#1a1814" stroke-width="1.3" stroke-linejoin="round">
+    <rect x="4"  y="40" width="18" height="12" fill="url(#wlBrick)"/>
+    <rect x="22" y="40" width="22" height="12" fill="url(#wlBrick2)"/>
+    <rect x="44" y="40" width="16" height="12" fill="url(#wlBrick)"/>
+    <rect x="4"  y="28" width="14" height="12" fill="url(#wlBrick2)"/>
+    <rect x="18" y="28" width="20" height="12" fill="url(#wlBrick)"/>
+    <rect x="38" y="28" width="22" height="12" fill="url(#wlBrick2)"/>
+    <rect x="4"  y="16" width="24" height="12" fill="url(#wlBrick)"/>
+    <rect x="28" y="16" width="16" height="12" fill="url(#wlBrick2)"/>
+    <rect x="44" y="16" width="16" height="12" fill="url(#wlBrick)"/>
+  </g>
+  <g stroke="#1a1814" stroke-width="0.7" opacity="0.5">
+    <path d="M4 22 L60 22 M4 34 L60 34 M4 46 L60 46"/>
+  </g>
+</svg>

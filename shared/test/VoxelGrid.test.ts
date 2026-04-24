@@ -195,4 +195,67 @@ describe('VoxelGrid', () => {
       expect(y).toBe(g.bedrockSurfaceY);
     });
   });
+
+  describe('addBox', () => {
+    it('raises a solid column above flat ground where there was none', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const beforeH = g.getHeight(16, 16);
+      g.addBox({ x: 14, y: 2, z: 14 }, { x: 18, y: 5, z: 18 });
+      const afterH = g.getHeight(16, 16);
+      expect(afterH - beforeH).toBeGreaterThan(2);
+    });
+
+    it('does not lower density outside the box (additive only)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Pick a cell well outside the box.
+      const before = g.getDensity(4, 18, 4);
+      g.addBox({ x: 14, y: 2, z: 14 }, { x: 18, y: 5, z: 18 });
+      const after = g.getDensity(4, 18, 4);
+      expect(after).toBe(before);
+    });
+
+    it('partially fills a previously carved crater (additive over low density)', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      g.carveSphere({ x: 16, y: 2, z: 16 }, 3);
+      const carvedDensity = g.getDensity(16, 18, 16); // above the carved zone
+      g.addBox({ x: 13, y: 0, z: 13 }, { x: 19, y: 4, z: 19 });
+      const filled = g.getDensity(16, 18, 16);
+      // The addBox overlaps the old crater and must raise the density there.
+      expect(filled).toBeGreaterThan(carvedDensity);
+    });
+  });
+
+  describe('addRamp', () => {
+    it('produces a surface that rises along the forward direction', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      // Ramp rises +X from x=12 → x=20, width 4 around z=16, height 3.
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 1, y: 0, z: 0 }, 8, 4, 3);
+      const near = g.getHeight(13, 16);
+      const mid = g.getHeight(16, 16);
+      const far = g.getHeight(19, 16);
+      expect(mid).toBeGreaterThan(near);
+      expect(far).toBeGreaterThan(mid);
+    });
+
+    it('does not modify terrain outside the ramp footprint', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const before = g.getHeight(4, 4);
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 1, y: 0, z: 0 }, 8, 4, 3);
+      const after = g.getHeight(4, 4);
+      expect(Math.abs(after - before)).toBeLessThan(0.01);
+    });
+
+    it('no-ops with a zero-length forward', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const snap = Uint8Array.from(g.data);
+      g.addRamp({ x: 12, y: 2, z: 16 }, { x: 0, y: 0, z: 0 }, 8, 4, 3);
+      expect(g.data).toEqual(snap);
+    });
+  });
 });

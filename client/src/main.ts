@@ -13,12 +13,13 @@ import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
+  setTankBuriedOutlineVisible,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, spectateTank, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
@@ -837,30 +838,88 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const debris = voxelDebris;
       const scorch = voxelScorch;
       setTimeout(() => {
-        const radius = step.blastRadius;
-        // Sample debris origins BEFORE carving (they must still be solid).
-        debris?.spawnFromCarve(grid, step.endPoint, radius);
-        grid.carveSphere(step.endPoint, radius);
-        // Mirror the carve into the client Rapier world so the local KCC
-        // collider matches the server and the freshly opened crater is
-        // present under the tank on the very next prediction tick.
-        clientPhysics?.invalidateSphere(step.endPoint, radius);
-        // Scorch extends past the blast radius so the burn ring is visible
-        // well outside the crater. Strength=1 + wider radius means even a
-        // single hit saturates enough voxels for the 8-corner average at
-        // SN vertices to read cleanly.
-        scorch?.addSphere(step.endPoint, radius * 1.9, 1.0);
-        // Only invalidate cuberille chunks when that view is actually visible.
-        if (cuberilleVisible) cuberille?.invalidateSphere(step.endPoint, radius);
-        // Mark surface-nets chunks dirty — flushDirtyChunks() rebuilds them
-        // once per frame before render, even if multiple missiles land this frame.
-        sn?.invalidateSphere(step.endPoint, radius * 1.9);
-        onMinimapCarve(grid, step.endPoint, radius);
+        const op = step.terrainOp ?? { kind: 'carve_sphere' as const };
+        const center = step.endPoint;
+        switch (op.kind) {
+          case 'carve_sphere': {
+            const radius = step.blastRadius;
+            // Sample debris origins BEFORE carving (they must still be solid).
+            debris?.spawnFromCarve(grid, center, radius);
+            grid.carveSphere(center, radius);
+            clientPhysics?.invalidateSphere(center, radius);
+            scorch?.addSphere(center, radius * 1.9, 1.0);
+            if (cuberilleVisible) cuberille?.invalidateSphere(center, radius);
+            sn?.invalidateSphere(center, radius * 1.9);
+            onMinimapCarve(grid, center, radius);
+            break;
+          }
+          case 'carve_cone': {
+            // Sample debris along the forward cone before carving.
+            const midPoint = {
+              x: center.x + op.direction.x * op.length * 0.5,
+              y: center.y + op.direction.y * op.length * 0.5,
+              z: center.z + op.direction.z * op.length * 0.5,
+            };
+            debris?.spawnFromCarve(grid, midPoint, op.baseRadius);
+            grid.carveCone(center, op.direction, op.length, op.baseRadius);
+            const invR = op.length * 0.5 + op.baseRadius + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            scorch?.addSphere(midPoint, invR * 1.2, 0.7);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.4);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
+          case 'add_wall': {
+            const halfW = op.width / 2;
+            const halfT = op.thickness / 2;
+            const rx = -op.forward.z;
+            const rz = op.forward.x;
+            let minX = Infinity, maxX = -Infinity;
+            let minZ = Infinity, maxZ = -Infinity;
+            for (const [u, v] of [[halfW, halfT], [halfW, -halfT], [-halfW, halfT], [-halfW, -halfT]] as const) {
+              const wx = center.x + u * rx + v * op.forward.x;
+              const wz = center.z + u * rz + v * op.forward.z;
+              if (wx < minX) minX = wx;
+              if (wx > maxX) maxX = wx;
+              if (wz < minZ) minZ = wz;
+              if (wz > maxZ) maxZ = wz;
+            }
+            const minY = center.y - 0.2;
+            const maxY = center.y + op.height + 0.4;
+            grid.addBox({ x: minX, y: minY, z: minZ }, { x: maxX, y: maxY, z: maxZ });
+            const invCenter = {
+              x: (minX + maxX) / 2,
+              y: (minY + maxY) / 2,
+              z: (minZ + maxZ) / 2,
+            };
+            const invR = Math.max((maxX - minX) / 2, (maxY - minY) / 2, (maxZ - minZ) / 2) + 1;
+            clientPhysics?.invalidateSphere(invCenter, invR);
+            if (cuberilleVisible) cuberille?.invalidateSphere(invCenter, invR);
+            sn?.invalidateSphere(invCenter, invR * 1.2);
+            onMinimapCarve(grid, invCenter, invR);
+            break;
+          }
+          case 'add_ramp': {
+            grid.addRamp(center, op.forward, op.length, op.width, op.height);
+            const midPoint = {
+              x: center.x + op.forward.x * op.length * 0.5,
+              y: center.y + op.height * 0.5,
+              z: center.z + op.forward.z * op.length * 0.5,
+            };
+            const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.2);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
+        }
         // No preemptive airborne flip: the client Rapier KCC runs every
-        // animate frame against the just-invalidated colliders, so a
-        // crater opening under the tank shows up as "not grounded" on
-        // the very next prediction tick (~16 ms). Server reconciles via
-        // the standard state_update path.
+        // animate frame against the just-invalidated colliders, so any
+        // terrain change under the tank shows up on the very next
+        // prediction tick. Server reconciles via the standard state_update
+        // path.
       }, carveDelay * 1000);
     }
     if (step.eventType !== 'impact') continue;
@@ -1354,6 +1413,23 @@ function animate(): void {
     hud.updateWeaponCooldowns(lastFireByWeapon, now);
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
+
+    // Buried detection: sample the voxel density at the local tank's hull
+    // centre. When it flips to solid (e.g. after a wall or ramp drops on
+    // top), show the through-walls outline and ease the camera back so
+    // the player can frame their escape. getGridCell converts world
+    // coords to cell indices relative to minYCells.
+    if (voxelGrid) {
+      const cs = voxelGrid.cellSize;
+      const bodyY = myTankMesh.group.position.y + LOCAL_HULL_RADIUS;
+      const ix = Math.floor(myTankMesh.group.position.x / cs);
+      const iy = Math.floor(bodyY / cs) - voxelGrid.minYCells;
+      const iz = Math.floor(myTankMesh.group.position.z / cs);
+      const buried = voxelGrid.isSolid(ix, iy, iz);
+      setTankBuriedOutlineVisible(myId, buried);
+      setCameraBoomMultiplier(buried ? 1.35 : 1);
+    }
+
     followTank(
       myTankMesh.group.position,
       predictedState.bodyRotation,
@@ -1363,6 +1439,10 @@ function animate(): void {
     );
   } else {
     hideTrajectoryPreview();
+    // Dead / no predicted tank: drop the outline and revert camera zoom
+    // so the next life starts with a clean follow pose.
+    setTankBuriedOutlineVisible(myId, false);
+    setCameraBoomMultiplier(1);
     if (killcamKillerId) {
       const killerMesh = getAllTankMeshes().get(killcamKillerId);
       if (killerMesh) {

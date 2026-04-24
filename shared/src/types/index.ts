@@ -105,7 +105,10 @@ export type WeaponBehavior =
   | 'seeker'
   | 'rail'
   | 'mortar'
-  | 'mine';
+  | 'mine'
+  | 'digger'
+  | 'wall'
+  | 'ramp';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -123,7 +126,10 @@ export type ShotVisualStyle =
   | 'rail'
   | 'mortar_shell'
   | 'mine_deploy'
-  | 'mine_burst';
+  | 'mine_burst'
+  | 'digger_shell'
+  | 'wall_shell'
+  | 'ramp_shell';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -166,6 +172,22 @@ export interface WeaponBehaviorConfig {
   mineBlastRadius?: number;
   mineDamage?: number;
   mineTerrainDamage?: number;
+  /** Length of the forward-carved cone for the digger weapon (world units). */
+  diggerTunnelLength?: number;
+  /** Base radius of the forward-carved cone at its far end. */
+  diggerTunnelRadius?: number;
+  /** Half-width of the wall weapon (wall runs 2*width along its long axis). */
+  wallWidth?: number;
+  /** Wall height (world units of added material above the impact point). */
+  wallHeight?: number;
+  /** Wall thickness along the shot's forward direction. */
+  wallThickness?: number;
+  /** Length the ramp extends along the shot's forward direction. */
+  rampLength?: number;
+  /** Ramp lateral width (perpendicular to the shot direction, in XZ). */
+  rampWidth?: number;
+  /** Peak height of the ramp above its base. */
+  rampHeight?: number;
 }
 
 export interface WeaponDefinition {
@@ -364,17 +386,33 @@ export interface FireUpdate {
 }
 
 // ── Shot result ──
+
+/** Terrain operation triggered at a step's impact. Undefined falls back to
+ *  the legacy `carveSphere(endPoint, blastRadius)` behaviour that every
+ *  pre-terraforming weapon relies on. New shapes (forward cone for the
+ *  digger, additive box/wedge for wall/ramp) carry their geometry on the
+ *  op so the server commit and the client replay stay in lockstep. */
+export type TerrainOp =
+  | { kind: 'carve_sphere' }
+  | { kind: 'carve_cone'; direction: Vec3; length: number; baseRadius: number }
+  | { kind: 'add_wall'; forward: Vec3; width: number; height: number; thickness: number }
+  | { kind: 'add_ramp'; forward: Vec3; length: number; width: number; height: number };
+
 export interface ShotStep {
   startDelay: number;
   trajectory: Vec3[];
   endPoint: Vec3;
   eventType: ShotEventType;
-  /** True when the step's impact carves the voxel terrain. Server emits,
+  /** True when the step triggers a terrain op on impact. Server emits,
    *  server + client act on it. False for non-impact events (split/bounce)
    *  and for beams that hit a tank instead of terrain. */
   carveTerrain: boolean;
   blastRadius: number;
   visualStyle: ShotVisualStyle;
+  /** Optional explicit operation to run at the impact. When omitted the
+   *  committer carves a sphere of `blastRadius` at `endPoint`, matching
+   *  every pre-terraforming weapon's behaviour. */
+  terrainOp?: TerrainOp;
 }
 
 export interface ShotResult {

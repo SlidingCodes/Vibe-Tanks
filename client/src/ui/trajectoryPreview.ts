@@ -508,6 +508,42 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'digger') {
+    parentMat.color.setHex(0xa87830);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    marker.group.scale.setScalar(Math.max(0.9, (weapon.behaviorConfig?.diggerTunnelRadius ?? 2) * 0.28));
+    setMarkerColor(0xc88040, 0xe8b070);
+    marker.group.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'wall') {
+    parentMat.color.setHex(0x8a8470);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    // Scale reticle to hint at the wall footprint (roughly its XZ area).
+    const wallR = Math.max(weapon.behaviorConfig?.wallWidth ?? 6, weapon.behaviorConfig?.wallThickness ?? 1.2);
+    marker.group.scale.setScalar(Math.max(0.9, wallR * 0.18));
+    setMarkerColor(0x9a9388, 0xc0b890);
+    marker.group.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'ramp') {
+    parentMat.color.setHex(0x8a7458);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    const rampR = Math.max(weapon.behaviorConfig?.rampLength ?? 8, weapon.behaviorConfig?.rampWidth ?? 3.6);
+    marker.group.scale.setScalar(Math.max(0.9, rampR * 0.16));
+    setMarkerColor(0xa8763a, 0xc89254);
+    marker.group.visible = true;
+    return;
+  }
+
   // Fallback: 'standard' (and any future weapon without a custom preview).
   // Without this the default weapon has no reticle at all, which is how the
   // bug first surfaced: the game starts on the first weapon slot and the

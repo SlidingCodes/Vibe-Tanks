@@ -13,7 +13,9 @@ import {
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
+  ShotStep,
   TankState,
+  TerrainOp,
   TerrainPresetId,
   TerrainSettings,
   TrackHistory,
@@ -687,6 +689,87 @@ export class Room {
     return step.startDelay + Math.max(0, (step.trajectory.length - 1) * sampleDt);
   }
 
+  /**
+   * Commit a step's terrain mutation against the authoritative voxel grid
+   * and refresh any Rapier chunks that intersect its footprint. The default
+   * op (undefined) preserves the original sphere-carve behaviour that every
+   * pre-terraforming weapon relies on; terraforming steps ship a TerrainOp
+   * describing the exact shape to apply.
+   */
+  private applyTerrainStep(step: ShotStep): void {
+    const op: TerrainOp = step.terrainOp ?? { kind: 'carve_sphere' };
+    const center = step.endPoint;
+    switch (op.kind) {
+      case 'carve_sphere': {
+        const r = step.blastRadius;
+        this.voxels.carveSphere(center, r);
+        this.physics.invalidateSphere(center, r);
+        break;
+      }
+      case 'carve_cone': {
+        this.voxels.carveCone(center, op.direction, op.length, op.baseRadius);
+        // Anchor the invalidation on the cone's midpoint so the sphere
+        // covers both the entry crater and the tip of the tunnel.
+        const mid: Vec3 = {
+          x: center.x + op.direction.x * op.length * 0.5,
+          y: center.y + op.direction.y * op.length * 0.5,
+          z: center.z + op.direction.z * op.length * 0.5,
+        };
+        const invR = op.length * 0.5 + op.baseRadius + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
+      case 'add_wall': {
+        const halfW = op.width / 2;
+        const halfT = op.thickness / 2;
+        // Right vector perpendicular to forward in XZ.
+        const rx = -op.forward.z;
+        const rz = op.forward.x;
+        // AABB enveloping the wall — built from its 4 XZ corners.
+        const corners: Array<[number, number]> = [
+          [ halfW,  halfT], [ halfW, -halfT], [-halfW,  halfT], [-halfW, -halfT],
+        ];
+        let minX = Infinity, maxX = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+        for (const [u, v] of corners) {
+          const wx = center.x + u * rx + v * op.forward.x;
+          const wz = center.z + u * rz + v * op.forward.z;
+          if (wx < minX) minX = wx;
+          if (wx > maxX) maxX = wx;
+          if (wz < minZ) minZ = wz;
+          if (wz > maxZ) maxZ = wz;
+        }
+        const minY = center.y - 0.2;
+        const maxY = center.y + op.height + 0.4;
+        this.voxels.addBox({ x: minX, y: minY, z: minZ }, { x: maxX, y: maxY, z: maxZ });
+        const invCenter: Vec3 = {
+          x: (minX + maxX) / 2,
+          y: (minY + maxY) / 2,
+          z: (minZ + maxZ) / 2,
+        };
+        const invR = Math.max(
+          (maxX - minX) / 2,
+          (maxY - minY) / 2,
+          (maxZ - minZ) / 2,
+        ) + 1;
+        this.physics.invalidateSphere(invCenter, invR);
+        break;
+      }
+      case 'add_ramp': {
+        this.voxels.addRamp(center, op.forward, op.length, op.width, op.height);
+        // Invalidation sphere at the ramp's visual centre.
+        const mid: Vec3 = {
+          x: center.x + op.forward.x * op.length * 0.5,
+          y: center.y + op.height * 0.5,
+          z: center.z + op.forward.z * op.length * 0.5,
+        };
+        const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
+    }
+  }
+
   private scheduleShotResult(result: ShotResult, ownerId: PlayerId, weaponId: string): number {
     this.io.to(this.id).emit('shot_resolved', result);
 
@@ -697,8 +780,7 @@ export class Room {
       if (!step.carveTerrain) continue;
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        this.voxels.carveSphere(step.endPoint, step.blastRadius);
-        this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+        this.applyTerrainStep(step);
         this.regroundAliveTanks();
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
@@ -719,8 +801,7 @@ export class Room {
     let appliedCarve = false;
     for (const step of result.steps) {
       if (!step.carveTerrain) continue;
-      this.voxels.carveSphere(step.endPoint, step.blastRadius);
-      this.physics.invalidateSphere(step.endPoint, step.blastRadius);
+      this.applyTerrainStep(step);
       appliedCarve = true;
     }
     if (appliedCarve) this.regroundAliveTanks();

@@ -40,6 +40,13 @@ export interface TankMesh {
   leftTread: THREE.Mesh;
   rightTread: THREE.Mesh;
   shieldMesh: THREE.Mesh;
+  /** Through-walls silhouette meshes (body + turret + barrel clones) that
+   *  render with depthTest:false so the player can see their own tank
+   *  even after it's been buried by a wall or ramp drop. Hidden by
+   *  default; toggle via `setTankBuriedOutlineVisible`. */
+  outlineBody: THREE.Mesh;
+  outlineTurret: THREE.Mesh;
+  outlineBarrel: THREE.Mesh;
   /** Three small billboards attached on top of the tank shown when the
    *  tank is standing in napalm or just walked out. */
   burningFlames: THREE.Sprite[];
@@ -188,6 +195,31 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   chassisGroup.add(rightTread);
 
 
+  // Through-walls silhouette: the exact hull geometry drawn again with a
+  // basic material that ignores the depth buffer. Invisible by default;
+  // only the local player's tank toggles it on while buried so the
+  // player can still see where their tank is relative to the world.
+  const outlineMat = new THREE.MeshBasicMaterial({
+    color: tank.color,
+    transparent: true,
+    opacity: 0.55,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const outlineBody = new THREE.Mesh(bodyGeo, outlineMat);
+  outlineBody.renderOrder = 999;
+  outlineBody.visible = false;
+  chassisGroup.add(outlineBody);
+  const outlineTurret = new THREE.Mesh(turretGeo, outlineMat);
+  outlineTurret.renderOrder = 999;
+  outlineTurret.visible = false;
+  turretGroup.add(outlineTurret);
+  const outlineBarrel = new THREE.Mesh(barrelGeo, outlineMat);
+  outlineBarrel.position.y = 0.2;
+  outlineBarrel.renderOrder = 999;
+  outlineBarrel.visible = false;
+  turretGroup.add(outlineBarrel);
+
   // Shield bubble — shown only when shieldActive, absorbs the next hit.
   const shieldGeo = new THREE.SphereGeometry(1.8, 20, 14);
   const shieldMat = new THREE.MeshStandardMaterial({
@@ -263,7 +295,9 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 
   const tm: TankMesh = {
     group, chassisGroup, body, turretGroup, turret, barrel,
-    leftTread, rightTread, shieldMesh, burningFlames,
+    leftTread, rightTread, shieldMesh,
+    outlineBody, outlineTurret, outlineBarrel,
+    burningFlames,
 
     nameLabel,
     state: tank,
@@ -453,6 +487,18 @@ export function tickTankEffects(dt: number): void {
   }
 }
 
+
+/** Toggle the through-walls silhouette on a tank. Only used on the local
+ *  player's tank today — a buried tank stays visible to its driver so
+ *  they can orient themselves and dig out. Safe to call every frame. */
+export function setTankBuriedOutlineVisible(playerId: string, visible: boolean): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  if (tm.outlineBody.visible === visible) return;
+  tm.outlineBody.visible = visible;
+  tm.outlineTurret.visible = visible;
+  tm.outlineBarrel.visible = visible;
+}
 
 export function triggerRecoil(playerId: string): void {
   const tm = tankMeshes.get(playerId);

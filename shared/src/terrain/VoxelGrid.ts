@@ -318,6 +318,137 @@ export class VoxelGrid {
     }
   }
 
+  /**
+   * Additive box fill: raises density inside an axis-aligned box with a
+   * 1-cell smooth rim at the boundary so Surface Nets finds a clean iso
+   * crossing on each face. Existing density is never *lowered* — the op
+   * paints new material on top of what's already there, leaving craters
+   * elsewhere in the AABB alone. Used by the `wall` weapon to pop a
+   * barricade up out of the ground.
+   */
+  addBox(min: Vec3, max: Vec3): void {
+    const cs = this.cellSize;
+    // +1 cell of slack on every side so the boundary smoothstep has room.
+    const ixMin = Math.max(0, Math.floor(min.x / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(max.x / cs) + 1);
+    const iyMin = Math.max(0, Math.floor(min.y / cs) - this.minYCells - 1);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(max.y / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(min.z / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(max.z / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          // Axis-aligned box SDF: positive inside, negative outside.
+          const dxIn = Math.min(wx - min.x, max.x - wx);
+          const dyIn = Math.min(wy - min.y, max.y - wy);
+          const dzIn = Math.min(wz - min.z, max.z - wz);
+          let signed: number;
+          if (dxIn >= 0 && dyIn >= 0 && dzIn >= 0) {
+            signed = Math.min(dxIn, dyIn, dzIn);
+          } else {
+            const ex = dxIn < 0 ? -dxIn : 0;
+            const ey = dyIn < 0 ? -dyIn : 0;
+            const ez = dzIn < 0 ? -dzIn : 0;
+            signed = -Math.sqrt(ex * ex + ey * ey + ez * ez);
+          }
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
+   * Additive wedge fill: a triangular prism rising from height 0 at `base`
+   * to `height` at `base + forward * length`, with lateral width `width`
+   * around the forward axis. `forward` is projected onto XZ; the ramp sits
+   * on world-Y `base.y` and rises upward. Used by the `ramp` weapon to
+   * deposit a drive-up slope. Density is raised, never lowered, so the
+   * ramp lays cleanly over existing ground.
+   *
+   * The slanted top face uses a slab distance `topY - wRel` without the
+   * cosine correction of a true SDF; this overshoots the iso crossing by
+   * ~cos(slope) which makes the ramp read a hair thicker than the nominal
+   * `height`. Visually harmless at the slopes we ship (≤~30°).
+   */
+  addRamp(base: Vec3, forward: Vec3, length: number, width: number, height: number): void {
+    if (length <= 0 || width <= 0 || height <= 0) return;
+    const fLenSq = forward.x * forward.x + forward.z * forward.z;
+    if (fLenSq < 1e-5) return;
+    const fLen = Math.sqrt(fLenSq);
+    const nx = forward.x / fLen;
+    const nz = forward.z / fLen;
+    // Right vector perpendicular to forward in XZ.
+    const rx = -nz;
+    const rz = nx;
+
+    const cs = this.cellSize;
+    const halfW = width / 2;
+    const corners: Array<[number, number]> = [
+      [0, halfW], [0, -halfW],
+      [length, halfW], [length, -halfW],
+    ];
+    let minX = Infinity, maxX = -Infinity;
+    let minZ = Infinity, maxZ = -Infinity;
+    for (const [u, v] of corners) {
+      const wx = base.x + u * nx + v * rx;
+      const wz = base.z + u * nz + v * rz;
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wz < minZ) minZ = wz;
+      if (wz > maxZ) maxZ = wz;
+    }
+    const minY = base.y;
+    const maxY = base.y + height;
+
+    const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
+    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells - 1);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+    const invLength = 1 / length;
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      const wRel = wy - base.y;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          const px = wx - base.x;
+          const pz = wz - base.z;
+          const u = px * nx + pz * nz;
+          const v = px * rx + pz * rz;
+          const topY = u * height * invLength;
+          // Slab distances along each face; min across faces = SDF of the
+          // prism (positive inside).
+          const slabU0 = u;                  // back face
+          const slabU1 = length - u;         // far face
+          const slabV = halfW - Math.abs(v); // side faces
+          const slabDown = wRel;             // floor
+          const slabUp = topY - wRel;        // slanted top
+          const slabs = [slabU0, slabU1, slabV, slabDown, slabUp];
+          let signed = slabs[0];
+          for (let k = 1; k < slabs.length; k++) {
+            if (slabs[k] < signed) signed = slabs[k];
+          }
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
   /** Wire-format snapshot of the full grid. `data` is the Uint8Array's buffer. */
   toSnapshot(): VoxelSnapshot {
     return {
