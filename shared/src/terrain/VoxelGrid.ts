@@ -365,6 +365,77 @@ export class VoxelGrid {
   }
 
   /**
+   * Additive oriented-box fill: raises density inside a rectangular box
+   * rotated around its Y-axis by `forward` (projected onto XZ). `forward`
+   * is the thickness axis — the box is `2*halfT` deep along it — and the
+   * perpendicular XZ vector is the width axis (`2*halfW` wide). Height
+   * `2*halfH` is vertical, measured from the base at `center.y` upward
+   * (i.e. the box sits on the ground with its bottom face at `center.y`).
+   *
+   * The difference from `addBox` is that this routine runs the SDF in
+   * the rotated local frame, so a diagonal `forward` produces a real
+   * rotated wall rather than the AABB of the rotation (which is a cube
+   * when the shot angle is 45°). Used by the `wall` weapon.
+   */
+  addOrientedBox(center: Vec3, forward: Vec3, halfW: number, halfH: number, halfT: number): void {
+    if (halfW <= 0 || halfH <= 0 || halfT <= 0) return;
+    const fLenSq = forward.x * forward.x + forward.z * forward.z;
+    if (fLenSq < 1e-5) return;
+    const fLen = Math.sqrt(fLenSq);
+    const fx = forward.x / fLen;
+    const fz = forward.z / fLen;
+    // Right axis perpendicular to forward in XZ.
+    const rx = -fz;
+    const rz = fx;
+
+    // World-space AABB enclosing the rotated box.
+    const extX = halfW * Math.abs(rx) + halfT * Math.abs(fx);
+    const extZ = halfW * Math.abs(rz) + halfT * Math.abs(fz);
+    const minX = center.x - extX;
+    const maxX = center.x + extX;
+    const minZ = center.z - extZ;
+    const maxZ = center.z + extZ;
+    const minY = center.y;
+    const maxY = center.y + 2 * halfH;
+
+    const cs = this.cellSize;
+    const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
+    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells - 1);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
+    const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
+    if (ixMin > ixMax || iyMin > iyMax || izMin > izMax) return;
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      const h = wy - center.y - halfH; // 0 at box centre, ±halfH at faces
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          const px = wx - center.x;
+          const pz = wz - center.z;
+          // Project into the rotated local frame.
+          const u = px * rx + pz * rz; // along width
+          const v = px * fx + pz * fz; // along thickness (forward)
+          // Axis-aligned slabs in the local frame.
+          const slabU = halfW - Math.abs(u);
+          const slabV = halfT - Math.abs(v);
+          const slabY = halfH - Math.abs(h);
+          let signed = slabU;
+          if (slabV < signed) signed = slabV;
+          if (slabY < signed) signed = slabY;
+          const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
+          const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
+          const idx = this.index(ix, iy, iz);
+          if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
    * Additive wedge fill: a triangular prism rising from height 0 at `base`
    * to `height` at `base + forward * length`, with lateral width `width`
    * around the forward axis. `forward` is projected onto XZ; the ramp sits

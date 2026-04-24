@@ -222,7 +222,11 @@ export const WEAPONS: WeaponDefinition[] = [
     behaviorConfig: {
       wallWidth: 6,
       wallHeight: 3.2,
-      wallThickness: 1.2,
+      // A 1-cell thick wall disappears on non-axis angles because cell
+      // centres fall outside the ±halfT band (only the single i+j=k
+      // anti-diagonal row is inside at 45°). Keep this ≥ 2 so a diagonal
+      // shot still deposits a coherent wall ~2 cells thick.
+      wallThickness: 2.2,
     },
   },
   {

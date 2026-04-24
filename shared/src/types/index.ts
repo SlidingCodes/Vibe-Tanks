@@ -436,6 +436,10 @@ export interface ClientEvents {
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   force_reset_match: () => void;
   shield_activate: () => void;
+  /** Dev: toggle the server's bot auto-fill. When disabled the server
+   *  removes every active bot and skips ensureFourTanks; when re-enabled
+   *  the bot slots refill on the next tick. */
+  toggle_bots: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;

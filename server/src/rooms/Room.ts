@@ -249,6 +249,9 @@ export class Room {
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
+  /** Dev toggle: when false, bots are removed and never refilled. Flipped
+   *  by the `toggle_bots` client event (default B key on the client). */
+  private botsEnabled: boolean = true;
 
   constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
     this.id = id;
@@ -568,6 +571,13 @@ export class Room {
       this.resetMatch();
     });
 
+    socket.on('toggle_bots', () => {
+      this.botsEnabled = !this.botsEnabled;
+      // eslint-disable-next-line no-console
+      console.log(`[bots] ${this.botsEnabled ? 'enabled' : 'disabled'} by ${socket.id}`);
+      this.ensureFourTanks();
+    });
+
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -612,6 +622,14 @@ export class Room {
 
   private ensureFourTanks(): void {
     const TARGET_TANKS = 4;
+
+    // With bots disabled, drop every existing bot and stop filling. Human
+    // players keep their slots.
+    if (!this.botsEnabled) {
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      for (const [botId] of bots) this.removeBot(botId);
+      return;
+    }
 
     // Remove bots if we have too many tanks
     if (this.players.size > TARGET_TANKS) {
@@ -721,37 +739,19 @@ export class Room {
       }
       case 'add_wall': {
         const halfW = op.width / 2;
+        const halfH = op.height / 2;
         const halfT = op.thickness / 2;
-        // Right vector perpendicular to forward in XZ.
-        const rx = -op.forward.z;
-        const rz = op.forward.x;
-        // AABB enveloping the wall — built from its 4 XZ corners.
-        const corners: Array<[number, number]> = [
-          [ halfW,  halfT], [ halfW, -halfT], [-halfW,  halfT], [-halfW, -halfT],
-        ];
-        let minX = Infinity, maxX = -Infinity;
-        let minZ = Infinity, maxZ = -Infinity;
-        for (const [u, v] of corners) {
-          const wx = center.x + u * rx + v * op.forward.x;
-          const wz = center.z + u * rz + v * op.forward.z;
-          if (wx < minX) minX = wx;
-          if (wx > maxX) maxX = wx;
-          if (wz < minZ) minZ = wz;
-          if (wz > maxZ) maxZ = wz;
-        }
-        const minY = center.y - 0.2;
-        const maxY = center.y + op.height + 0.4;
-        this.voxels.addBox({ x: minX, y: minY, z: minZ }, { x: maxX, y: maxY, z: maxZ });
+        // addOrientedBox centres the box on `center.y + halfH` → base sits
+        // on `center.y` (the impact point). Using addBox with the AABB of
+        // the rotated rectangle would deposit a square at 45° shots.
+        const boxCentre: Vec3 = { x: center.x, y: center.y, z: center.z };
+        this.voxels.addOrientedBox(boxCentre, op.forward, halfW, halfH, halfT);
         const invCenter: Vec3 = {
-          x: (minX + maxX) / 2,
-          y: (minY + maxY) / 2,
-          z: (minZ + maxZ) / 2,
+          x: center.x,
+          y: center.y + halfH,
+          z: center.z,
         };
-        const invR = Math.max(
-          (maxX - minX) / 2,
-          (maxY - minY) / 2,
-          (maxZ - minZ) / 2,
-        ) + 1;
+        const invR = Math.max(halfW, halfH, halfT) + 1;
         this.physics.invalidateSphere(invCenter, invR);
         break;
       }

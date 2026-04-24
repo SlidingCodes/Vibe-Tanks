@@ -3,6 +3,7 @@ import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { buildSurfaceNetsChunk, SURFACE_NETS_CHUNK_SIZE, SurfaceNetsOptions } from '@shared/terrain/surfaceNetsMesher';
 import { Vec3 } from '@shared/types/index';
 import { VoxelScorch } from './voxelScorch';
+import { VoxelBuilt } from './voxelBuilt';
 import { TrackDecalHandle } from './trackDecal';
 
 const CHUNK_SIZE = SURFACE_NETS_CHUNK_SIZE;
@@ -91,7 +92,7 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
 export interface SurfaceNetsHandle {
   group: THREE.Group;
   dispose(): void;
-  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, trackDecal?: TrackDecalHandle | null): void;
+  rebuild(grid: VoxelGrid, scorch?: VoxelScorch, trackDecal?: TrackDecalHandle | null, built?: VoxelBuilt): void;
   invalidateSphere(center: Vec3, radius: number): void;
   /** Rebuild all chunks dirtied since the last flush. Call once per frame
    *  before renderer.render() to batch multiple same-frame invalidations. */
@@ -124,6 +125,7 @@ export function createSurfaceNetsTerrain(
   scene: THREE.Scene,
   scorch?: VoxelScorch,
   trackDecal?: TrackDecalHandle | null,
+  built?: VoxelBuilt,
 ): SurfaceNetsHandle {
   // Always vertex-coloured: the mesher emits a heightmap-style gray/brown/
   // green palette + an optional scorch overlay. Tread tracks live in a
@@ -426,11 +428,13 @@ if (uUseTextures > 0.5) {
   const dirtyChunks = new Set<string>();
   let activeGrid = grid;
   let activeScorch = scorch;
+  let activeBuilt = built;
   let activeElevation = computeElevationRange(grid);
   const meshOptions = (): SurfaceNetsOptions => ({
     elevationRange: activeElevation,
     bedrockTopY: activeGrid.bedrockSurfaceY,
     ...(activeScorch ? { scorchAt: (ix, iy, iz) => activeScorch!.sampleAt(ix, iy, iz) } : {}),
+    ...(activeBuilt ? { builtAt: (ix, iy, iz) => activeBuilt!.sampleAt(ix, iy, iz) } : {}),
   });
 
   function setChunkMesh(cx: number, cy: number, cz: number): void {
@@ -464,9 +468,10 @@ if (uUseTextures > 0.5) {
     chunks.clear();
   }
 
-  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
+  function rebuildAll(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null, b?: VoxelBuilt): void {
     activeGrid = g;
     if (s !== undefined) activeScorch = s;
+    if (b !== undefined) activeBuilt = b;
     if (t !== undefined) {
       uTrackMap.value = t?.texture ?? null;
       uTrackEnabled.value = t ? 1 : 0;
@@ -555,9 +560,9 @@ if (uUseTextures > 0.5) {
       uRockNormal.value.dispose();
       scene.remove(group);
     },
-    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null): void {
+    rebuild(g: VoxelGrid, s?: VoxelScorch, t?: TrackDecalHandle | null, b?: VoxelBuilt): void {
       dirtyChunks.clear();
-      rebuildAll(g, s, t);
+      rebuildAll(g, s, t, b);
     },
     invalidateSphere,
     flushDirtyChunks,

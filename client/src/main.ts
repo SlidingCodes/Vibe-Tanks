@@ -7,6 +7,7 @@ import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
+import { VoxelBuilt } from './scene/voxelBuilt';
 import { VoxelGrid } from '@shared/terrain/VoxelGrid';
 import { createTrackDecal, TrackDecalHandle } from './scene/trackDecal';
 import {
@@ -422,6 +423,7 @@ let renderSmootherPrimed = false;
  *  by the smoothed render values. Avoids a per-frame allocation. */
 let viewState: TankState | null = null;
 let voxelScorch: VoxelScorch | null = null;
+let voxelBuilt: VoxelBuilt | null = null;
 let trackDecal: TrackDecalHandle | null = null;
 /** Last XZ position of each tread endpoint for each tank. The decal draws a
  *  line segment from the previous tread position to the current one, so the
@@ -462,6 +464,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
+  // Built-material overlay mirrors scorch but for wall/ramp deposits. Also
+  // client-only and reset on every snapshot — late joiners see existing
+  // walls in the natural palette, which is a visible but acceptable seam.
+  voxelBuilt = new VoxelBuilt(voxelGrid);
   // Tread tracks are client-only, drawn into a top-down CanvasTexture that
   // the terrain shader samples in planar XZ UVs. Higher resolution than the
   // voxel grid, so two cingoli ~1.4 units apart render as distinct lines.
@@ -470,10 +476,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   trackDecal = createTrackDecal(voxelGrid);
   lastTreadPosByPlayer.clear();
   if (!surfaceNets) {
-    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal);
+    surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
     surfaceNets.setVisible(surfaceNetsVisible);
   } else {
-    surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal);
+    surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
     surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
@@ -583,6 +589,10 @@ window.addEventListener('keydown', (ev) => {
     console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
   } else if (k === 'r' && !ev.repeat) {
     socket.emit('force_reset_match');
+  } else if (k === 'b' && !ev.repeat) {
+    // Dev: flip server-side bot auto-fill. Server removes existing bots
+    // on disable and refills empty slots on re-enable.
+    socket.emit('toggle_bots');
   }
 });
 
@@ -837,6 +847,7 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const sn = surfaceNets;
       const debris = voxelDebris;
       const scorch = voxelScorch;
+      const builtMat = voxelBuilt;
       setTimeout(() => {
         const op = step.terrainOp ?? { kind: 'carve_sphere' as const };
         const center = step.endPoint;
@@ -872,28 +883,16 @@ socket.on('shot_resolved', (result: ShotResult) => {
           }
           case 'add_wall': {
             const halfW = op.width / 2;
+            const halfH = op.height / 2;
             const halfT = op.thickness / 2;
-            const rx = -op.forward.z;
-            const rz = op.forward.x;
-            let minX = Infinity, maxX = -Infinity;
-            let minZ = Infinity, maxZ = -Infinity;
-            for (const [u, v] of [[halfW, halfT], [halfW, -halfT], [-halfW, halfT], [-halfW, -halfT]] as const) {
-              const wx = center.x + u * rx + v * op.forward.x;
-              const wz = center.z + u * rz + v * op.forward.z;
-              if (wx < minX) minX = wx;
-              if (wx > maxX) maxX = wx;
-              if (wz < minZ) minZ = wz;
-              if (wz > maxZ) maxZ = wz;
-            }
-            const minY = center.y - 0.2;
-            const maxY = center.y + op.height + 0.4;
-            grid.addBox({ x: minX, y: minY, z: minZ }, { x: maxX, y: maxY, z: maxZ });
+            grid.addOrientedBox(center, op.forward, halfW, halfH, halfT);
+            builtMat?.stampOrientedBox(center, op.forward, halfW, halfH, halfT);
             const invCenter = {
-              x: (minX + maxX) / 2,
-              y: (minY + maxY) / 2,
-              z: (minZ + maxZ) / 2,
+              x: center.x,
+              y: center.y + halfH,
+              z: center.z,
             };
-            const invR = Math.max((maxX - minX) / 2, (maxY - minY) / 2, (maxZ - minZ) / 2) + 1;
+            const invR = Math.max(halfW, halfH, halfT) + 1;
             clientPhysics?.invalidateSphere(invCenter, invR);
             if (cuberilleVisible) cuberille?.invalidateSphere(invCenter, invR);
             sn?.invalidateSphere(invCenter, invR * 1.2);
@@ -902,6 +901,7 @@ socket.on('shot_resolved', (result: ShotResult) => {
           }
           case 'add_ramp': {
             grid.addRamp(center, op.forward, op.length, op.width, op.height);
+            builtMat?.stampRamp(center, op.forward, op.length, op.width, op.height);
             const midPoint = {
               x: center.x + op.forward.x * op.length * 0.5,
               y: center.y + op.height * 0.5,
