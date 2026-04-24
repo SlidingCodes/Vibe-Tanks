@@ -644,10 +644,14 @@ function simulateDiggerShot(
     segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
   );
 
-  // Cone axis follows the shell's final velocity so the tunnel burrows
+  // Capsule axis follows the shell's final velocity so the tunnel burrows
   // along the incoming flight line. If the shell stopped (bounds exit or
   // direct_hit at near-zero), fall back to the shot direction to avoid
-  // a degenerate zero-length axis.
+  // a degenerate zero-length axis. We keep the axis mostly horizontal by
+  // leaving its Y component in place — a tank driving a steeply-angled
+  // tunnel can't climb >89° anyway, and a horizontal tunnel reads better
+  // on flat ground. Callers are welcome to lower the Y component if a
+  // future variant should plunge diagonally.
   const vlen = Math.sqrt(
     segment.endVelocity.x ** 2 + segment.endVelocity.y ** 2 + segment.endVelocity.z ** 2,
   );
@@ -659,13 +663,13 @@ function simulateDiggerShot(
     axis.x /= axlen; axis.y /= axlen; axis.z /= axlen;
   }
 
-  const tunnelLength = weapon.behaviorConfig?.diggerTunnelLength ?? 6;
-  const tunnelRadius = weapon.behaviorConfig?.diggerTunnelRadius ?? 2;
+  const tunnelLength = weapon.behaviorConfig?.diggerTunnelLength ?? 10;
+  const tunnelRadius = weapon.behaviorConfig?.diggerTunnelRadius ?? 3.5;
 
-  // Only attach the cone op when the shell actually reached terrain — a
-  // direct-hit on a tank should still crater via the normal sphere carve.
+  // Only attach the capsule op when the shell actually reached terrain —
+  // a direct-hit on a tank should still crater via the normal sphere carve.
   const terrainOp: TerrainOp | undefined = segment.reason === 'impact'
-    ? { kind: 'carve_cone', direction: axis, length: tunnelLength, baseRadius: tunnelRadius }
+    ? { kind: 'carve_capsule', axis, length: tunnelLength, radius: tunnelRadius }
     : undefined;
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
@@ -741,12 +745,18 @@ function simulateRampShot(
 
   const length = weapon.behaviorConfig?.rampLength ?? 8;
   // Centre the base on the impact so the ramp sits half behind / half
-  // ahead of where the aim reticle lands — reads as "I shot a ramp here"
-  // rather than "the ramp starts on the far side of where I aimed".
+  // ahead of where the aim reticle lands. Anchor base.y on the terrain
+  // height at that XZ — using segment.endPoint.y directly put the ramp
+  // at whatever Y the shell happened to hit (a crater rim, a slope), so
+  // the back edge floated over the ground elsewhere. The addRamp SDF
+  // now fills downward to bedrock, so a slightly-too-low base lifts
+  // into the terrain rather than leaving an unclimbable step.
+  const baseX = segment.endPoint.x - forward.x * (length / 2);
+  const baseZ = segment.endPoint.z - forward.z * (length / 2);
   const base: Vec3 = {
-    x: segment.endPoint.x - forward.x * (length / 2),
-    y: segment.endPoint.y,
-    z: segment.endPoint.z - forward.z * (length / 2),
+    x: baseX,
+    y: terrain.getHeight(baseX, baseZ),
+    z: baseZ,
   };
 
   const terrainOp: TerrainOp | undefined = segment.reason === 'impact' ? {

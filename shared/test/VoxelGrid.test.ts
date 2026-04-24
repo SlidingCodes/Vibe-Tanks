@@ -228,6 +228,44 @@ describe('VoxelGrid', () => {
     });
   });
 
+  describe('carveCapsule', () => {
+    it('opens a uniform-radius tunnel from start to end', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(8));
+      const before = g.getHeight(16, 16);
+      // Horizontal capsule at y=6 with radius 3 — top lip reaches y=9, so
+      // the carve breaks through the y=8 surface at every point along the
+      // axis and the column height drops. A cone with zero-radius apex
+      // would leave the start column largely untouched.
+      g.carveCapsule({ x: 10, y: 6, z: 16 }, { x: 22, y: 6, z: 16 }, 3);
+      const startH = g.getHeight(12, 16);
+      const midH = g.getHeight(16, 16);
+      const endH = g.getHeight(20, 16);
+      expect(before - startH).toBeGreaterThan(2);
+      expect(before - midH).toBeGreaterThan(2);
+      expect(before - endH).toBeGreaterThan(2);
+      expect(Math.abs(startH - endH)).toBeLessThan(1);
+    });
+
+    it('leaves terrain outside the radius untouched', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(4));
+      const before = g.getHeight(4, 4);
+      g.carveCapsule({ x: 16, y: 3, z: 16 }, { x: 22, y: 3, z: 16 }, 2);
+      const after = g.getHeight(4, 4);
+      expect(Math.abs(after - before)).toBeLessThan(0.01);
+    });
+
+    it('does not carve into bedrock', () => {
+      const g = makeGrid();
+      g.seedFromNoise(flatSampler(2));
+      const bedrockBefore = g.getDensity(16, BEDROCK_DEPTH_CELLS - 1, 16);
+      g.carveCapsule({ x: 14, y: -12, z: 16 }, { x: 18, y: -12, z: 16 }, 4);
+      const bedrockAfter = g.getDensity(16, BEDROCK_DEPTH_CELLS - 1, 16);
+      expect(bedrockAfter).toBe(bedrockBefore);
+    });
+  });
+
   describe('addOrientedBox', () => {
     it('raises terrain height across the width axis (perpendicular to forward)', () => {
       const g = makeGrid();

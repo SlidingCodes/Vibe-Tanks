@@ -436,17 +436,23 @@ export class VoxelGrid {
   }
 
   /**
-   * Additive wedge fill: a triangular prism rising from height 0 at `base`
-   * to `height` at `base + forward * length`, with lateral width `width`
-   * around the forward axis. `forward` is projected onto XZ; the ramp sits
-   * on world-Y `base.y` and rises upward. Used by the `ramp` weapon to
-   * deposit a drive-up slope. Density is raised, never lowered, so the
-   * ramp lays cleanly over existing ground.
+   * Additive wedge fill: the top surface rises from `base.y` at the back
+   * (`u = 0`) to `base.y + height` at the front (`u = length`), with
+   * lateral width `width` perpendicular to `forward` (projected onto XZ).
+   * Used by the `ramp` weapon.
    *
-   * The slanted top face uses a slab distance `topY - wRel` without the
-   * cosine correction of a true SDF; this overshoots the iso crossing by
-   * ~cos(slope) which makes the ramp read a hair thicker than the nominal
-   * `height`. Visually harmless at the slopes we ship (≤~30°).
+   * Unlike a prism, this wedge has no explicit floor — the SDF fills every
+   * voxel under the slanted top that's inside the width band, all the way
+   * down to the bedrock guard. The additive rule (`max(new, existing)`)
+   * does the rest: voxels already solid from existing terrain are
+   * untouched, voxels empty below the top surface get filled to the exact
+   * drive-up height. The net effect is a mound that takes whatever
+   * column-level the natural ground was at and lifts it to the ramp top,
+   * eliminating the "vertical step" the bounded-bottom version produced
+   * on uneven terrain.
+   *
+   * Slanted top uses a slab distance without the cosine correction of a
+   * true SDF; overshoots the iso crossing by cos(slope). Visually harmless.
    */
   addRamp(base: Vec3, forward: Vec3, length: number, width: number, height: number): void {
     if (length <= 0 || width <= 0 || height <= 0) return;
@@ -475,12 +481,14 @@ export class VoxelGrid {
       if (wz < minZ) minZ = wz;
       if (wz > maxZ) maxZ = wz;
     }
-    const minY = base.y;
     const maxY = base.y + height;
 
     const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
     const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
-    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells - 1);
+    // Extend down to the bedrock guard: we want the additive op to *lift*
+    // every column, not stop at some arbitrary floor. Voxels inside
+    // existing terrain are already 255 so no work is wasted there.
+    const iyMin = BEDROCK_DEPTH_CELLS;
     const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
     const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
     const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
@@ -499,22 +507,115 @@ export class VoxelGrid {
           const u = px * nx + pz * nz;
           const v = px * rx + pz * rz;
           const topY = u * height * invLength;
-          // Slab distances along each face; min across faces = SDF of the
-          // prism (positive inside).
+          // Four slab faces — no floor. Back and front faces, side faces,
+          // and the slanted top. Cells below the ramp top but within the
+          // XZ footprint get filled all the way down (additive, so pre-
+          // existing ground keeps its density).
           const slabU0 = u;                  // back face
           const slabU1 = length - u;         // far face
           const slabV = halfW - Math.abs(v); // side faces
-          const slabDown = wRel;             // floor
           const slabUp = topY - wRel;        // slanted top
-          const slabs = [slabU0, slabU1, slabV, slabDown, slabUp];
-          let signed = slabs[0];
-          for (let k = 1; k < slabs.length; k++) {
-            if (slabs[k] < signed) signed = slabs[k];
-          }
+          let signed = slabU0;
+          if (slabU1 < signed) signed = slabU1;
+          if (slabV < signed) signed = slabV;
+          if (slabUp < signed) signed = slabUp;
           const density = signed * DENSITY_SCALE + DENSITY_THRESHOLD;
           const clamped = density <= 0 ? 0 : density >= 255 ? 255 : Math.round(density);
           const idx = this.index(ix, iy, iz);
           if (clamped > this.data[idx]) this.data[idx] = clamped;
+        }
+      }
+    }
+  }
+
+  /**
+   * Smooth capsule carve: a cylinder of uniform `radius` running from `start`
+   * to `end`, plus hemispherical caps on both ends. Used by the `digger`
+   * weapon to hollow a tank-sized drive-through tunnel — a cone's apex is a
+   * point, which makes the tunnel entrance narrower than the tank even when
+   * the far end is wide. Falloff/rim-jitter mirror `carveSphere` so the
+   * resulting tunnel walls look like the rest of the voxel terrain.
+   */
+  carveCapsule(start: Vec3, end: Vec3, radius: number): void {
+    if (radius <= 0) return;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dz = end.z - start.z;
+    const lenSq = dx * dx + dy * dy + dz * dz;
+    if (lenSq <= 1e-6) {
+      this.carveSphere(start, radius);
+      return;
+    }
+    const invLen = 1 / Math.sqrt(lenSq);
+    const ax = dx * invLen;
+    const ay = dy * invLen;
+    const az = dz * invLen;
+    const length = 1 / invLen;
+    const cs = this.cellSize;
+    const RIM_AMP = 0.035;
+    const effRadius = radius * (1 + RIM_AMP);
+
+    const minX = Math.min(start.x, end.x) - effRadius;
+    const maxX = Math.max(start.x, end.x) + effRadius;
+    const minY = Math.min(start.y, end.y) - effRadius;
+    const maxY = Math.max(start.y, end.y) + effRadius;
+    const minZ = Math.min(start.z, end.z) - effRadius;
+    const maxZ = Math.max(start.z, end.z) + effRadius;
+
+    const ixMin = Math.max(0, Math.floor(minX / cs));
+    const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs));
+    const izMin = Math.max(0, Math.floor(minZ / cs));
+    const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs));
+    const iyMin = Math.max(BEDROCK_DEPTH_CELLS, Math.floor(minY / cs) - this.minYCells);
+    const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells);
+    if (iyMin > iyMax) return;
+
+    const invR = 1 / radius;
+    const phase = (start.x * 12.9898 + start.z * 78.233 + start.y * 37.719) % (2 * Math.PI);
+
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      const wy = (this.minYCells + iy + 0.5) * cs;
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const wz = (iz + 0.5) * cs;
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          const wx = (ix + 0.5) * cs;
+          // Closest point on the axis segment to (wx, wy, wz).
+          const px = wx - start.x;
+          const py = wy - start.y;
+          const pz = wz - start.z;
+          let t = px * ax + py * ay + pz * az;
+          if (t < 0) t = 0;
+          else if (t > length) t = length;
+          const qx = start.x + ax * t;
+          const qy = start.y + ay * t;
+          const qz = start.z + az * t;
+          const ddx = wx - qx;
+          const ddy = wy - qy;
+          const ddz = wz - qz;
+          const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+          if (d2 <= 1e-6) {
+            this.data[this.index(ix, iy, iz)] = 0;
+            continue;
+          }
+          const d = Math.sqrt(d2);
+          const u = d * invR;
+          // Angular jitter around the axis so tunnel walls don't read as
+          // cylindrically mathematical. Phase projects any axis-perp
+          // direction to a scalar angle.
+          const theta = Math.atan2(ddz, ddx);
+          const rimOffset = Math.cos(theta * 4 + phase) * (RIM_AMP * 0.7);
+          const uEff = u + rimOffset;
+          if (uEff >= 1) continue;
+          const idx = this.index(ix, iy, iz);
+          let keep: number;
+          if (uEff < 0.85) keep = 0;
+          else {
+            const tt = (uEff - 0.85) / 0.15;
+            keep = tt * tt * (3 - 2 * tt);
+          }
+          const existing = this.data[idx];
+          const newD = Math.round(existing * keep);
+          if (newD < existing) this.data[idx] = newD;
         }
       }
     }

@@ -881,6 +881,29 @@ socket.on('shot_resolved', (result: ShotResult) => {
             onMinimapCarve(grid, midPoint, invR);
             break;
           }
+          case 'carve_capsule': {
+            const endPoint = {
+              x: center.x + op.axis.x * op.length,
+              y: center.y + op.axis.y * op.length,
+              z: center.z + op.axis.z * op.length,
+            };
+            const midPoint = {
+              x: (center.x + endPoint.x) * 0.5,
+              y: (center.y + endPoint.y) * 0.5,
+              z: (center.z + endPoint.z) * 0.5,
+            };
+            debris?.spawnFromCarve(grid, midPoint, op.radius);
+            grid.carveCapsule(center, endPoint, op.radius);
+            const invR = op.length * 0.5 + op.radius + 1;
+            clientPhysics?.invalidateSphere(midPoint, invR);
+            // Scorch the tunnel interior so it reads as a burnt dig-out,
+            // but weaker than a blast — the digger is mechanical, not HE.
+            scorch?.addSphere(midPoint, invR * 1.1, 0.55);
+            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
+            sn?.invalidateSphere(midPoint, invR * 1.4);
+            onMinimapCarve(grid, midPoint, invR);
+            break;
+          }
           case 'add_wall': {
             const halfW = op.width / 2;
             const halfH = op.height / 2;

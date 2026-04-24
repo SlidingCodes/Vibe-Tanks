@@ -202,8 +202,12 @@ export const WEAPONS: WeaponDefinition[] = [
     startAmmo: 4,
     maxAmmo: 8,
     behaviorConfig: {
-      diggerTunnelLength: 6.5,
-      diggerTunnelRadius: 2.2,
+      // Drive-through tunnel: uniform radius so the tank (hull r=0.8,
+      // tread span ~1.8) fits through the ENTRY too, not just the exit.
+      // Length 10 keeps the near/far caps far enough apart to punch a
+      // through-tunnel on typical walls/craters.
+      diggerTunnelLength: 10,
+      diggerTunnelRadius: 3.5,
     },
   },
   {
@@ -244,9 +248,13 @@ export const WEAPONS: WeaponDefinition[] = [
     startAmmo: 3,
     maxAmmo: 6,
     behaviorConfig: {
-      rampLength: 8,
-      rampWidth: 3.6,
-      rampHeight: 3,
+      // Drivable wedge — wide enough for the tank (hull radius 0.8,
+      // track span ~1.8) with margin, long enough to keep the slope
+      // under ~17° (tanh ≈ rampHeight/rampLength) so the KCC's 89°
+      // climb limit is nowhere near binding.
+      rampLength: 12,
+      rampWidth: 5,
+      rampHeight: 3.5,
     },
   },
 ];

@@ -5,7 +5,7 @@ let minDt = Infinity;
 let maxDt = 0;
 let fpsLine = 'FPS --';
 let pingLine = 'ping --';
-const devHintLine = 'R: reset map (dev)';
+const devHintLine = 'R: reset map  B: toggle bots (dev)';
 
 export function initFpsCounter(): void {
   if (el) return;

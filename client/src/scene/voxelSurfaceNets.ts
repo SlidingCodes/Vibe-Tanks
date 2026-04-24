@@ -66,6 +66,14 @@ const VERTEX_TINT_MAX = 1.4;
 // the surface layer.
 const BEDROCK_DARKEN = 0.45;
 
+// Built-material override color (linear-space). Warm dressed-stone grey —
+// walls and ramps collapse to this regardless of elevation band / slope so
+// deposits stand out clearly against the dirt/green/sand palette.
+const BUILT_ALBEDO = new THREE.Color(0x7a7871).convertSRGBToLinear();
+// Roughness floor for built material — smoother than dirt so highlights
+// carry across the wall face.
+const BUILT_ROUGHNESS = 0.55;
+
 // Macro colour variation frequency (world-units^-1). A slow-varying fbm
 // shifts the whole albedo cool↔warm across regions so the same texture
 // tile doesn't read as identical across the map. No extra texture fetches.
@@ -80,6 +88,9 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
   geom.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
   if (data.colors) {
     geom.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+  }
+  if (data.builtWeights) {
+    geom.setAttribute('built', new THREE.BufferAttribute(data.builtWeights, 1));
   }
   geom.setIndex(new THREE.BufferAttribute(data.indices, 1));
   // Explicit bounding sphere so Three.js can frustum-cull this chunk when
@@ -206,11 +217,15 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uMacroColorWarm = { value: MACRO_COLOR_WARM };
     shader.uniforms.uBedrockTopY = uBedrockTopY;
     shader.uniforms.uBedrockDarken = uBedrockDarken;
+    shader.uniforms.uBuiltAlbedo = { value: BUILT_ALBEDO };
+    shader.uniforms.uBuiltRoughness = { value: BUILT_ROUGHNESS };
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
+attribute float built;
+varying float vBuilt;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;`,
       )
@@ -219,7 +234,8 @@ varying vec3 vWorldNormal;`,
         `#include <begin_vertex>
 vec4 _vtWorldPos = modelMatrix * vec4(transformed, 1.0);
 vWorldPos = _vtWorldPos.xyz;
-vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
+vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+vBuilt = built;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -228,6 +244,9 @@ vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
         `#include <common>
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
+varying float vBuilt;
+uniform vec3 uBuiltAlbedo;
+uniform float uBuiltRoughness;
 uniform sampler2D uTrackMap;
 uniform vec2 uTrackWorldMin;
 uniform vec2 uTrackWorldSize;
@@ -373,6 +392,15 @@ if (uUseTextures > 0.5) {
   diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
 }
 
+// --- built-material override (walls, ramps). Collapses the final albedo
+//     fully to dressed-stone grey when the 8-corner built weight is 1, so
+//     deposits never read as "more dirt" regardless of texture or macro
+//     variation. Smooth mix so the wall→terrain seam stays clean.
+if (vBuilt > 0.001) {
+  float vt_bw = clamp(vBuilt, 0.0, 1.0);
+  diffuseColor.rgb = mix(diffuseColor.rgb, uBuiltAlbedo, vt_bw);
+}
+
 // --- tread-track decal (always on; sits on top of whichever base path ran) ---
 if (uTrackEnabled > 0.5) {
   vec2 trackUv = (vWorldPos.xz - uTrackWorldMin) / uTrackWorldSize;
@@ -387,7 +415,10 @@ if (uTrackEnabled > 0.5) {
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
 // Tie roughness to the detail noise so highlights break up across terrain.
-roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);`,
+roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);
+// Built material: smoother than dirt so the stone catches a cleaner
+// highlight. Applied as a mix to avoid a seam where vBuilt ramps from 0→1.
+roughnessFactor = mix(roughnessFactor, uBuiltRoughness, clamp(vBuilt, 0.0, 1.0));`,
       )
       .replace(
         '#include <normal_fragment_maps>',

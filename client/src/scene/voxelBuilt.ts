@@ -139,12 +139,13 @@ export class VoxelBuilt {
       if (wz < minZ) minZ = wz;
       if (wz > maxZ) maxZ = wz;
     }
-    const minY = base.y;
     const maxY = base.y + height;
 
     const ixMin = Math.max(0, Math.floor(minX / cs) - 1);
     const ixMax = Math.min(this.sizeX - 1, Math.ceil(maxX / cs) + 1);
-    const iyMin = Math.max(0, Math.floor(minY / cs) - this.minYCells - 1);
+    // Same bedrock-to-top span as VoxelGrid.addRamp so the tint footprint
+    // matches the density footprint exactly.
+    const iyMin = 0;
     const iyMax = Math.min(this.sizeY - 1, Math.ceil(maxY / cs) - this.minYCells + 1);
     const izMin = Math.max(0, Math.floor(minZ / cs) - 1);
     const izMax = Math.min(this.sizeZ - 1, Math.ceil(maxZ / cs) + 1);
@@ -163,7 +164,7 @@ export class VoxelBuilt {
           const u = px * nx + pz * nz;
           const v = px * rx + pz * rz;
           const topY = u * height * invLength;
-          const slabs = [u, length - u, halfW - Math.abs(v), wRel, topY - wRel];
+          const slabs = [u, length - u, halfW - Math.abs(v), topY - wRel];
           let signed = slabs[0];
           for (let k = 1; k < slabs.length; k++) {
             if (slabs[k] < signed) signed = slabs[k];

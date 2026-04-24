@@ -395,6 +395,7 @@ export interface FireUpdate {
 export type TerrainOp =
   | { kind: 'carve_sphere' }
   | { kind: 'carve_cone'; direction: Vec3; length: number; baseRadius: number }
+  | { kind: 'carve_capsule'; axis: Vec3; length: number; radius: number }
   | { kind: 'add_wall'; forward: Vec3; width: number; height: number; thickness: number }
   | { kind: 'add_ramp'; forward: Vec3; length: number; width: number; height: number };
 

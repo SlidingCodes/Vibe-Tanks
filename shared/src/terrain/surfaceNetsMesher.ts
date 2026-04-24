@@ -34,6 +34,11 @@ export interface SurfaceNetsChunkMesh {
   /** Optional per-vertex RGB colors in [0,1]. Only emitted when options.scorchAt
    *  is provided to buildSurfaceNetsChunk. length = 3 * vertexCount. */
   colors?: Float32Array;
+  /** Optional per-vertex "built" weight in [0,1]. Only emitted when
+   *  options.builtAt is provided. One float per vertex — the 8-corner
+   *  average of the built overlay, so the client shader can fully override
+   *  the dirt/rock albedo with a concrete tone for wall / ramp deposits. */
+  builtWeights?: Float32Array;
 }
 
 export interface SurfaceNetsOptions {
@@ -127,6 +132,7 @@ export function buildSurfaceNetsChunk(
   const normals: number[] = [];
   const indices: number[] = [];
   const colors: number[] = [];
+  const builtWeights: number[] = [];
   const scorchAt = options.scorchAt;
   const builtAt = options.builtAt;
   const elevationRange = options.elevationRange;
@@ -258,7 +264,11 @@ export function buildSurfaceNetsChunk(
           b = b + (BURNT_B - b) * s;
           // Built overlay takes over the tint fully when the 8-corner
           // average is saturated — keeps walls/ramps cleanly concrete-grey
-          // regardless of the elevation band they happen to sit in.
+          // regardless of the elevation band they happen to sit in. We
+          // also emit the raw weight as a separate vertex attribute so the
+          // client's textured path can override the whole albedo (vertex
+          // color alone only nudges the tint in that pipeline).
+          let builtW = 0;
           if (builtAt) {
             const bAvg = (
               builtAt(ci,     cj,     ck    ) +
@@ -270,7 +280,8 @@ export function buildSurfaceNetsChunk(
               builtAt(ci,     cj + 1, ck + 1) +
               builtAt(ci + 1, cj + 1, ck + 1)
             ) / (8 * 255);
-            const w = bAvg > 1 ? 1 : bAvg;
+            builtW = bAvg > 1 ? 1 : bAvg;
+            const w = builtW;
             r = r + (BUILT_R - r) * w;
             g = g + (BUILT_G - g) * w;
             b = b + (BUILT_B - b) * w;
@@ -284,6 +295,7 @@ export function buildSurfaceNetsChunk(
             b = b + (BED_B - b) * m;
           }
           colors.push(r, g, b);
+          builtWeights.push(builtAt ? builtW : 0);
         }
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
@@ -340,6 +352,9 @@ export function buildSurfaceNetsChunk(
   };
   if (emitColors && colors.length > 0) {
     result.colors = new Float32Array(colors);
+  }
+  if (builtAt && builtWeights.length > 0) {
+    result.builtWeights = new Float32Array(builtWeights);
   }
   return result;
 }

@@ -737,6 +737,22 @@ export class Room {
         this.physics.invalidateSphere(mid, invR);
         break;
       }
+      case 'carve_capsule': {
+        const end: Vec3 = {
+          x: center.x + op.axis.x * op.length,
+          y: center.y + op.axis.y * op.length,
+          z: center.z + op.axis.z * op.length,
+        };
+        this.voxels.carveCapsule(center, end, op.radius);
+        const mid: Vec3 = {
+          x: (center.x + end.x) * 0.5,
+          y: (center.y + end.y) * 0.5,
+          z: (center.z + end.z) * 0.5,
+        };
+        const invR = op.length * 0.5 + op.radius + 1;
+        this.physics.invalidateSphere(mid, invR);
+        break;
+      }
       case 'add_wall': {
         const halfW = op.width / 2;
         const halfH = op.height / 2;
