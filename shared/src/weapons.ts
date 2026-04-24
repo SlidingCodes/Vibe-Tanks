@@ -10,18 +10,27 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 2.4,
     behavior: 'standard',
     cooldown: 0.9,
+    startAmmo: 'infinite',
   },
   {
     id: 'big_blast',
     name: 'Big Blast',
     projectileSpeed: 16,
-    blastRadius: 7,
-    damage: 44,
+    // Big numbers by design: airburst + quadratic falloff + the blast
+    // being 1.8 m off the ground shrink the *effective* horizontal
+    // radius well below the nominal figure, so the name has to earn its
+    // keep. With R=12 and peak dmg=50 the useful kill radius lands
+    // around 5-6 m orizz. (~40 dmg) and a tank 8 m away still takes a
+    // meaningful ~27 dmg bite, instead of a ~8 dmg tickle.
+    blastRadius: 12,
+    damage: 50,
     terrainDamage: 0,
     behavior: 'airburst',
     cooldown: 2.8,
+    startAmmo: 4,
+    maxAmmo: 8,
     behaviorConfig: {
-      airburstHeight: 2.8,
+      airburstHeight: 1.8,
     },
   },
   {
@@ -33,6 +42,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 1.2,
     behavior: 'split',
     cooldown: 1.6,
+    startAmmo: 5,
+    maxAmmo: 10,
     behaviorConfig: {
       splitTime: 0.7,
       fragmentCount: 3,
@@ -52,6 +63,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 2,
     behavior: 'bounce',
     cooldown: 1.8,
+    startAmmo: 4,
+    maxAmmo: 8,
     behaviorConfig: {
       bounceCount: 1,
       bounceDamping: 0.72,
@@ -66,6 +79,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 0,
     behavior: 'drill',
     cooldown: 2.2,
+    startAmmo: 3,
+    maxAmmo: 6,
     behaviorConfig: {
       drillDelay: 0.45,
       drillDistance: 5.5,
@@ -84,6 +99,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 0,
     behavior: 'napalm',
     cooldown: 2.6,
+    startAmmo: 3,
+    maxAmmo: 6,
     behaviorConfig: {
       burnRadius: 4.4,
       burnDuration: 5.5,
@@ -100,6 +117,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 0.8,
     behavior: 'seeker',
     cooldown: 3.2,
+    startAmmo: 2,
+    maxAmmo: 4,
     behaviorConfig: {
       seekerTurnRate: 3.8,
       seekerLifetime: 5.2,
@@ -115,6 +134,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 0.2,
     behavior: 'rail',
     cooldown: 2.7,
+    startAmmo: 3,
+    maxAmmo: 6,
     behaviorConfig: {
       railRange: 50,
       railRadius: 1.4,
@@ -130,6 +151,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 2.4,
     behavior: 'mortar',
     cooldown: 3.8,
+    startAmmo: 2,
+    maxAmmo: 4,
     behaviorConfig: {
       mortarShellCount: 5,
       mortarSpread: 5.5,
@@ -149,6 +172,8 @@ export const WEAPONS: WeaponDefinition[] = [
     terrainDamage: 0,
     behavior: 'mine',
     cooldown: 2.4,
+    startAmmo: 4,
+    maxAmmo: 8,
     behaviorConfig: {
       mineArmTime: 0.8,
       mineLifetime: 14,
@@ -159,3 +184,26 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
 ];
+
+/** Max number of slots in a tank's weapon inventory (default + consumables). */
+export const INVENTORY_MAX_SLOTS = 5;
+
+/** Number of consumable weapons rolled on join/respawn (excluding standard). */
+export const LOADOUT_RANDOM_COUNT = 3;
+
+/** Roll a random loadout for a freshly-spawned tank. Slot 0 is always the
+ *  infinite `standard` weapon; the remaining slots are a sample without
+ *  replacement from the consumable pool. */
+export function createRandomLoadout(): { weaponId: string; ammo: number | 'infinite' }[] {
+  const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
+  // Fisher-Yates shuffle, then take the first LOADOUT_RANDOM_COUNT.
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const rolled = pool.slice(0, LOADOUT_RANDOM_COUNT);
+  return [
+    { weaponId: 'standard', ammo: 'infinite' as const },
+    ...rolled.map((w) => ({ weaponId: w.id, ammo: w.startAmmo as number })),
+  ];
+}

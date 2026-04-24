@@ -12,7 +12,7 @@ import { createTrackDecal, TrackDecalHandle } from './scene/trackDecal';
 import {
   createTankMesh, updateTankMesh, updateLocalTankMesh, removeTankMesh,
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
-  tickTankEffects, triggerRespawnAnim, updateTankNameLabels,
+  tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
 } from './entities/tank';
 import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
@@ -26,6 +26,7 @@ import { createAtmosphere, AtmosphereHandle } from './scene/atmosphere';
 import { FireRenderer } from './scene/fire';
 import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
+import { createPickupScene, PickupSceneHandle } from './scene/pickups';
 
 
 import * as hud from './ui/hud';
@@ -45,10 +46,10 @@ import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
-import { spawnDamagePopup } from './ui/damagePopups';
+import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot } from '@shared/types/index';
+import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -138,8 +139,24 @@ let myId: PlayerId = '';
 let snapshot: MatchSnapshot | null = null;
 let hasPlayedWelcomeAnnounce = false;
 let latestTanks: TankState[] = [];
-let lastFireTime = 0;
-let selectedWeaponId = WEAPONS[0]?.id ?? 'standard';
+/** Per-weapon last-fire timestamps (seconds, clock-relative). Each weapon
+ *  has its own cooldown so firing the standard shell doesn't gate a seeker
+ *  that's been fully charged for minutes. Mirrors the server's
+ *  PlayerState.lastFireByWeapon map. */
+const lastFireByWeapon = new Map<string, number>();
+
+/** Last shot info per tank, used to drive the barrel-heat glow on every
+ *  visible tank (local + remotes). Updated for the local player the
+ *  instant fire_request is emitted (optimistic), for remotes via
+ *  shot_resolved. The weaponId determines which cooldown window the
+ *  glow fades over. */
+interface LastShotInfo { weaponId: string; firedAt: number; }
+const lastShotByTank = new Map<PlayerId, LastShotInfo>();
+let selectedWeaponId = 'standard';
+/** Local mirror of the server-authoritative inventory for the local tank.
+ *  Rebuilt on each room_snapshot / state_update; drives the HUD chips and
+ *  the slot→weapon lookup used by digit/wheel input. */
+let myInventory: WeaponInventorySlot[] = [];
 let predictedState: TankState | null = null;
 const predictedVel = { x: 0, z: 0 };
 
@@ -191,11 +208,34 @@ function getSelectedWeapon() {
   return WEAPONS.find((weapon) => weapon.id === selectedWeaponId) ?? WEAPONS[0];
 }
 
+function getSelectedInventorySlot(): WeaponInventorySlot | undefined {
+  return myInventory.find((s) => s.weaponId === selectedWeaponId);
+}
+
+/** Rebuild myInventory from the broadcast tank state. If the currently
+ *  selected weapon vanished (ran out of ammo, picked a different loadout
+ *  after respawn, match reset), auto-switch back to slot 0 (standard). */
+function syncLocalInventory(tank: TankState | undefined): void {
+  if (!tank) return;
+  // Same-reference check: if the server reuses the same array (which it
+  // does between two broadcasts that didn't mutate the loadout), we can
+  // still detect in-place ammo changes because the array contents moved.
+  // Cheapest correct approach is to always re-render — the chip rack is
+  // small and the event is infrequent.
+  myInventory = tank.inventory ?? [];
+  setWeaponCount(Math.max(1, myInventory.length));
+  const stillHasSelected = myInventory.some((s) => s.weaponId === selectedWeaponId);
+  if (!stillHasSelected && myInventory.length > 0) {
+    selectedWeaponId = myInventory[0].weaponId;
+  }
+  hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
+}
+
 // Tapping a chip sets the same pending-slot the digit keys do, so the
 // animate-loop handler picks it up uniformly.
 const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
-hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
-setWeaponCount(WEAPONS.length);
+hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
+setWeaponCount(1);
 
 // Fullscreen button is always available (desktop + mobile).
 setupFullscreenButton();
@@ -237,6 +277,7 @@ setInterval(() => {
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
+  pickupScene.sync(snap.pickups ?? []);
 
   if (!hasPlayedWelcomeAnnounce) {
     playAnnouncer('VIBE TANKS!');
@@ -299,6 +340,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
+  syncLocalInventory(myTank);
   if (myTank) {
     const shFraction = myTank.shieldActive
       ? (myTank.shieldTimeRemaining ?? 0) / 5
@@ -390,6 +432,7 @@ let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
+const pickupScene: PickupSceneHandle = createPickupScene(scene);
 
 // Minimum horizontal distance a tank must move before a new tread segment is
 // drawn. Prevents stationary tanks from overdrawing the same canvas pixels.
@@ -545,6 +588,7 @@ window.addEventListener('keydown', (ev) => {
 socket.on('state_update', (state: RoomStateUpdate) => {
   const { tanks, projectiles, hazards } = state;
   latestTanks = tanks;
+  pickupScene.sync(state.pickups ?? []);
 
   for (const tankState of tanks) {
     const existing = getAllTankMeshes().get(tankState.playerId);
@@ -709,6 +753,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   hud.updateScoreboard(tanks);
+  syncLocalInventory(myTank);
 
   if (myTank) {
     const shFraction = myTank.shieldActive
@@ -763,6 +808,16 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
 socket.on('shot_resolved', (result: ShotResult) => {
   triggerRecoil(result.shooterId);
+  // Remote shooters: seed their last-shot entry so their barrel glows
+  // during the cooldown window. Local player is set optimistically at
+  // emit time — overwriting here with a slightly-later timestamp would
+  // extend the glow past its natural end, so skip.
+  if (result.shooterId !== myId) {
+    lastShotByTank.set(result.shooterId, {
+      weaponId: result.weaponId,
+      firedAt: clock.getElapsedTime(),
+    });
+  }
   if (atmosphere) {
     playShotAnimation(result, scene, atmosphere);
 
@@ -880,6 +935,33 @@ socket.on('player_spawned', (tank: TankState) => {
   }
 });
 
+socket.on('pickup_spawned', (pickup) => {
+  pickupScene.spawn(pickup);
+});
+
+socket.on('pickup_collected', (data) => {
+  pickupScene.remove(data.pickupId);
+  if (!data.outcome || data.playerId !== myId) return;
+  const mesh = getAllTankMeshes().get(myId);
+  if (!mesh) return;
+  const weaponName = WEAPONS.find((w) => w.id === data.outcome!.weaponId)?.name?.toUpperCase()
+    ?? data.outcome.weaponId.toUpperCase();
+  let text: string;
+  let color: string;
+  if (data.outcome.kind === 'weapon_added') {
+    text = `+WEAPON ${weaponName}`;
+    color = '#9fe070';
+  } else if (data.outcome.kind === 'weapon_refilled') {
+    text = `+${data.outcome.amount} ${weaponName}`;
+    color = '#9fe070';
+  } else {
+    text = `+${data.outcome.amount} ${weaponName}`;
+    color = '#e8c864';
+  }
+  spawnPickupToast(mesh.group, text, color);
+  playWeaponSwitch();
+});
+
 socket.on('player_left', ({ playerId }) => {
   removeTankMesh(playerId, scene);
 });
@@ -969,11 +1051,15 @@ function animate(): void {
   tickFpsCounter(dt);
 
   const requestedWeaponSlot = consumeWeaponSlot();
-  if (requestedWeaponSlot !== null) {
-    const weapon = WEAPONS[requestedWeaponSlot];
-    if (weapon) {
-      selectedWeaponId = weapon.id;
-      hud.setWeapons(WEAPONS, selectedWeaponId, onWeaponChipTap);
+  if (
+    requestedWeaponSlot !== null &&
+    requestedWeaponSlot >= 0 &&
+    requestedWeaponSlot < myInventory.length
+  ) {
+    const slot = myInventory[requestedWeaponSlot];
+    if (slot && slot.weaponId !== selectedWeaponId) {
+      selectedWeaponId = slot.weaponId;
+      hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
       playWeaponSwitch();
     }
   }
@@ -1242,20 +1328,32 @@ function animate(): void {
       }
     }
 
+    const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
     if (consumeClick()) {
-      const timeSinceFire = now - lastFireTime;
+      const timeSinceFire = now - selLastFire;
       if (timeSinceFire >= selectedWeapon.cooldown) {
-        socket.emit('fire_request', {
-          weaponId: selectedWeapon.id,
-          aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
-        });
-        lastFireTime = now;
-        playShoot();
+        // Ammo guard — the server re-checks, but rejecting client-side
+        // keeps the player's "oh I'm out" feedback snappy (no dry-click
+        // noise, no fake fire animation).
+        const slotEntry = getSelectedInventorySlot();
+        const hasAmmo = slotEntry && (slotEntry.ammo === 'infinite' || slotEntry.ammo > 0);
+        if (hasAmmo) {
+          socket.emit('fire_request', {
+            weaponId: selectedWeapon.id,
+            aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
+          });
+          lastFireByWeapon.set(selectedWeapon.id, now);
+          lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
+          playShoot();
+        }
       }
     }
 
-    const cooldownProgress = Math.min(1, (now - lastFireTime) / selectedWeapon.cooldown);
+    const cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
+    hud.updateWeaponCooldowns(lastFireByWeapon, now);
+    const selSlot = getSelectedInventorySlot();
+    hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
     followTank(
       myTankMesh.group.position,
       predictedState.bodyRotation,
@@ -1279,6 +1377,21 @@ function animate(): void {
   }
 
   interpolateRemoteTanks(dt, myId);
+
+  // Barrel heat glow for every alive tank. Linear fade over the fired
+  // weapon's cooldown, so a tank's barrel darkens exactly as the next
+  // round comes up. Remote entries are seeded by shot_resolved; the
+  // local player's is seeded optimistically when fire_request is sent.
+  for (const [pid, tm] of getAllTankMeshes()) {
+    if (!tm.state.alive) { setBarrelHeat(pid, 0); continue; }
+    const last = lastShotByTank.get(pid);
+    if (!last) { setBarrelHeat(pid, 0); continue; }
+    const weapon = WEAPONS.find((w) => w.id === last.weaponId);
+    if (!weapon) { setBarrelHeat(pid, 0); continue; }
+    const elapsed = now - last.firedAt;
+    setBarrelHeat(pid, Math.max(0, 1 - elapsed / weapon.cooldown));
+  }
+
   paintLiveTreadTracks();
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
@@ -1346,6 +1459,7 @@ function animate(): void {
 
   voxelDebris?.update(dt, voxelGrid);
   sea.update(dt, camera);
+  pickupScene.update(dt);
 
 
   surfaceNets?.flushDirtyChunks();

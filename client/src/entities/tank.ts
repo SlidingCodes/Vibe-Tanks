@@ -461,6 +461,22 @@ export function triggerRecoil(playerId: string): void {
   tm.chassisTiltVel -= 18.0; // Much stronger kick back
 }
 
+/** Heat-tint the barrel emissive from cold (0, stock dark gunmetal) to
+ *  glowing red (1, just fired). Linear with cooldown progress so the
+ *  barrel's colour is a direct readout of how much of the shot's
+ *  cooldown is left — by the time it turns black, the next round is
+ *  ready. Main.ts calls this every frame for every alive tank using
+ *  the weapon each tank last fired (local via own state, remotes via
+ *  shot_resolved). */
+export function setBarrelHeat(playerId: string, heat: number): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  const mat = tm.barrel.material as THREE.MeshStandardMaterial;
+  const h = Math.max(0, Math.min(1, heat));
+  mat.emissive.setRGB(0.95 * h, 0.12 * h, 0.04 * h);
+  mat.emissiveIntensity = 1.0;
+}
+
 
 /** Interpolate remote tanks each frame */
 export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {

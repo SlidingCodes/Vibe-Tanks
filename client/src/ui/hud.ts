@@ -1,4 +1,5 @@
-import { TankState, WeaponDefinition } from '@shared/types/index';
+import { TankState, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
+import { WEAPONS, INVENTORY_MAX_SLOTS } from '@shared/weapons';
 
 const healthBar = document.getElementById('health-bar') as HTMLDivElement;
 const healthFill = document.getElementById('health-fill') as HTMLDivElement;
@@ -227,6 +228,21 @@ export function setCooldown(fraction: number): void {
   cooldownRing.style.setProperty('--cd-color', `rgb(${r},${g},${b})`);
 }
 
+/** Update the selected-weapon ammo readout next to the cooldown ring.
+ *  Pass 'infinite' to hide it. */
+export function setSelectedWeaponAmmo(ammo: number | 'infinite'): void {
+  const el = document.getElementById('ammo-counter');
+  if (!el) return;
+  if (ammo === 'infinite') {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.textContent = String(ammo);
+  el.classList.toggle('low', ammo <= 2);
+  el.classList.toggle('empty', ammo <= 0);
+}
+
 function getWeaponRoleLabel(weapon: WeaponDefinition): string {
   switch (weapon.behavior) {
     case 'airburst':
@@ -257,32 +273,83 @@ function getWeaponSlotLabel(index: number): string {
   return index === 9 ? '0' : String(index + 1);
 }
 
+/** Render the weapon chip rack. Always shows INVENTORY_MAX_SLOTS chips —
+ *  occupied slots carry the weapon icon + ammo readout + per-weapon
+ *  cooldown bar (refreshed by updateWeaponCooldowns each frame), empty
+ *  slots show as a dashed placeholder so the player sees how many pickup
+ *  slots are still available. */
 export function setWeapons(
-  weapons: WeaponDefinition[],
+  inventory: WeaponInventorySlot[],
   selectedWeaponId: string,
   onSelect?: (slot: number) => void,
 ): void {
   weaponHud.innerHTML = '';
-  weapons.forEach((weapon, index) => {
+  for (let index = 0; index < INVENTORY_MAX_SLOTS; index++) {
+    const slotEntry = inventory[index];
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
-    chip.title = `[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)}`;
     const slot = document.createElement('span');
     slot.className = 'weapon-slot';
     slot.textContent = getWeaponSlotLabel(index);
     chip.appendChild(slot);
+
+    if (!slotEntry) {
+      chip.className = 'weapon-chip empty';
+      chip.disabled = true;
+      chip.title = `Slot ${getWeaponSlotLabel(index)} · empty (pick up a supply crate)`;
+      const placeholder = document.createElement('span');
+      placeholder.className = 'weapon-empty-dot';
+      chip.appendChild(placeholder);
+      weaponHud.appendChild(chip);
+      continue;
+    }
+
+    const weapon = WEAPONS.find((w) => w.id === slotEntry.weaponId);
+    if (!weapon) continue;
+    chip.dataset.weaponId = weapon.id;
+    chip.className = weapon.id === selectedWeaponId ? 'weapon-chip selected' : 'weapon-chip';
+    const ammoLabel = slotEntry.ammo === 'infinite' ? '∞' : String(slotEntry.ammo);
+    chip.title = `[${getWeaponSlotLabel(index)}] ${weapon.name} · ${getWeaponRoleLabel(weapon)} · ${ammoLabel}`;
     const icon = document.createElement('img');
     icon.src = `/weapons/${weapon.id}.svg`;
     icon.alt = '';
     icon.className = 'weapon-icon';
     chip.appendChild(icon);
+    const ammo = document.createElement('span');
+    ammo.className = 'weapon-ammo';
+    if (slotEntry.ammo === 'infinite') {
+      ammo.classList.add('infinite');
+      ammo.textContent = '∞';
+    } else {
+      ammo.textContent = String(slotEntry.ammo);
+      if (slotEntry.ammo <= 2) ammo.classList.add('low');
+    }
+    chip.appendChild(ammo);
+    const cd = document.createElement('span');
+    cd.className = 'weapon-cd';
+    chip.appendChild(cd);
     if (onSelect) {
       chip.addEventListener('click', () => onSelect(index));
       chip.addEventListener('touchstart', (e) => { e.preventDefault(); onSelect(index); }, { passive: false });
     }
     weaponHud.appendChild(chip);
-  });
+  }
+}
+
+/** Refresh the per-chip cooldown bars. Each weapon has its own clock —
+ *  pass in the client's per-weapon lastFire map. Chips for which no fire
+ *  has ever been recorded read as fully cooled (ready). */
+export function updateWeaponCooldowns(lastFireByWeapon: Map<string, number>, now: number): void {
+  for (const chip of weaponHud.querySelectorAll<HTMLElement>('.weapon-chip')) {
+    const weaponId = chip.dataset.weaponId;
+    if (!weaponId) continue;
+    const weapon = WEAPONS.find((w) => w.id === weaponId);
+    if (!weapon) continue;
+    const last = lastFireByWeapon.get(weaponId) ?? 0;
+    const elapsed = Math.max(0, now - last);
+    const progress = Math.min(1, elapsed / weapon.cooldown);
+    chip.style.setProperty('--cd-fill', progress.toFixed(3));
+  }
 }
 
 export function showWaiting(show: boolean): void {
