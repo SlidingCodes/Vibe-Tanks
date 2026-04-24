@@ -144,6 +144,14 @@ let latestTanks: TankState[] = [];
  *  that's been fully charged for minutes. Mirrors the server's
  *  PlayerState.lastFireByWeapon map. */
 const lastFireByWeapon = new Map<string, number>();
+
+/** Last shot info per tank, used to drive the barrel-heat glow on every
+ *  visible tank (local + remotes). Updated for the local player the
+ *  instant fire_request is emitted (optimistic), for remotes via
+ *  shot_resolved. The weaponId determines which cooldown window the
+ *  glow fades over. */
+interface LastShotInfo { weaponId: string; firedAt: number; }
+const lastShotByTank = new Map<PlayerId, LastShotInfo>();
 let selectedWeaponId = 'standard';
 /** Local mirror of the server-authoritative inventory for the local tank.
  *  Rebuilt on each room_snapshot / state_update; drives the HUD chips and
@@ -800,6 +808,16 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
 socket.on('shot_resolved', (result: ShotResult) => {
   triggerRecoil(result.shooterId);
+  // Remote shooters: seed their last-shot entry so their barrel glows
+  // during the cooldown window. Local player is set optimistically at
+  // emit time — overwriting here with a slightly-later timestamp would
+  // extend the glow past its natural end, so skip.
+  if (result.shooterId !== myId) {
+    lastShotByTank.set(result.shooterId, {
+      weaponId: result.weaponId,
+      firedAt: clock.getElapsedTime(),
+    });
+  }
   if (atmosphere) {
     playShotAnimation(result, scene, atmosphere);
 
@@ -1325,6 +1343,7 @@ function animate(): void {
             aimPoint: aimPointForFire ? { x: aimPointForFire.x, y: aimPointForFire.y, z: aimPointForFire.z } : null,
           });
           lastFireByWeapon.set(selectedWeapon.id, now);
+          lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
           playShoot();
         }
       }
@@ -1333,9 +1352,6 @@ function animate(): void {
     const cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
     hud.setCooldown(cooldownProgress);
     hud.updateWeaponCooldowns(lastFireByWeapon, now);
-    // Muzzle heat: glowing red right after the shot, fades to black as
-    // the selected weapon's cooldown elapses.
-    setBarrelHeat(myId, 1 - cooldownProgress);
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
     followTank(
@@ -1361,6 +1377,21 @@ function animate(): void {
   }
 
   interpolateRemoteTanks(dt, myId);
+
+  // Barrel heat glow for every alive tank. Linear fade over the fired
+  // weapon's cooldown, so a tank's barrel darkens exactly as the next
+  // round comes up. Remote entries are seeded by shot_resolved; the
+  // local player's is seeded optimistically when fire_request is sent.
+  for (const [pid, tm] of getAllTankMeshes()) {
+    if (!tm.state.alive) { setBarrelHeat(pid, 0); continue; }
+    const last = lastShotByTank.get(pid);
+    if (!last) { setBarrelHeat(pid, 0); continue; }
+    const weapon = WEAPONS.find((w) => w.id === last.weaponId);
+    if (!weapon) { setBarrelHeat(pid, 0); continue; }
+    const elapsed = now - last.firedAt;
+    setBarrelHeat(pid, Math.max(0, 1 - elapsed / weapon.cooldown));
+  }
+
   paintLiveTreadTracks();
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
