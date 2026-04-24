@@ -16,14 +16,14 @@ export const WEAPONS: WeaponDefinition[] = [
     id: 'big_blast',
     name: 'Big Blast',
     projectileSpeed: 16,
-    // Bumped from 7 → 9 + airburstHeight lowered to 1.8 to fix "exploded
-    // right next to the tank for 0 dmg" on bumpy terrain: airburst is
-    // triggered airburstHeight above the terrain under the SHELL, not
-    // under the target, so a dosso along the arc could put the blast
-    // 5-6 m above a tank sitting in the next valley — the 3D distance
-    // check (falloff is quadratic) then wrote off the hit entirely.
-    blastRadius: 9,
-    damage: 46,
+    // Big numbers by design: airburst + quadratic falloff + the blast
+    // being 1.8 m off the ground shrink the *effective* horizontal
+    // radius well below the nominal figure, so the name has to earn its
+    // keep. With R=12 and peak dmg=50 the useful kill radius lands
+    // around 5-6 m orizz. (~40 dmg) and a tank 8 m away still takes a
+    // meaningful ~27 dmg bite, instead of a ~8 dmg tickle.
+    blastRadius: 12,
+    damage: 50,
     terrainDamage: 0,
     behavior: 'airburst',
     cooldown: 2.8,
