@@ -1464,6 +1464,21 @@ function animate(): void {
           lastFireByWeapon.set(selectedWeapon.id, now);
           lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
           playShoot();
+          // Client-side jump prediction: mirror the server's launchTank
+          // on the predicted Rapier body so the local tank lifts off
+          // immediately, no rubberband while waiting for the next
+          // state_update. Same launch math as the server
+          // (muzzle.direction * projectileSpeed * jumpSpeedScale).
+          if (selectedWeapon.behavior === 'jump' && clientPhysics) {
+            const muzzle = computeMuzzle(predictedState);
+            const speedScale = selectedWeapon.behaviorConfig?.jumpSpeedScale ?? 1;
+            const speed = selectedWeapon.projectileSpeed * speedScale;
+            clientPhysics.launchTank(myId, {
+              x: muzzle.direction.x * speed,
+              y: muzzle.direction.y * speed,
+              z: muzzle.direction.z * speed,
+            });
+          }
         }
       }
     }
@@ -1578,6 +1593,21 @@ function animate(): void {
       // Turbo flame — only for local player while turbo is active
       if (pid === myId && now < turboActiveUntil && tm.state.alive) {
         atmosphere.spawnTurboFlame(tm.group.position, tm.group.rotation.y);
+      }
+
+      // Rocket-jump flame: any tank (local or remote) that fired a jump
+      // within the last 3 s and is still in the air gets a turbo-flame
+      // trail at its rear. Airborne source is the client Rapier for the
+      // local player (known the instant launchTank runs, no ~50 ms wait
+      // for a state_update) and tm.state.airborne for everyone else.
+      const last = lastShotByTank.get(pid);
+      if (last && last.weaponId === 'jump' && tm.state.alive) {
+        const inFlight = pid === myId && clientPhysics
+          ? !clientPhysics.isGrounded(myId)
+          : tm.state.airborne;
+        if (inFlight && clock.getElapsedTime() - last.firedAt < 3.0) {
+          atmosphere.spawnTurboFlame(tm.group.position, tm.group.rotation.y);
+        }
       }
     }
   }

@@ -77,6 +77,12 @@ interface TankEntry {
    *  solid ground? Room / client reads this each tick for the airborne
    *  transition. */
   grounded: boolean;
+  /** True while the tank is mid rocket-jump arc. Set by launchTank,
+   *  cleared on the first tick the body touches ground. While true,
+   *  applyTankInputs preserves drivenVel (skips the player-input
+   *  ramp) so the launch momentum survives the full flight instead
+   *  of being coasted away by the coast-decel ramp. */
+  launching: boolean;
 }
 
 const ZERO_INPUT: MovementInput = { forward: false, backward: false, left: false, right: false, seq: 0 };
@@ -283,6 +289,7 @@ export class RapierVoxelWorld {
       verticalVel: 0,
       extraVel: { x: 0, y: 0, z: 0 },
       grounded: true,
+      launching: false,
     });
   }
 
@@ -309,6 +316,7 @@ export class RapierVoxelWorld {
     entry.extraVel.y = 0;
     entry.extraVel.z = 0;
     entry.input = { ...ZERO_INPUT };
+    entry.launching = false;
   }
 
   setTankInput(id: PlayerId, input: MovementInput): void {
@@ -390,15 +398,19 @@ export class RapierVoxelWorld {
       // toward zero when no throttle). Not read back from the body —
       // stored purely in state so KCC's collision corrections don't
       // poison the ramp (which was the failure mode of the prior
-      // dynamic-body drive).
-      const dvx = targetX - entry.drivenVel.x;
-      const dvz = targetZ - entry.drivenVel.z;
-      const dvMag = Math.hypot(dvx, dvz);
-      if (dvMag > 1e-6) {
-        const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
-        const scale = Math.min(1, (rate * dt) / dvMag);
-        entry.drivenVel.x += dvx * scale;
-        entry.drivenVel.z += dvz * scale;
+      // dynamic-body drive). Skipped while `launching` so a rocket-jump
+      // arc preserves its full horizontal momentum instead of coasting
+      // to a stop mid-flight.
+      if (!entry.launching) {
+        const dvx = targetX - entry.drivenVel.x;
+        const dvz = targetZ - entry.drivenVel.z;
+        const dvMag = Math.hypot(dvx, dvz);
+        if (dvMag > 1e-6) {
+          const rate = moveDir !== 0 ? TANK_ACCEL : TANK_COAST_DECEL;
+          const scale = Math.min(1, (rate * dt) / dvMag);
+          entry.drivenVel.x += dvx * scale;
+          entry.drivenVel.z += dvz * scale;
+        }
       }
 
       // Gravity accumulates into verticalVel. Clamped after KCC reports
@@ -437,6 +449,11 @@ export class RapierVoxelWorld {
       // wants to separate the body from the ground next tick.
       if (entry.grounded && entry.verticalVel < 0) {
         entry.verticalVel = 0;
+      }
+      // Rocket-jump landing: the first grounded tick ends the launch,
+      // handing control back to the player-input ramp next frame.
+      if (entry.launching && entry.grounded) {
+        entry.launching = false;
       }
     }
   }
@@ -492,6 +509,27 @@ export class RapierVoxelWorld {
     const entry = this.tanks.get(id);
     if (!entry) return;
     entry.yaw += deltaYaw;
+  }
+
+  /** Launch the tank as a ballistic body: seeds drivenVel.xz and
+   *  verticalVel directly from the launch vector, flags the tank as
+   *  `launching` so the next applyTankInputs passes skip the player-
+   *  input ramp (which would otherwise decay the horizontal component
+   *  back to zero in ~1 s and kill the arc). The flag clears on the
+   *  first grounded tick, at which point normal drive control resumes.
+   *  extraVel is deliberately left untouched so a blast kick mid-air
+   *  still stacks on top of the arc. */
+  launchTank(id: PlayerId, launchVel: Vec3): void {
+    const entry = this.tanks.get(id);
+    if (!entry) return;
+    entry.drivenVel.x = launchVel.x;
+    entry.drivenVel.z = launchVel.z;
+    entry.verticalVel = launchVel.y;
+    entry.launching = true;
+    // Force grounded=false so the immediate next tick's airborne readout
+    // reflects the launch, and the client doesn't briefly render the
+    // tank as still standing on the ground at the moment of lift-off.
+    entry.grounded = false;
   }
 
   /** Add a velocity kick to the blast buffer — knockback from shell

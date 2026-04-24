@@ -108,7 +108,8 @@ export type WeaponBehavior =
   | 'mine'
   | 'digger'
   | 'wall'
-  | 'ramp';
+  | 'ramp'
+  | 'jump';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -129,7 +130,8 @@ export type ShotVisualStyle =
   | 'mine_burst'
   | 'digger_shell'
   | 'wall_shell'
-  | 'ramp_shell';
+  | 'ramp_shell'
+  | 'jump_launch';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -188,6 +190,11 @@ export interface WeaponBehaviorConfig {
   rampWidth?: number;
   /** Peak height of the ramp above its base. */
   rampHeight?: number;
+  /** Jump weapon: multiplier applied to the ballistic launch velocity
+   *  before it's sent to the tank body. 1 = exactly the shell speed the
+   *  aim-solver assumes, <1 reads as a lobby hop, >1 overshoots the
+   *  reticle. */
+  jumpSpeedScale?: number;
 }
 
 export interface WeaponDefinition {

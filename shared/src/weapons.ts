@@ -257,6 +257,31 @@ export const WEAPONS: WeaponDefinition[] = [
       rampHeight: 3.5,
     },
   },
+  {
+    // Rocket jump: the tank itself becomes the projectile. Aim with the
+    // normal reticle — the same ballistic solver used by standard weapons
+    // picks a turret/barrel angle that would land a shell at the target,
+    // and we apply the resulting launch velocity to the tank body so it
+    // arcs to the same spot. No damage, no terrain mutation — pure
+    // mobility utility like wall / ramp / digger.
+    id: 'jump',
+    name: 'Rocket Jump',
+    // projectileSpeed must match the ballistic-solver assumption used by
+    // the aim code (getAimTarget → atan2 / quadratic solver). 22 sits in
+    // the middle of the existing shell class so the reticle arc reads
+    // like a long-range hop.
+    projectileSpeed: 22,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'jump',
+    cooldown: 4.0,
+    startAmmo: 2,
+    maxAmmo: 4,
+    behaviorConfig: {
+      jumpSpeedScale: 1.0,
+    },
+  },
 ];
 
 /** Max number of slots in a tank's weapon inventory (default + consumables). */
