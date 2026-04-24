@@ -607,6 +607,9 @@ export class Room {
       case 'mine':
         this.fireMine(tank, weapon);
         break;
+      case 'jump':
+        this.fireJump(tank, weapon);
+        break;
       default: {
         const result = precomputedResult || simulateShot(
           tank,
@@ -618,6 +621,29 @@ export class Room {
         break;
       }
     }
+  }
+
+  /** Rocket jump: apply the same ballistic launch the shell would have
+   *  used, but to the tank body instead of a projectile. Aim is whatever
+   *  the client's aim-solver already baked into the tank's turret/barrel
+   *  angles, so the reticle position is honoured without re-solving here.
+   *  No terrain op, no damage, no shell — the shot_resolved payload is a
+   *  pure "hey, I jumped" signal for the client VFX. */
+  private fireJump(tank: TankState, weapon: WeaponDefinition): void {
+    const scale = weapon.behaviorConfig?.jumpSpeedScale ?? 1;
+    const launchVel = createInitialVelocity(tank, weapon.projectileSpeed * scale);
+    this.physics.launchTank(tank.playerId, launchVel);
+    tank.airborne = true;
+    tank.linVel.x = launchVel.x;
+    tank.linVel.y = launchVel.y;
+    tank.linVel.z = launchVel.z;
+    const result: ShotResult = {
+      shooterId: tank.playerId,
+      weaponId: weapon.id,
+      steps: [],
+      damageDealt: [],
+    };
+    this.io.to(this.id).emit('shot_resolved', result);
   }
 
   private ensureFourTanks(): void {

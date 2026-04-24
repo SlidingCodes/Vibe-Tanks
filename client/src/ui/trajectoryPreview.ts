@@ -544,6 +544,22 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'jump') {
+    // The jump weapon launches the tank along the same ballistic arc the
+    // aim-solver picked for a would-be shell, so the preview is just the
+    // standard parabolic flight — only the marker reads differently
+    // (copper-brass instead of the HE red) so the player knows they're
+    // previewing their own landing spot, not a blast zone.
+    parentMat.color.setHex(0xc88040);
+    const segment = simulateSegment(startPos, startVel);
+    placePoints(parentDots, segment.points);
+    placeMarker(segment.endPoint.x, segment.endPoint.y, segment.endPoint.z);
+    marker.group.scale.setScalar(0.6);
+    setMarkerColor(0xd08040, 0xe8b070);
+    marker.group.visible = true;
+    return;
+  }
+
   // Fallback: 'standard' (and any future weapon without a custom preview).
   // Without this the default weapon has no reticle at all, which is how the
   // bug first surfaced: the game starts on the first weapon slot and the
