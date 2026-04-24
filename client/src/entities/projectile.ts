@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getAllTankMeshes } from './tank';
 import {
   ActiveProjectileState,
@@ -9,6 +10,29 @@ import {
 } from '@shared/types/index';
 import { AtmosphereHandle } from '../scene/atmosphere';
 import { getParticleTextures } from '../scene/particles';
+
+/** Build a true tank-shell geometry: cylindrical body + conical nose,
+ *  merged into a single BufferGeometry oriented with the nose along +Z so
+ *  Object3D.lookAt(behind) aims it down-trajectory. The radius parameter
+ *  drives the body radius; total length is ~3.6×radius. */
+function buildShellGeometry(radius: number): THREE.BufferGeometry {
+  const bodyLen = radius * 2.4;
+  const noseLen = radius * 1.4;
+  const body = new THREE.CylinderGeometry(radius, radius, bodyLen, 12);
+  body.rotateX(Math.PI / 2);
+  const nose = new THREE.ConeGeometry(radius, noseLen, 12);
+  nose.rotateX(Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2 + noseLen / 2);
+  // Center the merged shell so the origin sits roughly at the
+  // body/nose join — looks natural when oriented in flight.
+  body.translate(0, 0, -bodyLen / 4);
+  nose.translate(0, 0, -bodyLen / 4);
+  const merged = mergeGeometries([body, nose]);
+  body.dispose();
+  nose.dispose();
+  if (!merged) throw new Error('buildShellGeometry: mergeGeometries returned null');
+  return merged;
+}
 
 
 const SECONDS_PER_SAMPLE = 4 / 60;
@@ -291,21 +315,18 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
 
   if (step.visualStyle !== 'rail') {
-    // Sphere stretched along +Z in local space so the mesh reads as a
-    // nose-forward shell. updateProjectileAnimation orients the mesh to
-    // look down-velocity each frame. emissiveIntensity is toned down so
-    // the round doesn't glow like a neon pellet in daylight — the body
-    // stays matte gunmetal and only the nose shows a warm hot-spot.
-    const geo = new THREE.SphereGeometry(spec.projectileRadius, 10, 10);
+    // Real tank-shell silhouette (cylinder body + conical nose) instead of
+    // a stretched sphere. Material is matte gunmetal with a soft warm
+    // emissive so the nose reads as recently-fired without glowing.
+    const geo = buildShellGeometry(spec.projectileRadius);
     const mat = new THREE.MeshStandardMaterial({
       color: spec.projectileColor,
       emissive: spec.emissiveColor,
-      emissiveIntensity: 0.55,
-      metalness: 0.55,
-      roughness: 0.55,
+      emissiveIntensity: 0.45,
+      metalness: 0.6,
+      roughness: 0.5,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.scale.set(0.7, 0.7, 1.6);
     const first = step.points[0];
     mesh.position.set(first.x, first.y, first.z);
     scene.add(mesh);
@@ -333,8 +354,11 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
     step.trail = trail;
   }
 
-  // Pre-computed trajectory line. Kept visible but very faint — useful
-  // as a situational-awareness cue without becoming a gameplay spoiler.
+  // Pre-computed trajectory line — used as a "trail wake" only behind
+  // the projectile. Pre-allocated to the full point count, but the
+  // draw range starts at 0 and is grown each frame in
+  // updateProjectileAnimation. That way enemies don't get a free
+  // pre-impact spoiler showing exactly where the round will land.
   const pathGeo = new THREE.BufferGeometry();
   const pathArr = new Float32Array(step.points.length * 3);
   for (let i = 0; i < step.points.length; i++) {
@@ -343,6 +367,7 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
     pathArr[i * 3 + 2] = step.points[i].z;
   }
   pathGeo.setAttribute('position', new THREE.BufferAttribute(pathArr, 3));
+  pathGeo.setDrawRange(0, 0);
   const pathMat = new THREE.LineBasicMaterial({
     color: spec.pathColor,
     transparent: true,
@@ -635,16 +660,15 @@ function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.S
   const tm = getAllTankMeshes().get(state.ownerId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
   const spec = getVisualSpec(state.visualStyle, colorOverride);
-  const geo = new THREE.SphereGeometry(Math.max(0.12, spec.projectileRadius * 0.9), 10, 10);
+  const geo = buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
   const mat = new THREE.MeshStandardMaterial({
     color: spec.projectileColor,
     emissive: spec.emissiveColor,
-    emissiveIntensity: 0.5,
-    metalness: 0.55,
-    roughness: 0.55,
+    emissiveIntensity: 0.4,
+    metalness: 0.6,
+    roughness: 0.5,
   });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.scale.set(0.7, 0.7, 1.5);
   mesh.position.set(state.position.x, state.position.y, state.position.z);
   scene.add(mesh);
 
@@ -840,8 +864,8 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
     const p = interpTrajectory(step.points, sampleIdx);
     if (step.mesh) {
       step.mesh.position.set(p.x, p.y, p.z);
-      // Orient the stretched shell along its direction of travel. The
-      // geometry is stretched along local +Z, and Object3D.lookAt() aims
+      // Orient the shell along its direction of travel. Geometry is
+      // built with the nose along local +Z, and Object3D.lookAt() aims
       // local -Z at the target — so we look at (position - forward), which
       // sends +Z down-trajectory (the nose forward).
       const segIdx = Math.max(0, Math.min(Math.floor(sampleIdx), step.points.length - 2));
@@ -851,6 +875,15 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
       if (fx * fx + fy * fy + fz * fz > 1e-8) {
         step.mesh.lookAt(p.x - fx, p.y - fy, p.z - fz);
       }
+    }
+
+    // Path line "tracer wake": draw only the segment from the launch
+    // point up to the current shell position. Drawing the full pre-
+    // computed trajectory would let observers read the impact point
+    // before the round even lands.
+    if (step.pathLine) {
+      const drawCount = Math.max(2, Math.min(step.points.length, Math.ceil(sampleIdx) + 1));
+      step.pathLine.geometry.setDrawRange(0, drawCount);
     }
 
     if (step.trail) {

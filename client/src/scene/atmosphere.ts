@@ -214,9 +214,11 @@ export function createAtmosphere(scene: THREE.Scene): AtmosphereHandle {
   let shellSpawnCursor = 0;
 
   // ── Impact Sparks ──
+  // Warm amber sparks (no neon orange) so the debris kicked up by an
+  // explosion reads as hot dirt/metal rather than as a particle effect.
   const sparkGeom = new THREE.BoxGeometry(1, 1, 1);
   const sparkMat = new THREE.MeshBasicMaterial({
-    color: 0xffaa00,
+    color: 0xd07028,
     transparent: true,
     opacity: 1,
   });

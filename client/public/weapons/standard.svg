@@ -1,13 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
-    <linearGradient id="shell" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#c9c9c9"/>
-      <stop offset="0.55" stop-color="#888"/>
-      <stop offset="1" stop-color="#555"/>
+    <linearGradient id="stdBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a9388"/>
+      <stop offset="0.5" stop-color="#6a655c"/>
+      <stop offset="1" stop-color="#3a3530"/>
+    </linearGradient>
+    <linearGradient id="stdNose" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c89254"/>
+      <stop offset="1" stop-color="#6a4828"/>
     </linearGradient>
   </defs>
-  <rect x="10" y="24" width="32" height="16" rx="3" fill="url(#shell)" stroke="#222" stroke-width="1.5"/>
-  <path d="M42 24 L56 32 L42 40 Z" fill="#d44" stroke="#222" stroke-width="1.5" stroke-linejoin="round"/>
-  <rect x="14" y="27" width="4" height="10" fill="#333"/>
-  <rect x="22" y="27" width="4" height="10" fill="#333"/>
+  <g stroke="#1a1814" stroke-width="1.5" stroke-linejoin="round">
+    <rect x="8" y="24" width="32" height="16" rx="2" fill="url(#stdBody)"/>
+    <path d="M40 24 L56 32 L40 40 Z" fill="url(#stdNose)"/>
+  </g>
+  <rect x="14" y="26" width="2" height="12" fill="#5a6a3a"/>
+  <rect x="22" y="26" width="2" height="12" fill="#5a6a3a"/>
+  <rect x="30" y="26" width="2" height="12" fill="#5a6a3a"/>
 </svg>

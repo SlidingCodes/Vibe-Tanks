@@ -117,8 +117,9 @@
     }
     #login-overlay {
       position: fixed; inset: 0;
-      background: linear-gradient(to bottom, #0a0d1a 0%, #141a2d 60%, #1e2838 100%);
-      font-family: monospace; color: #fff; z-index: 10;
+      /* Field-camo gradient: dusk khaki → olive → deep tactical green */
+      background: linear-gradient(to bottom, #1a1c14 0%, #2a2c1e 55%, #14180e 100%);
+      font-family: monospace; color: #e8e0c8; z-index: 10;
       overflow: hidden;
     }
     #tank-preview {
@@ -131,32 +132,35 @@
       position: absolute; top: 46px; left: 50%;
       transform: translateX(-50%);
       font-family: monospace; font-weight: bold;
-      font-size: 56px; letter-spacing: 16px; color: #fff;
-      text-shadow: 0 0 22px rgba(120, 180, 255, 0.55), 0 4px 10px rgba(0, 0, 0, 0.85);
+      font-size: 56px; letter-spacing: 16px; color: #e8d8a0;
+      text-shadow: 0 0 22px rgba(216, 176, 88, 0.4), 0 4px 10px rgba(0, 0, 0, 0.85);
       pointer-events: none; z-index: 2;
     }
+    /* Tactical brief panel — gunmetal plate with olive trim */
     #login-panel {
       position: absolute; right: 64px; top: 50%;
       transform: translateY(-50%);
-      background: rgba(12, 15, 26, 0.72);
-      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-      padding: 28px 32px; border-radius: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      width: 320px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.65);
+      background: rgba(20, 22, 16, 0.78);
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      padding: 28px 32px; border-radius: 3px;
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      width: 320px;
       z-index: 2;
     }
     #login-panel label {
-      font-size: 12px; opacity: 0.7; display: block;
+      font-size: 12px; opacity: 0.85; display: block;
       margin: 0 0 6px; letter-spacing: 2px;
+      color: #c0b890;
     }
     #login-panel label:not(:first-child) { margin-top: 18px; }
     #login-panel input[type=text] {
       width: 100%; padding: 10px 12px; font-family: inherit; font-size: 15px;
-      background: rgba(6, 8, 14, 0.85);
-      border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px;
-      color: #fff; outline: none;
+      background: rgba(8, 10, 6, 0.85);
+      border: 1px solid rgba(120, 130, 100, 0.45); border-radius: 2px;
+      color: #e8e0c8; outline: none;
     }
-    #login-panel input[type=text]:focus { border-color: rgba(120, 180, 255, 0.7); }
+    #login-panel input[type=text]:focus { border-color: rgba(216, 176, 88, 0.75); }
     #flag-search { margin-top: 6px !important; font-size: 13px !important; padding: 6px 10px !important; }
     #color-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
     .color-swatch {
@@ -164,7 +168,7 @@
       border: 2px solid transparent; transition: transform 0.08s;
     }
     .color-swatch:hover { transform: scale(1.08); }
-    .color-swatch.selected { border-color: #fff; }
+    .color-swatch.selected { border-color: #d8b058; box-shadow: 0 0 6px rgba(216,176,88,0.5); }
     #flag-swatches {
       display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px;
       max-height: 140px; overflow-y: auto; padding-right: 4px;
@@ -177,13 +181,19 @@
       transition: transform 0.08s, border-color 0.15s;
     }
     .flag-swatch:hover { transform: scale(1.08); border-color: rgba(255,255,255,0.5); }
-    .flag-swatch.selected { border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.3); }
+    .flag-swatch.selected { border-color: #d8b058; box-shadow: 0 0 6px rgba(216,176,88,0.5); }
+    /* Deploy button — khaki/brass plate with stencil readout. No more
+       lime-green call-to-action. */
     #login-panel button {
       margin-top: 24px; width: 100%; padding: 12px; font-family: inherit; font-size: 14px;
-      background: #4f4; color: #000; border: 0; border-radius: 4px; cursor: pointer;
-      font-weight: bold; letter-spacing: 2px;
+      background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
+      color: #1a1814; border: 1px solid #6a4828; border-radius: 2px; cursor: pointer;
+      font-weight: bold; letter-spacing: 4px; text-transform: uppercase;
+      box-shadow: inset 0 1px 0 rgba(255,230,170,0.3), 0 2px 4px rgba(0,0,0,0.5);
     }
-    #login-panel button:hover { background: #6f6; }
+    #login-panel button:hover {
+      background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
+    }
     @media (max-width: 720px) {
       #login-title { font-size: 28px; letter-spacing: 5px; top: 14px; }
       #login-panel {
@@ -303,13 +313,13 @@
       background: rgba(154,19,19,0.15); color: #c22;
       border-color: rgba(194,34,34,0.9);
     }
-    /* Kill Overlay — same letterbox style as death, but with a vibrant
-       cyan/white "victory" palette. */
+    /* Kill Overlay — same letterbox style as death, but with a warm
+       brass/khaki "confirmed kill" palette instead of cyan victory. */
     #kill-overlay {
       position: fixed; inset: 0; display: none; z-index: 25;
       pointer-events: none;
-      font-family: 'Times New Roman', serif; color: #4af;
-      text-shadow: 0 0 18px rgba(64,170,255,0.6), 0 0 4px #000;
+      font-family: 'Times New Roman', serif; color: #d8b058;
+      text-shadow: 0 0 18px rgba(216, 176, 88, 0.55), 0 0 4px #000;
     }
     #kill-top, #kill-bottom {
       position: absolute; left: 0; right: 0;
@@ -332,25 +342,27 @@
 
     #kill-title {
       font-size: 52px; letter-spacing: 12px; font-style: italic;
-      font-weight: bold; border-top: 1px solid rgba(64,170,255,0.5);
-      border-bottom: 1px solid rgba(64,170,255,0.5); padding: 12px 40px;
-      color: #fff; text-shadow: 0 0 20px #4af, 0 0 4px #000;
+      font-weight: bold; border-top: 1px solid rgba(216, 176, 88, 0.5);
+      border-bottom: 1px solid rgba(216, 176, 88, 0.5); padding: 12px 40px;
+      color: #f0d088; text-shadow: 0 0 20px rgba(216, 176, 88, 0.7), 0 0 4px #000;
     }
     #kill-victim .kill-victim-name { font-weight: bold; }
 
-    /* Leaderboard Overlay — full screen table style with a premium "post-match" feel */
+    /* Leaderboard Overlay — post-engagement debrief: gunmetal table on
+       a dark olive-tinted curtain. Brass title, khaki winner highlight,
+       no more gold/cyan/red victory palette. */
     #leaderboard-overlay {
       position: fixed; inset: 0; display: none; z-index: 30;
-      background: rgba(0,0,0,0.85);
+      background: rgba(10, 12, 8, 0.88);
       backdrop-filter: blur(8px);
       flex-direction: column; align-items: center; justify-content: center;
-      color: #fff; font-family: 'Times New Roman', serif;
+      color: #e8e0c8; font-family: 'Times New Roman', serif;
     }
     #leaderboard-title {
       font-size: 52px; letter-spacing: 16px; font-weight: bold;
       text-transform: uppercase; margin-bottom: 40px;
-      text-shadow: 0 0 20px rgba(255,215,0,0.4);
-      color: #ffd700;
+      text-shadow: 0 0 20px rgba(216, 176, 88, 0.35);
+      color: #c8a868;
     }
     #leaderboard-table {
       width: 80%; max-width: 800px;
@@ -358,26 +370,27 @@
       font-size: 18px;
     }
     #leaderboard-table th {
-      text-align: left; padding: 12px; border-bottom: 2px solid rgba(255,255,255,0.1);
-      color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 2px;
+      text-align: left; padding: 12px; border-bottom: 1px solid rgba(120, 130, 100, 0.4);
+      color: rgba(192, 184, 144, 0.75); text-transform: uppercase; letter-spacing: 2px;
       font-size: 14px;
     }
     #leaderboard-table td {
-      padding: 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
+      padding: 16px 12px; border-bottom: 1px solid rgba(120, 130, 100, 0.15);
     }
-    #leaderboard-table tr:first-child { color: #ffd700; font-size: 24px; }
-    #leaderboard-table tr:first-child td { border-bottom: 2px solid rgba(255,215,0,0.3); }
-    
-    .lb-rank { width: 60px; opacity: 0.5; }
+    #leaderboard-table tr:first-child { color: #e8c878; font-size: 24px; }
+    #leaderboard-table tr:first-child td { border-bottom: 1px solid rgba(216, 176, 88, 0.45); }
+
+    .lb-rank { width: 60px; opacity: 0.55; }
     .lb-name { font-weight: bold; letter-spacing: 1px; }
     .lb-flag { height: 16px; width: auto; vertical-align: middle; margin-right: 10px; border-radius: 1px; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
-    .lb-kills { color: #4af; text-align: center; width: 80px; }
-    .lb-deaths { color: #f44; text-align: center; width: 80px; }
-    .lb-score { color: #fff; text-align: right; width: 100px; font-weight: bold; }
-    
+    .lb-kills { color: #c0b890; text-align: center; width: 80px; }
+    .lb-deaths { color: #a86848; text-align: center; width: 80px; }
+    .lb-score { color: #e8e0c8; text-align: right; width: 100px; font-weight: bold; }
+
     #leaderboard-timer {
-      margin-top: 40px; font-size: 14px; opacity: 0.5;
+      margin-top: 40px; font-size: 14px; opacity: 0.6;
       letter-spacing: 4px; text-transform: uppercase;
+      color: #a89868;
     }
     /* Fullscreen toggle — always visible, tiny, top-right. z-index must
        sit above login (10) and death (20) overlays. */
@@ -404,7 +417,7 @@
     #ios-fs-hint .ios-fs-share { color: #4af; font-weight: bold; }
     #ios-fs-hint button {
       margin-top: 14px; width: 100%; padding: 8px; font-family: inherit;
-      background: #4f4; color: #000; border: 0; border-radius: 4px; cursor: pointer;
+      background: #c0a058; color: #1a1814; border: 1px solid #6a4828; border-radius: 2px; cursor: pointer;
       font-weight: bold; letter-spacing: 1px;
     }
     #minimap {
