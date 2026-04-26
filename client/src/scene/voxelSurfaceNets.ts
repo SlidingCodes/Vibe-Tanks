@@ -47,19 +47,6 @@ const TEX_TILE_FREQ = 0.3;
 const TRIPLANAR_BLEND_POW = 4.0;
 // Strength of the triplanar normal-map perturbation (0 = flat, 1 = full).
 const TEXTURE_BUMP_STRENGTH = 0.85;
-// Vertex-color tint is applied as `tint = 1 + (vertex - ref) * gain` —
-// i.e. a SHIFT from neutral, not an absolute multiplier. This keeps the
-// texture's natural brightness and only biases warmer/cooler/darker where
-// the palette says to. A plain multiplicative tint turned brown palette
-// regions into flat orange because the baked RGB channels are heavily
-// unequal (R >> G >> B for dirt).
-const VERTEX_TINT_REF = 0.15; // linear-space palette average
-const VERTEX_TINT_GAIN = 2.5;
-// Clamp floor keeps scorch/bedrock from going fully black.
-const VERTEX_TINT_MIN = 0.5;
-// Clamp ceiling keeps sand from blowing out.
-const VERTEX_TINT_MAX = 1.4;
-
 // Brightness multiplier applied to the rock albedo below the bedrock top —
 // reads as "exposed, darker stone" on crater floors that have dug through
 // the surface layer.
@@ -71,6 +58,30 @@ const BEDROCK_DARKEN = 0.45;
 const MACRO_COLOR_FREQ = 0.014; // pattern fully varies over ~70 world units
 const MACRO_COLOR_COOL = new THREE.Vector3(0.82, 0.88, 0.95); // bluish, darker
 const MACRO_COLOR_WARM = new THREE.Vector3(1.16, 1.08, 1.00); // warmer, lighter
+const GROUND_LOW_COLOR = new THREE.Color(0x72685a).convertSRGBToLinear();
+const GROUND_MID_COLOR = new THREE.Color(0x7a5937).convertSRGBToLinear();
+const GROUND_HIGH_COLOR = new THREE.Color(0x688746).convertSRGBToLinear();
+const SAND_COLOR = new THREE.Color(0xdbc19a).convertSRGBToLinear();
+const BEDROCK_COLOR = new THREE.Color(0x6a6a6a).convertSRGBToLinear();
+const SCORCH_COLOR = new THREE.Color(0x080503).convertSRGBToLinear();
+const MACRO_COLOR_STRENGTH = 0.38;
+const ALBEDO_CHROMA_STRENGTH = 0.14;
+const ALBEDO_DETAIL_STRENGTH = 0.55;
+const GROUND_DETAIL_FREQ = 0.085;
+const GROUND_GRAIN_FREQ = 0.42;
+const ROCK_FRACTURE_FREQ = 0.22;
+const DETAIL_WARP_FREQ = 0.09;
+const DETAIL_WARP_STRENGTH = 3.2;
+const PROCEDURAL_ROUGHNESS_STRENGTH = 0.42;
+const PROCEDURAL_SOIL_BUMP_STRENGTH = 0.18;
+const PROCEDURAL_ROCK_BUMP_STRENGTH = 0.34;
+// Extra anti-tiling pass: blend against a second triplanar sample that uses
+// per-tile stochastic rotation/offset and a meaningfully different scale.
+const ANTI_TILE_SECOND_SCALE = 1.45;
+const ANTI_TILE_BLEND_STRENGTH = 0.85;
+const ANTI_TILE_BLEND_FREQ = 0.11;
+const ANTI_TILE_OFFSET_STRENGTH = 0.35;
+const ANTI_TILE_ROTATE_STRENGTH = 3.14159265;
 
 function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.BufferGeometry | null {
   if (!data) return null;
@@ -79,6 +90,9 @@ function toGeometry(data: ReturnType<typeof buildSurfaceNetsChunk>): THREE.Buffe
   geom.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
   if (data.colors) {
     geom.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+  }
+  if (data.terrainData) {
+    geom.setAttribute('terrainData', new THREE.BufferAttribute(data.terrainData, 4));
   }
   geom.setIndex(new THREE.BufferAttribute(data.indices, 1));
   // Explicit bounding sphere so Three.js can frustum-cull this chunk when
@@ -195,13 +209,31 @@ export function createSurfaceNetsTerrain(
     shader.uniforms.uTexTileFreq = { value: TEX_TILE_FREQ };
     shader.uniforms.uTriplanarBlendPow = { value: TRIPLANAR_BLEND_POW };
     shader.uniforms.uTextureBumpStrength = { value: TEXTURE_BUMP_STRENGTH };
-    shader.uniforms.uVertexTintRef = { value: VERTEX_TINT_REF };
-    shader.uniforms.uVertexTintGain = { value: VERTEX_TINT_GAIN };
-    shader.uniforms.uVertexTintMin = { value: VERTEX_TINT_MIN };
-    shader.uniforms.uVertexTintMax = { value: VERTEX_TINT_MAX };
     shader.uniforms.uMacroColorFreq = { value: MACRO_COLOR_FREQ };
     shader.uniforms.uMacroColorCool = { value: MACRO_COLOR_COOL };
     shader.uniforms.uMacroColorWarm = { value: MACRO_COLOR_WARM };
+    shader.uniforms.uGroundLowColor = { value: GROUND_LOW_COLOR };
+    shader.uniforms.uGroundMidColor = { value: GROUND_MID_COLOR };
+    shader.uniforms.uGroundHighColor = { value: GROUND_HIGH_COLOR };
+    shader.uniforms.uSandColor = { value: SAND_COLOR };
+    shader.uniforms.uBedrockColor = { value: BEDROCK_COLOR };
+    shader.uniforms.uScorchColor = { value: SCORCH_COLOR };
+    shader.uniforms.uMacroColorStrength = { value: MACRO_COLOR_STRENGTH };
+    shader.uniforms.uAlbedoChromaStrength = { value: ALBEDO_CHROMA_STRENGTH };
+    shader.uniforms.uAlbedoDetailStrength = { value: ALBEDO_DETAIL_STRENGTH };
+    shader.uniforms.uGroundDetailFreq = { value: GROUND_DETAIL_FREQ };
+    shader.uniforms.uGroundGrainFreq = { value: GROUND_GRAIN_FREQ };
+    shader.uniforms.uRockFractureFreq = { value: ROCK_FRACTURE_FREQ };
+    shader.uniforms.uDetailWarpFreq = { value: DETAIL_WARP_FREQ };
+    shader.uniforms.uDetailWarpStrength = { value: DETAIL_WARP_STRENGTH };
+    shader.uniforms.uProceduralRoughnessStrength = { value: PROCEDURAL_ROUGHNESS_STRENGTH };
+    shader.uniforms.uProceduralSoilBumpStrength = { value: PROCEDURAL_SOIL_BUMP_STRENGTH };
+    shader.uniforms.uProceduralRockBumpStrength = { value: PROCEDURAL_ROCK_BUMP_STRENGTH };
+    shader.uniforms.uAntiTileSecondScale = { value: ANTI_TILE_SECOND_SCALE };
+    shader.uniforms.uAntiTileBlendStrength = { value: ANTI_TILE_BLEND_STRENGTH };
+    shader.uniforms.uAntiTileBlendFreq = { value: ANTI_TILE_BLEND_FREQ };
+    shader.uniforms.uAntiTileOffsetStrength = { value: ANTI_TILE_OFFSET_STRENGTH };
+    shader.uniforms.uAntiTileRotateStrength = { value: ANTI_TILE_ROTATE_STRENGTH };
     shader.uniforms.uBedrockTopY = uBedrockTopY;
     shader.uniforms.uBedrockDarken = uBedrockDarken;
 
@@ -209,15 +241,18 @@ export function createSurfaceNetsTerrain(
       .replace(
         '#include <common>',
         `#include <common>
+attribute vec4 terrainData;
 varying vec3 vWorldPos;
-varying vec3 vWorldNormal;`,
+varying vec3 vWorldNormal;
+varying vec4 vTerrainData;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
 vec4 _vtWorldPos = modelMatrix * vec4(transformed, 1.0);
 vWorldPos = _vtWorldPos.xyz;
-vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
+vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+vTerrainData = terrainData;`,
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -226,6 +261,7 @@ vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`,
         `#include <common>
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
+varying vec4 vTerrainData;
 uniform sampler2D uTrackMap;
 uniform vec2 uTrackWorldMin;
 uniform vec2 uTrackWorldSize;
@@ -248,13 +284,31 @@ uniform sampler2D uRockNormal;
 uniform float uTexTileFreq;
 uniform float uTriplanarBlendPow;
 uniform float uTextureBumpStrength;
-uniform float uVertexTintRef;
-uniform float uVertexTintGain;
-uniform float uVertexTintMin;
-uniform float uVertexTintMax;
 uniform float uMacroColorFreq;
 uniform vec3 uMacroColorCool;
 uniform vec3 uMacroColorWarm;
+uniform vec3 uGroundLowColor;
+uniform vec3 uGroundMidColor;
+uniform vec3 uGroundHighColor;
+uniform vec3 uSandColor;
+uniform vec3 uBedrockColor;
+uniform vec3 uScorchColor;
+uniform float uMacroColorStrength;
+uniform float uAlbedoChromaStrength;
+uniform float uAlbedoDetailStrength;
+uniform float uGroundDetailFreq;
+uniform float uGroundGrainFreq;
+uniform float uRockFractureFreq;
+uniform float uDetailWarpFreq;
+uniform float uDetailWarpStrength;
+uniform float uProceduralRoughnessStrength;
+uniform float uProceduralSoilBumpStrength;
+uniform float uProceduralRockBumpStrength;
+uniform float uAntiTileSecondScale;
+uniform float uAntiTileBlendStrength;
+uniform float uAntiTileBlendFreq;
+uniform float uAntiTileOffsetStrength;
+uniform float uAntiTileRotateStrength;
 uniform float uBedrockTopY;
 uniform float uBedrockDarken;
 
@@ -315,63 +369,241 @@ vec3 vt_triplanarNormal(sampler2D tex, vec3 p, vec3 wn, vec3 w) {
   return normalize(tnX.zyx * w.x + tnY.xzy * w.y + tnZ.xyz * w.z);
 }
 
+vec2 vt_rotate2(vec2 p, float a) {
+  float s = sin(a);
+  float c = cos(a);
+  return mat2(c, -s, s, c) * p;
+}
+
+float vt_tileAngle(vec2 cell, float seed) {
+  return (vt_hash(vec3(cell, seed + 17.3)) - 0.5) * uAntiTileRotateStrength;
+}
+
+vec2 vt_tileOffset(vec2 cell, float seed) {
+  return (
+    vec2(
+      vt_hash(vec3(cell, seed + 31.7)),
+      vt_hash(vec3(cell + vec2(19.1, 7.3), seed + 53.9))
+    ) - 0.5
+  ) * uAntiTileOffsetStrength;
+}
+
+vec4 vt_tileBlendWeights(vec2 f) {
+  vec2 s = smoothstep(vec2(0.2), vec2(0.8), f);
+  return vec4(
+    (1.0 - s.x) * (1.0 - s.y),
+    s.x * (1.0 - s.y),
+    (1.0 - s.x) * s.y,
+    s.x * s.y
+  );
+}
+
+vec3 vt_bombAlbedo2D(sampler2D tex, vec2 uv, float seed) {
+  vec2 cell = floor(uv);
+  vec2 f = fract(uv);
+  vec2 centered = f - 0.5;
+  vec4 bw = vt_tileBlendWeights(f);
+
+  float a00 = vt_tileAngle(cell + vec2(0.0, 0.0), seed);
+  float a10 = vt_tileAngle(cell + vec2(1.0, 0.0), seed);
+  float a01 = vt_tileAngle(cell + vec2(0.0, 1.0), seed);
+  float a11 = vt_tileAngle(cell + vec2(1.0, 1.0), seed);
+
+  vec3 c00 = texture2D(tex, vt_rotate2(centered, a00) + 0.5 + vt_tileOffset(cell + vec2(0.0, 0.0), seed)).rgb;
+  vec3 c10 = texture2D(tex, vt_rotate2(centered, a10) + 0.5 + vt_tileOffset(cell + vec2(1.0, 0.0), seed)).rgb;
+  vec3 c01 = texture2D(tex, vt_rotate2(centered, a01) + 0.5 + vt_tileOffset(cell + vec2(0.0, 1.0), seed)).rgb;
+  vec3 c11 = texture2D(tex, vt_rotate2(centered, a11) + 0.5 + vt_tileOffset(cell + vec2(1.0, 1.0), seed)).rgb;
+
+  return c00 * bw.x + c10 * bw.y + c01 * bw.z + c11 * bw.w;
+}
+
+vec3 vt_bombNormal2D(sampler2D tex, vec2 uv, float seed) {
+  vec2 cell = floor(uv);
+  vec2 f = fract(uv);
+  vec2 centered = f - 0.5;
+  vec4 bw = vt_tileBlendWeights(f);
+
+  float a00 = vt_tileAngle(cell + vec2(0.0, 0.0), seed);
+  float a10 = vt_tileAngle(cell + vec2(1.0, 0.0), seed);
+  float a01 = vt_tileAngle(cell + vec2(0.0, 1.0), seed);
+  float a11 = vt_tileAngle(cell + vec2(1.0, 1.0), seed);
+
+  vec3 n00 = texture2D(tex, vt_rotate2(centered, a00) + 0.5 + vt_tileOffset(cell + vec2(0.0, 0.0), seed)).xyz * 2.0 - 1.0;
+  vec3 n10 = texture2D(tex, vt_rotate2(centered, a10) + 0.5 + vt_tileOffset(cell + vec2(1.0, 0.0), seed)).xyz * 2.0 - 1.0;
+  vec3 n01 = texture2D(tex, vt_rotate2(centered, a01) + 0.5 + vt_tileOffset(cell + vec2(0.0, 1.0), seed)).xyz * 2.0 - 1.0;
+  vec3 n11 = texture2D(tex, vt_rotate2(centered, a11) + 0.5 + vt_tileOffset(cell + vec2(1.0, 1.0), seed)).xyz * 2.0 - 1.0;
+
+  n00.xy = vt_rotate2(n00.xy, a00);
+  n10.xy = vt_rotate2(n10.xy, a10);
+  n01.xy = vt_rotate2(n01.xy, a01);
+  n11.xy = vt_rotate2(n11.xy, a11);
+
+  return normalize(n00 * bw.x + n10 * bw.y + n01 * bw.z + n11 * bw.w);
+}
+
+vec3 vt_triplanarAlbedoAlt(sampler2D tex, vec3 p, vec3 w) {
+  vec3 cx = vt_bombAlbedo2D(tex, p.zy, 3.1);
+  vec3 cy = vt_bombAlbedo2D(tex, p.xz, 17.2);
+  vec3 cz = vt_bombAlbedo2D(tex, p.xy, 29.4);
+  return cx * w.x + cy * w.y + cz * w.z;
+}
+
+vec3 vt_triplanarNormalAlt(sampler2D tex, vec3 p, vec3 wn, vec3 w) {
+  vec3 tnX = vt_bombNormal2D(tex, p.zy, 3.1);
+  vec3 tnY = vt_bombNormal2D(tex, p.xz, 17.2);
+  vec3 tnZ = vt_bombNormal2D(tex, p.xy, 29.4);
+  tnX = vec3(tnX.xy + wn.zy, abs(tnX.z) * wn.x);
+  tnY = vec3(tnY.xy + wn.xz, abs(tnY.z) * wn.y);
+  tnZ = vec3(tnZ.xy + wn.xy, abs(tnZ.z) * wn.z);
+  return normalize(tnX.zyx * w.x + tnY.xzy * w.y + tnZ.xyz * w.z);
+}
+
+float vt_antiTileBlend(vec3 worldPos) {
+  vec3 bp = vec3(worldPos.xz * uAntiTileBlendFreq, worldPos.y * uAntiTileBlendFreq * 0.35);
+  return smoothstep(0.25, 0.75, vt_fbm(bp + vec3(31.4, 9.2, 15.7))) * uAntiTileBlendStrength;
+}
+
+float vt_signedNoise(vec3 p) {
+  return vt_vnoise(p) * 2.0 - 1.0;
+}
+
+vec3 vt_domainWarp(vec3 p) {
+  vec3 q = vec3(
+    vt_signedNoise(p * uDetailWarpFreq + vec3(17.1, 3.7, 11.3)),
+    vt_signedNoise(p * uDetailWarpFreq + vec3(7.4, 19.2, 5.8)),
+    vt_signedNoise(p * uDetailWarpFreq + vec3(13.6, 9.1, 23.4))
+  );
+  return p + q * uDetailWarpStrength;
+}
+
+float vt_ridged(vec3 p) {
+  return 1.0 - abs(vt_signedNoise(p));
+}
+
+float vt_ridgedFbm(vec3 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 3; i++) {
+    v += vt_ridged(p) * a;
+    p *= 2.07;
+    a *= 0.5;
+  }
+  return v / 0.875;
+}
+
+vec3 vt_rockDetailCoords(vec3 worldPos, vec3 wn) {
+  vec3 downhill = vec3(-wn.x, 0.0, -wn.z);
+  float downhillLen = length(downhill);
+  downhill = downhillLen > 1e-4 ? downhill / downhillLen : vec3(1.0, 0.0, 0.0);
+  vec3 across = normalize(vec3(-downhill.z, 0.0, downhill.x));
+  return vec3(
+    dot(worldPos, across) * 0.65,
+    worldPos.y * 1.25,
+    dot(worldPos, downhill) * 1.85
+  );
+}
+
+vec3 vt_groundPalette(float elevT) {
+  if (elevT < 0.5) {
+    float u = smoothstep(0.0, 1.0, elevT * 2.0);
+    return mix(uGroundLowColor, uGroundMidColor, u);
+  }
+  float u = smoothstep(0.0, 1.0, (elevT - 0.5) * 2.0);
+  return mix(uGroundMidColor, uGroundHighColor, u);
+}
+
+vec3 vt_applyMacroTint(vec3 color, vec3 macroTint, float strength) {
+  return color * mix(vec3(1.0), macroTint, strength);
+}
+
 float vt_detailNoise = 0.0;
 float vt_rockMixShared = 0.0;`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-// --- slope-based rock mix used by both the procedural and textured paths.
-//     Slope = sin(angle from vertical-up), so a 30° crater rim already
-//     reads as half-rock rather than nearly pure ground. ---
+// --- slope-based rock mix shared by base colour and normal paths. ---
 vec3 vt_wn = normalize(vWorldNormal);
 float vt_slope = length(vec2(vt_wn.x, vt_wn.z));
 vt_rockMixShared = smoothstep(uRockSlopeEdge0, uRockSlopeEdge1, vt_slope) * uRockMaxMix;
 
+float vt_elev = clamp(vTerrainData.x, 0.0, 1.0);
+float vt_beach = clamp(vTerrainData.y, 0.0, 1.0);
+float vt_scorch = clamp(vTerrainData.z, 0.0, 1.0);
+float vt_bedrockAttr = clamp(vTerrainData.w, 0.0, 1.0);
+float vt_bedrockWorld = 1.0 - smoothstep(uBedrockTopY, uBedrockTopY + 0.5, vWorldPos.y);
+float vt_bedrock = max(vt_bedrockAttr, vt_bedrockWorld);
+vt_rockMixShared = max(vt_rockMixShared, vt_bedrock);
+
+float vt_macro = vt_fbm(vec3(vWorldPos.xz * uMacroColorFreq, 0.0));
+vec3 vt_macroTint = mix(uMacroColorCool, uMacroColorWarm, vt_macro);
+
+vec3 vt_groundBase = vt_groundPalette(vt_elev);
+vt_groundBase = mix(vt_groundBase, uSandColor, vt_beach);
+vt_groundBase = vt_applyMacroTint(vt_groundBase, vt_macroTint, uMacroColorStrength);
+
+vec3 vt_rockBase = mix(uRockColor, uBedrockColor, vt_bedrock);
+vt_rockBase = vt_applyMacroTint(vt_rockBase, vt_macroTint, uMacroColorStrength * 0.45);
+vt_rockBase *= mix(1.0, uBedrockDarken, vt_bedrock);
+
+vec3 vt_baseAlbedo = mix(vt_groundBase, vt_rockBase, vt_rockMixShared);
+vt_baseAlbedo = mix(vt_baseAlbedo, uScorchColor, vt_scorch);
+
+diffuseColor.rgb = vt_baseAlbedo;
+
+vec3 vt_detailPos = vt_domainWarp(vWorldPos);
+float vt_groundPatch = vt_fbm(vt_detailPos * uGroundDetailFreq);
+float vt_groundGrain = vt_vnoise(vt_detailPos * uGroundGrainFreq + vec3(5.3, 11.7, 2.1));
+float vt_groundClump = smoothstep(0.34, 0.78, vt_groundPatch);
+float vt_groundSpark = smoothstep(0.45, 0.85, vt_groundGrain);
+float vt_groundDetailMask = clamp(1.0 - vt_beach * 0.45 - vt_scorch * 0.72, 0.0, 1.0);
+vec3 vt_groundDetail = mix(vec3(0.93, 0.98, 0.90), vec3(1.05, 1.03, 0.96), vt_groundClump);
+vt_groundDetail *= mix(0.93, 1.08, vt_groundSpark);
+vt_groundDetail = mix(vec3(1.0), vt_groundDetail, vt_groundDetailMask);
+
+vec3 vt_rockDetailPos = vt_rockDetailCoords(vt_detailPos, vt_wn) * uRockFractureFreq;
+float vt_rockFracture = smoothstep(0.18, 0.82, vt_ridgedFbm(vt_rockDetailPos));
+float vt_rockChips = smoothstep(0.42, 0.88, vt_ridged(vt_rockDetailPos * 2.4 + vec3(3.7, 9.1, 14.6)));
+float vt_rockDetailMask = clamp(1.0 - vt_scorch * 0.38, 0.0, 1.0);
+vec3 vt_rockDetail = mix(vec3(0.85, 0.88, 0.92), vec3(1.07, 1.03, 0.99), vt_rockFracture);
+vt_rockDetail *= mix(0.91, 1.09, vt_rockChips);
+vt_rockDetail = mix(vec3(1.0), vt_rockDetail, vt_rockDetailMask);
+
+float vt_transition = vt_vnoise(vt_detailPos * (uGroundDetailFreq * 0.65) + vec3(21.4, 7.6, 14.3));
+float vt_transitionBand = 1.0 - abs(vt_rockMixShared * 2.0 - 1.0);
+float vt_detailBlend = clamp(vt_rockMixShared + (vt_transition - 0.5) * 0.12 * vt_transitionBand, 0.0, 1.0);
+vec3 vt_materialDetail = mix(vt_groundDetail, vt_rockDetail, vt_detailBlend);
+diffuseColor.rgb *= vt_materialDetail;
+
+float vt_groundSignal = clamp(vt_groundPatch * 0.68 + vt_groundGrain * 0.32, 0.0, 1.0);
+float vt_rockSignal = clamp(vt_rockFracture * 0.72 + vt_rockChips * 0.28, 0.0, 1.0);
+vt_detailNoise = mix(vt_groundSignal, vt_rockSignal, vt_detailBlend);
+
 if (uUseTextures > 0.5) {
-  // Textured path: triplanar ground + rock, blended by slope. The baked
-  // vertex color acts as a shift from a neutral reference — warmer in
-  // brown/sand bands, darker in scorch/bedrock — not a full multiplier.
-  vec3 vt_tp = vWorldPos * uTexTileFreq;
+  vec3 vt_tpA = vWorldPos * uTexTileFreq;
   vec3 vt_w = vt_triWeights(vt_wn);
+  vec3 vt_tpB = vWorldPos * (uTexTileFreq * uAntiTileSecondScale);
+  float vt_mix = vt_antiTileBlend(vWorldPos);
 
-  // Bedrock factor: 1 at or below the bedrock top, ramps to 0 over a 0.5m
-  // band above it — same profile the mesher uses for its vertex-color grey
-  // bias, so the textured override lands on exactly the same vertices.
-  float vt_bedrock = 1.0 - smoothstep(uBedrockTopY, uBedrockTopY + 0.5, vWorldPos.y);
-  // Below bedrock top the rock texture takes over completely, regardless
-  // of slope — exposed stone on crater floors, not ground atop stone.
-  vt_rockMixShared = max(vt_rockMixShared, vt_bedrock);
+  vec3 vt_groundA = vt_triplanarAlbedo(uGroundAlbedo, vt_tpA, vt_w);
+  vec3 vt_groundB = vt_triplanarAlbedoAlt(uGroundAlbedo, vt_tpB, vt_w);
+  vec3 vt_groundTex = mix(vt_groundA, vt_groundB, vt_mix);
+  vec3 vt_rockA = vt_triplanarAlbedo(uRockAlbedo, vt_tpA, vt_w);
+  vec3 vt_rockB = vt_triplanarAlbedoAlt(uRockAlbedo, vt_tpB, vt_w);
+  vec3 vt_rockTex = mix(vt_rockA, vt_rockB, vt_mix);
+  vec3 vt_texAlbedo = mix(vt_groundTex, vt_rockTex, vt_rockMixShared);
 
-  vec3 vt_ground = vt_triplanarAlbedo(uGroundAlbedo, vt_tp, vt_w);
-  vec3 vt_rock = vt_triplanarAlbedo(uRockAlbedo, vt_tp, vt_w);
-  vec3 vt_texAlbedo = mix(vt_ground, vt_rock, vt_rockMixShared);
+  float vt_texLuma = dot(vt_texAlbedo, vec3(0.299, 0.587, 0.114));
+  vec3 vt_texChroma = clamp(vt_texAlbedo / max(vt_texLuma, 1e-4), vec3(0.65), vec3(1.6));
 
-  vec3 vt_tint = vec3(1.0) + (diffuseColor.rgb - vec3(uVertexTintRef)) * uVertexTintGain;
-  vt_tint = clamp(vt_tint, vec3(uVertexTintMin), vec3(uVertexTintMax));
-  diffuseColor.rgb = vt_texAlbedo * vt_tint;
-
-  // Macro-scale region colour: a slow-varying fbm shifts the overall tint
-  // cool↔warm so neighbouring repetitions of the same tile read slightly
-  // different. No extra texture fetches — much cheaper than UV rotation
-  // and doesn't produce the concentric swirl artefact.
-  float vt_macro = vt_fbm(vec3(vWorldPos.xz * uMacroColorFreq, 0.0));
-  diffuseColor.rgb *= mix(uMacroColorCool, uMacroColorWarm, vt_macro);
-
-  // Darken rock further in bedrock regions — reads as recessed, shaded stone.
-  diffuseColor.rgb *= mix(1.0, uBedrockDarken, vt_bedrock);
-
-  // A very subtle noise modulation to kill any residual tiling feel.
-  vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
-  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * 0.08);
+  diffuseColor.rgb *= mix(vec3(1.0), vt_texChroma, uAlbedoChromaStrength * 0.55);
+  diffuseColor.rgb *= (1.0 + (vt_texLuma - 0.5) * (uAlbedoDetailStrength * 0.45));
+  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * 0.04);
 } else {
-  // Procedural fallback used while the textures are still loading.
-  diffuseColor.rgb = mix(diffuseColor.rgb, uRockColor, vt_rockMixShared);
-  vt_detailNoise = vt_fbm(vWorldPos * uDetailFreq);
-  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * uDetailStrength);
+  diffuseColor.rgb *= (1.0 + (vt_detailNoise - 0.5) * (uDetailStrength * 0.4));
 }
 
-// --- tread-track decal (always on; sits on top of whichever base path ran) ---
+// --- tread-track decal stays last so it reads on soil and rock alike. ---
 if (uTrackEnabled > 0.5) {
   vec2 trackUv = (vWorldPos.xz - uTrackWorldMin) / uTrackWorldSize;
   if (trackUv.x >= 0.0 && trackUv.x <= 1.0 && trackUv.y >= 0.0 && trackUv.y <= 1.0) {
@@ -384,36 +616,65 @@ if (uTrackEnabled > 0.5) {
       .replace(
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
-// Tie roughness to the detail noise so highlights break up across terrain.
-roughnessFactor = clamp(roughnessFactor * (0.92 + vt_detailNoise * 0.18), 0.0, 1.0);`,
+// Bias roughness upward and break it up with the procedural detail fields so
+// flat ground stops reading smooth/plastic under moving light.
+roughnessFactor = clamp(
+  roughnessFactor * (1.08 + (vt_detailNoise - 0.5) * uProceduralRoughnessStrength),
+  0.0,
+  1.0
+);`,
       )
       .replace(
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
+vec3 vt_procPos = vt_domainWarp(vWorldPos);
+vec3 vt_procRockPos = vt_rockDetailCoords(vt_procPos, vt_wn) * uRockFractureFreq;
+vec3 vt_soilProc = vec3(
+  vt_signedNoise(vt_procPos * uGroundGrainFreq + vec3(3.1, 17.2, 9.4)),
+  vt_signedNoise(vt_procPos * uGroundDetailFreq + vec3(13.4, 5.6, 21.8)),
+  vt_signedNoise(vt_procPos * uGroundGrainFreq + vec3(27.1, 1.9, 15.3))
+);
+vec3 vt_rockProc = vec3(
+  vt_signedNoise(vt_procRockPos + vec3(7.4, 15.1, 3.2)),
+  vt_ridged(vt_procRockPos * 2.1 + vec3(11.8, 4.3, 19.6)) * 2.0 - 1.0,
+  vt_signedNoise(vt_procRockPos + vec3(21.5, 8.3, 11.7))
+);
+vec3 vt_procNormal = mix(
+  vt_soilProc * uProceduralSoilBumpStrength,
+  vt_rockProc * uProceduralRockBumpStrength,
+  vt_rockMixShared
+);
+vt_procNormal -= dot(vt_procNormal, vt_wn) * vt_wn;
+
 if (uUseTextures > 0.5) {
-  // --- textured path: triplanar normal map blended ground↔rock by slope,
-  //     then rotated from world to view space before overwriting the
-  //     default shading normal. ---
-  vec3 vt_ntp = vWorldPos * uTexTileFreq;
+  // --- textured path: keep the triplanar normals, then add procedural
+  //     breakup so lighting still reads grass/soil/rock when albedo stays subtle. ---
+  vec3 vt_ntpA = vWorldPos * uTexTileFreq;
   vec3 vt_nw = vt_triWeights(vt_wn);
-  vec3 vt_ngw = vt_triplanarNormal(uGroundNormal, vt_ntp, vt_wn, vt_nw);
-  vec3 vt_nrw = vt_triplanarNormal(uRockNormal,   vt_ntp, vt_wn, vt_nw);
+  vec3 vt_ntpB = vWorldPos * (uTexTileFreq * uAntiTileSecondScale);
+  float vt_nmix = vt_antiTileBlend(vWorldPos);
+  vec3 vt_ngwA = vt_triplanarNormal(uGroundNormal, vt_ntpA, vt_wn, vt_nw);
+  vec3 vt_ngwB = vt_triplanarNormalAlt(uGroundNormal, vt_ntpB, vt_wn, vt_nw);
+  vec3 vt_ngw = normalize(mix(vt_ngwA, vt_ngwB, vt_nmix));
+  vec3 vt_nrwA = vt_triplanarNormal(uRockNormal, vt_ntpA, vt_wn, vt_nw);
+  vec3 vt_nrwB = vt_triplanarNormalAlt(uRockNormal, vt_ntpB, vt_wn, vt_nw);
+  vec3 vt_nrw = normalize(mix(vt_nrwA, vt_nrwB, vt_nmix));
   vec3 vt_nWorld = normalize(mix(vt_ngw, vt_nrw, vt_rockMixShared));
-  // Blend the perturbed world-normal back toward the geometry normal so the
-  // bump stays on a texture-detail scale rather than flipping the surface.
+  vt_nWorld = normalize(vt_nWorld + vt_procNormal);
   vt_nWorld = normalize(mix(vt_wn, vt_nWorld, uTextureBumpStrength));
   normal = normalize(mat3(viewMatrix) * vt_nWorld);
 } else {
-  // --- procedural fallback: noise-gradient bump used while textures load. ---
+  // --- procedural fallback: combine the old soft noise-gradient bump with the
+  //     new material-specific breakup so the no-texture path still feels rich. ---
   float vt_eps = 0.4;
-  vec3 vt_bp = vWorldPos * uBumpFreq;
+  vec3 vt_bp = vt_procPos * uBumpFreq;
   float vt_nx = vt_vnoise(vt_bp + vec3(vt_eps, 0.0, 0.0)) - vt_vnoise(vt_bp - vec3(vt_eps, 0.0, 0.0));
   float vt_ny = vt_vnoise(vt_bp + vec3(0.0, vt_eps, 0.0)) - vt_vnoise(vt_bp - vec3(0.0, vt_eps, 0.0));
   float vt_nz = vt_vnoise(vt_bp + vec3(0.0, 0.0, vt_eps)) - vt_vnoise(vt_bp - vec3(0.0, 0.0, vt_eps));
   vec3 vt_gradWorld = vec3(vt_nx, vt_ny, vt_nz);
   vt_gradWorld -= dot(vt_gradWorld, vt_wn) * vt_wn;
-  vec3 vt_gradView = mat3(viewMatrix) * vt_gradWorld;
-  normal = normalize(normal - vt_gradView * uBumpStrength);
+  vec3 vt_nWorld = normalize(vt_wn + vt_procNormal + vt_gradWorld * (uBumpStrength * 0.55));
+  normal = normalize(mat3(viewMatrix) * vt_nWorld);
 }`,
       );
   };

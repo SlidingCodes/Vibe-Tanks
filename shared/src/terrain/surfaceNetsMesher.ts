@@ -31,9 +31,12 @@ export interface SurfaceNetsChunkMesh {
   indices: Uint32Array;
   /** Per-vertex gradient-derived outward normals. length = 3 * vertexCount. */
   normals: Float32Array;
-  /** Optional per-vertex RGB colors in [0,1]. Only emitted when options.scorchAt
-   *  is provided to buildSurfaceNetsChunk. length = 3 * vertexCount. */
+  /** Optional per-vertex RGB colors in [0,1]. Emitted when terrain shading
+   *  metadata is requested. length = 3 * vertexCount. */
   colors?: Float32Array;
+  /** Optional per-vertex terrain masks in [0,1]: elevation, beach, scorch,
+   *  bedrock. length = 4 * vertexCount. */
+  terrainData?: Float32Array;
 }
 
 export interface SurfaceNetsOptions {
@@ -118,6 +121,7 @@ export function buildSurfaceNetsChunk(
   const normals: number[] = [];
   const indices: number[] = [];
   const colors: number[] = [];
+  const terrainData: number[] = [];
   const scorchAt = options.scorchAt;
   const elevationRange = options.elevationRange;
   const bedrockTopY = options.bedrockTopY;
@@ -193,19 +197,21 @@ export function buildSurfaceNetsChunk(
         positions.push(wx, wy, wz);
         normals.push(-gx * invMag, -gy * invMag, -gz * invMag);
         if (emitColors) {
+          let elevT = 0;
+          let beachT = 0;
           // 1) Base tone from the vertex's elevation, matching the original
           //    heightmap palette (gray → brown → green).
           let baseR = BASE_R, baseG = BASE_G, baseB = BASE_B;
           if (elevationRange) {
             const t = (wy - elevMin) / elevSpan;
-            const tc = t < 0 ? 0 : t > 1 ? 1 : t;
-            if (tc < 0.5) {
-              const u = smoothStep01(tc / 0.5);
+            elevT = t < 0 ? 0 : t > 1 ? 1 : t;
+            if (elevT < 0.5) {
+              const u = smoothStep01(elevT / 0.5);
               baseR = LOW_R + (MID_R - LOW_R) * u;
               baseG = LOW_G + (MID_G - LOW_G) * u;
               baseB = LOW_B + (MID_B - LOW_B) * u;
             } else {
-              const u = smoothStep01((tc - 0.5) / 0.5);
+              const u = smoothStep01((elevT - 0.5) / 0.5);
               baseR = MID_R + (HIGH_R - MID_R) * u;
               baseG = MID_G + (HIGH_G - MID_G) * u;
               baseB = MID_B + (HIGH_B - MID_B) * u;
@@ -216,7 +222,7 @@ export function buildSurfaceNetsChunk(
             // as sand before hitting the water.
             const beachSoftness = 2.5;
             const beachThreshold = SEA_LEVEL + 1.2;
-            const beachT = smoothStep01((beachThreshold - wy) / beachSoftness + 0.5);
+            beachT = smoothStep01((beachThreshold - wy) / beachSoftness + 0.5);
             baseR += (SAND_R - baseR) * beachT;
             baseG += (SAND_G - baseG) * beachT;
             baseB += (SAND_B - baseB) * beachT;
@@ -225,7 +231,7 @@ export function buildSurfaceNetsChunk(
           //    in a separate decal texture by the client terrain shader, so
           //    they no longer participate in per-vertex color baking.
           let r = baseR, g = baseG, b = baseB;
-          let s = 0;
+          let scorchT = 0;
           if (scorchAt) {
             const avg = (
               scorchAt(ci,     cj,     ck    ) +
@@ -237,20 +243,22 @@ export function buildSurfaceNetsChunk(
               scorchAt(ci,     cj + 1, ck + 1) +
               scorchAt(ci + 1, cj + 1, ck + 1)
             ) / (8 * 255);
-            s = avg > 1 ? 1 : avg;
+            scorchT = avg > 1 ? 1 : avg;
           }
-          r = r + (BURNT_R - r) * s;
-          g = g + (BURNT_G - g) * s;
-          b = b + (BURNT_B - b) * s;
+          r = r + (BURNT_R - r) * scorchT;
+          g = g + (BURNT_G - g) * scorchT;
+          b = b + (BURNT_B - b) * scorchT;
+          let bedrockT = 0;
           if (bedrockTopY !== undefined) {
             // Smoothly take over below bedrockTopY: 1 at the surface, 0 a
             // BEDROCK_BLEND_HEIGHT band above. Anything well below is fully grey.
-            const m = smoothStep01((bedrockTopY - wy) / BEDROCK_BLEND_HEIGHT + 1);
-            r = r + (BED_R - r) * m;
-            g = g + (BED_G - g) * m;
-            b = b + (BED_B - b) * m;
+            bedrockT = smoothStep01((bedrockTopY - wy) / BEDROCK_BLEND_HEIGHT + 1);
+            r = r + (BED_R - r) * bedrockT;
+            g = g + (BED_G - g) * bedrockT;
+            b = b + (BED_B - b) * bedrockT;
           }
           colors.push(r, g, b);
+          terrainData.push(elevT, beachT, scorchT, bedrockT);
         }
         dualIdx[dualKey(ci, cj, ck)] = idx;
       }
@@ -307,6 +315,9 @@ export function buildSurfaceNetsChunk(
   };
   if (emitColors && colors.length > 0) {
     result.colors = new Float32Array(colors);
+  }
+  if (emitColors && terrainData.length > 0) {
+    result.terrainData = new Float32Array(terrainData);
   }
   return result;
 }

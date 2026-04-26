@@ -29,7 +29,7 @@ describe('buildSurfaceNetsChunk', () => {
     expect(mesh!.indices.length % 3).toBe(0);
   });
 
-  it('emits per-vertex colors when an elevationRange is provided', () => {
+  it('emits per-vertex colors and terrain masks when terrain shading data is requested', () => {
     const g = new VoxelGrid({
       sizeX: SURFACE_NETS_CHUNK_SIZE * 2,
       sizeY: SURFACE_NETS_CHUNK_SIZE * 2,
@@ -38,14 +38,25 @@ describe('buildSurfaceNetsChunk', () => {
       minYCells: -SURFACE_NETS_CHUNK_SIZE,
     });
     g.seedFromNoise(flatSampler(2));
-    const mesh = buildSurfaceNetsChunk(g, 0, 1, 0, { elevationRange: { min: 0, max: 4 } });
+    const mesh = buildSurfaceNetsChunk(g, 0, 1, 0, {
+      elevationRange: { min: 0, max: 4 },
+      bedrockTopY: -10,
+      scorchAt: () => 64,
+    });
     expect(mesh).not.toBeNull();
     expect(mesh!.colors).toBeDefined();
     expect(mesh!.colors!.length).toBe(mesh!.positions.length);
+    expect(mesh!.terrainData).toBeDefined();
+    expect(mesh!.terrainData!.length).toBe((mesh!.positions.length / 3) * 4);
     // Colors in the [0, 1] range (linear).
     for (let i = 0; i < mesh!.colors!.length; i++) {
       expect(mesh!.colors![i]).toBeGreaterThanOrEqual(0);
       expect(mesh!.colors![i]).toBeLessThanOrEqual(1);
+    }
+    // Terrain masks in the [0, 1] range.
+    for (let i = 0; i < mesh!.terrainData!.length; i++) {
+      expect(mesh!.terrainData![i]).toBeGreaterThanOrEqual(0);
+      expect(mesh!.terrainData![i]).toBeLessThanOrEqual(1);
     }
   });
 });
