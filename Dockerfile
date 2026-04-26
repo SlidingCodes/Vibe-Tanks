@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim AS client-build
 WORKDIR /app
 COPY client/package*.json client/
-RUN npm ci --prefix client
+RUN npm ci --prefix client && ln -s /app/client/node_modules /app/node_modules
 COPY client client
 COPY shared shared
 RUN npm run build --prefix client
@@ -9,7 +9,7 @@ RUN npm run build --prefix client
 FROM node:20-bookworm-slim AS server-build
 WORKDIR /app
 COPY server/package*.json server/
-RUN npm ci --prefix server
+RUN npm ci --prefix server && ln -s /app/server/node_modules /app/node_modules
 COPY server server
 COPY shared shared
 RUN npm run build --prefix server
