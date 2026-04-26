@@ -24,7 +24,20 @@ async function main(): Promise<void> {
   // Rapier wasm must be loaded before any RapierVoxelWorld is constructed.
   await initRapier();
 
-  const httpServer = createServer();
+  const httpServer = createServer((req, res) => {
+    if (req.url === '/healthz') {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('ok');
+      return;
+    }
+
+    if (req.url?.startsWith('/socket.io')) {
+      return;
+    }
+
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  });
   const io = new Server<ClientEvents, ServerEvents>(httpServer, {
     cors: { origin: '*' },
     // Gzip payloads over 1 KB. The voxel_snapshot (~1.9 MB raw) shrinks

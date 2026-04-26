@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "npx ts-node -r tsconfig-paths/register src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "start": "node dist/server/src/index.js"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.19.3",
