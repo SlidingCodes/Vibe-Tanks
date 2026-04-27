@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   deploy:
+    environment: deploy
     runs-on: ubuntu-latest
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
