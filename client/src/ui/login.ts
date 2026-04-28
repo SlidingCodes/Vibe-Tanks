@@ -271,17 +271,18 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
-    const modeSegment = document.getElementById('mode-segment') as HTMLDivElement;
-    const inviteRow = document.getElementById('invite-code-row') as HTMLDivElement;
     const inviteInput = document.getElementById('invite-code-input') as HTMLInputElement;
     const errorBox = document.getElementById('login-error') as HTMLDivElement;
-    const settingsRow = document.getElementById('settings-row') as HTMLDivElement;
+    const openCreateLink = document.getElementById('open-create-link') as HTMLButtonElement;
+    const createBack = document.getElementById('create-back') as HTMLButtonElement;
+    const createSubmit = document.getElementById('create-submit') as HTMLButtonElement;
     const botsSlider = document.getElementById('settings-bots-slider') as HTMLInputElement;
     const botsValue = document.getElementById('settings-bots-value') as HTMLSpanElement;
     const weaponsGrid = document.getElementById('settings-weapons') as HTMLDivElement;
     const weaponsActions = document.getElementById('settings-weapons-actions') as HTMLDivElement;
 
     overlay.style.display = '';
+    overlay.classList.remove('creating');
     if (initialError) {
       errorBox.textContent = initialError;
       errorBox.style.display = 'block';
@@ -289,28 +290,25 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       errorBox.style.display = 'none';
     }
 
-    let selectedMode: JoinMode = 'quick';
     inviteInput.value = '';
 
-    const submitLabel = (m: JoinMode): string => {
-      if (m === 'join_private') return 'JOIN PRIVATE';
-      if (m === 'create_private') return 'CREATE PRIVATE';
-      return 'JOIN BATTLE';
+    // JOIN button label tracks the code field: empty = quick-join, 4 chars
+    // = "JOIN K7M2", 1-3 chars = disabled (incomplete code). Removes the
+    // need for an explicit mode toggle — the input itself is the switch.
+    const refreshJoinLabel = (): void => {
+      const code = inviteInput.value;
+      if (code.length === 0) {
+        submit.textContent = 'QUICK JOIN';
+        submit.disabled = false;
+      } else if (code.length === 4) {
+        submit.textContent = `JOIN ${code}`;
+        submit.disabled = false;
+      } else {
+        submit.textContent = `JOIN ${code}…`;
+        submit.disabled = true;
+      }
     };
-    submit.textContent = submitLabel(selectedMode);
-
-    const setMode = (m: JoinMode): void => {
-      selectedMode = m;
-      modeSegment.querySelectorAll('.mode-btn').forEach((b) => {
-        const el = b as HTMLButtonElement;
-        el.classList.toggle('active', el.dataset.mode === m);
-      });
-      inviteRow.style.display = m === 'join_private' ? 'block' : 'none';
-      settingsRow.style.display = m === 'create_private' ? 'block' : 'none';
-      submit.textContent = submitLabel(m);
-      // Clear stale validation errors when the user changes intent.
-      errorBox.style.display = 'none';
-    };
+    refreshJoinLabel();
 
     // Build the weapon allow-list checkboxes once. All non-default
     // (consumable) weapons are listed; standard is implicit (always
@@ -352,15 +350,21 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       botsValue.textContent = botsSlider.value;
     });
 
-    setMode('quick');
-    modeSegment.querySelectorAll('.mode-btn').forEach((btn) => {
-      const el = btn as HTMLButtonElement;
-      el.addEventListener('click', () => setMode(el.dataset.mode as JoinMode));
-    });
+    // The create panel is folded inside the overlay and slides into view
+    // only when the user opts in. Until then there's a single login
+    // panel — quick-join is the default-zero-friction path.
+    const setCreating = (on: boolean): void => {
+      overlay.classList.toggle('creating', on);
+      errorBox.style.display = 'none';
+    };
+    openCreateLink.addEventListener('click', () => setCreating(true));
+    createBack.addEventListener('click', () => setCreating(false));
 
-    // Force uppercase + strip non-alphabet chars as the user types.
+    // Force uppercase + strip non-alphabet chars as the user types and
+    // refresh the JOIN button label after every keystroke.
     const onCodeInput = (): void => {
       inviteInput.value = inviteInput.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+      refreshJoinLabel();
     };
     inviteInput.addEventListener('input', onCodeInput);
 
@@ -440,22 +444,16 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     };
     flagSearch.addEventListener('input', onFilterFlags);
 
-    const done = () => {
+    const done = (creating: boolean): void => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
-      // For join_private, require a 4-char code before dismissing. The
-      // server would reject otherwise and we'd just bounce back here, so
-      // catching it client-side avoids an empty round-trip.
-      if (selectedMode === 'join_private' && inviteInput.value.length !== 4) {
-        errorBox.textContent = 'Enter a 4-letter invite code.';
-        errorBox.style.display = 'block';
-        inviteInput.focus();
-        return;
-      }
+      let mode: JoinMode;
+      let inviteCode: string | undefined;
       let settings: RoomSettings | undefined;
-      if (selectedMode === 'create_private') {
+      if (creating) {
+        mode = 'create_private';
         // Empty allow-list = "no restriction", which is what an all-on
         // grid means semantically. Send [] in that case so the server
-        // doesn't have to handle "all 13 IDs" as a special case.
+        // doesn't carry a 13-id list for the equivalent default.
         const allowed = checkedIds.size === consumables.length
           ? []
           : Array.from(checkedIds);
@@ -463,26 +461,42 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           maxBots: parseInt(botsSlider.value, 10),
           weaponAllowed: allowed,
         };
+      } else if (inviteInput.value.length === 4) {
+        mode = 'join_private';
+        inviteCode = inviteInput.value;
+      } else if (inviteInput.value.length === 0) {
+        mode = 'quick';
+      } else {
+        // Defensive: the JOIN button is disabled for 1-3 chars, but if a
+        // user pressed Enter we still bail with a friendly message.
+        errorBox.textContent = 'Match code must be 4 letters, or leave blank.';
+        errorBox.style.display = 'block';
+        inviteInput.focus();
+        return;
       }
       overlay.style.display = 'none';
-      submit.removeEventListener('click', done);
+      submit.removeEventListener('click', onSubmitClick);
+      createSubmit.removeEventListener('click', onCreateClick);
       nameInput.removeEventListener('keydown', onKey);
       inviteInput.removeEventListener('keydown', onKey);
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({
-        name,
-        color: selected,
-        flagId: selectedFlag,
-        mode: selectedMode,
-        inviteCode: selectedMode === 'join_private' ? inviteInput.value : undefined,
-        settings,
-      });
+      resolve({ name, color: selected, flagId: selectedFlag, mode, inviteCode, settings });
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };
+    const onSubmitClick = (): void => done(false);
+    const onCreateClick = (): void => done(true);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Enter') return;
+      if (overlay.classList.contains('creating')) {
+        done(true);
+      } else if (!submit.disabled) {
+        done(false);
+      }
+    };
 
-    submit.addEventListener('click', done);
+    submit.addEventListener('click', onSubmitClick);
+    createSubmit.addEventListener('click', onCreateClick);
     nameInput.addEventListener('keydown', onKey);
     inviteInput.addEventListener('keydown', onKey);
     nameInput.focus();

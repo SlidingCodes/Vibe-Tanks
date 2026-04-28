@@ -250,27 +250,62 @@
     #login-panel #login-submit:hover {
       background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
     }
-    /* Mode picker — segmented row of 3 buttons (QUICK / JOIN / CREATE).
-       Stays inside the gunmetal/khaki palette of the rest of the panel. */
-    #mode-segment {
-      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0;
-      border: 1px solid rgba(120, 130, 100, 0.45); border-radius: 2px;
-      overflow: hidden; margin-top: 0;
-    }
-    .mode-btn {
-      padding: 9px 0; font-family: monospace; font-size: 11px; letter-spacing: 2px;
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
-      border: none; cursor: pointer; text-transform: uppercase;
-      transition: background 0.1s, color 0.1s;
-    }
-    .mode-btn + .mode-btn { border-left: 1px solid rgba(120, 130, 100, 0.3); }
-    .mode-btn.active { background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%); color: #1a1814; font-weight: bold; }
-    .mode-btn:hover:not(.active) { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
     #invite-code-input {
       letter-spacing: 6px !important; text-transform: uppercase !important;
       text-align: center !important; font-size: 18px !important; font-weight: bold;
     }
-    /* Per-room settings — only shown in create_private mode. */
+    /* Code-input label has a hint for the optional state. */
+    #login-panel label .hint { opacity: 0.55; letter-spacing: 0; text-transform: none; font-size: 10px; }
+    /* Subtle text-link affordance to open the create-private side panel. */
+    #open-create-link {
+      display: block; width: 100%; margin-top: 12px; padding: 6px 0;
+      background: transparent; border: none; color: #c0b890;
+      font-family: monospace; font-size: 11px; letter-spacing: 2px;
+      cursor: pointer; text-transform: uppercase;
+    }
+    #open-create-link:hover { color: #e8d8a0; }
+    #login-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+    /* Second panel — slides in only when the user opens "Create private". */
+    #login-create-panel {
+      position: absolute; right: 414px; top: 50%;
+      transform: translateY(-50%);
+      background: rgba(20, 22, 16, 0.78);
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      padding: 24px 28px; border-radius: 3px;
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      width: 280px; z-index: 2; display: none;
+    }
+    #login-overlay.creating #login-create-panel { display: block; }
+    #login-create-panel h3 {
+      margin: 0 0 16px; font-size: 13px; letter-spacing: 4px;
+      color: #d8b058; text-align: center; font-weight: bold;
+    }
+    #login-create-panel label {
+      font-size: 12px; opacity: 0.85; display: block;
+      margin: 14px 0 4px; letter-spacing: 2px; color: #c0b890;
+    }
+    #login-create-panel label:first-of-type { margin-top: 0; }
+    #create-actions {
+      display: grid; grid-template-columns: 1fr 1.5fr; gap: 8px; margin-top: 16px;
+    }
+    #create-actions button {
+      padding: 11px 0; font-family: monospace; font-size: 12px;
+      letter-spacing: 3px; text-transform: uppercase; cursor: pointer;
+      border-radius: 2px; font-weight: bold;
+    }
+    #create-back {
+      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+    }
+    #create-back:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+    #create-submit {
+      background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
+      color: #1a1814; border: 1px solid #6a4828;
+      box-shadow: inset 0 1px 0 rgba(255,230,170,0.3), 0 2px 4px rgba(0,0,0,0.5);
+    }
+    #create-submit:hover { background: linear-gradient(180deg, #d8b058 0%, #a08038 100%); }
+    /* Per-room settings — sliders + weapon toggles. */
     #settings-bots-row { display: flex; align-items: baseline; gap: 8px; }
     #settings-bots-value {
       color: #d8b058; font-weight: bold; font-variant-numeric: tabular-nums;
@@ -337,6 +372,23 @@
         max-height: 72px; margin-top: 6px;
       }
       #login-panel button { margin-top: 14px; padding: 10px; }
+      /* Mobile create flow: both panels stacked + overlay scrolls. The
+         pilot panel un-anchors from the bottom so the create panel can
+         sit above it inside the scroll container. */
+      #login-overlay.creating {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 60px 0 12px;
+      }
+      #login-overlay.creating #login-panel {
+        position: relative; right: auto; left: auto; bottom: auto;
+        margin: 0 12px;
+      }
+      #login-create-panel {
+        right: auto; left: auto; transform: none;
+        position: relative; top: auto;
+        width: auto; margin: 0 12px 12px;
+      }
     }
     /* Damage popups — stacked animation layers so rise + shake + flicker
        don't stomp each other's transform property. */
@@ -738,30 +790,28 @@
       <label>FLAG</label>
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
-      <label>MODE</label>
-      <div id="mode-segment">
-        <button type="button" class="mode-btn active" data-mode="quick">Quick</button>
-        <button type="button" class="mode-btn" data-mode="join_private">Join</button>
-        <button type="button" class="mode-btn" data-mode="create_private">Create</button>
-      </div>
-      <div id="invite-code-row" style="display:none">
-        <label for="invite-code-input">INVITE CODE</label>
-        <input id="invite-code-input" type="text" maxlength="4" autocomplete="off" placeholder="K7M2" />
-      </div>
-      <div id="settings-row" style="display:none">
-        <label id="settings-bots-row" for="settings-bots-slider">
-          MAX BOTS: <span id="settings-bots-value">3</span>
-        </label>
-        <input id="settings-bots-slider" type="range" min="0" max="7" step="1" value="3" />
-        <label>WEAPON ALLOW-LIST</label>
-        <div id="settings-weapons"></div>
-        <div id="settings-weapons-actions">
-          <button type="button" class="weapons-toggle-all" data-action="all">All</button>
-          <button type="button" class="weapons-toggle-all" data-action="none">None</button>
-        </div>
-      </div>
+      <label for="invite-code-input">MATCH CODE <span class="hint">(optional — leave blank for quick-join)</span></label>
+      <input id="invite-code-input" type="text" maxlength="4" autocomplete="off" placeholder="K7M2" />
       <div id="login-error" style="display:none"></div>
-      <button id="login-submit">JOIN BATTLE</button>
+      <button id="login-submit">QUICK JOIN</button>
+      <button id="open-create-link" type="button">or create a private match &rarr;</button>
+    </div>
+    <div id="login-create-panel">
+      <h3>PRIVATE ROOM</h3>
+      <label id="settings-bots-row" for="settings-bots-slider">
+        MAX BOTS: <span id="settings-bots-value">3</span>
+      </label>
+      <input id="settings-bots-slider" type="range" min="0" max="7" step="1" value="3" />
+      <label>WEAPONS ALLOWED</label>
+      <div id="settings-weapons"></div>
+      <div id="settings-weapons-actions">
+        <button type="button" class="weapons-toggle-all" data-action="all">All</button>
+        <button type="button" class="weapons-toggle-all" data-action="none">None</button>
+      </div>
+      <div id="create-actions">
+        <button id="create-back" type="button">Back</button>
+        <button id="create-submit" type="button">Create Private</button>
+      </div>
     </div>
   </div>
   <div id="invite-badge"><span class="label">INVITE</span><span id="invite-badge-code">— —</span></div>
