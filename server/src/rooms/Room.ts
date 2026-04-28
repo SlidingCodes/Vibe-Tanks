@@ -1614,6 +1614,10 @@ export class Room {
       if (idleSec >= IDLE_KICK_SECONDS) {
         // eslint-disable-next-line no-console
         console.log(`[idle] kicking ${pid}: ${idleSec.toFixed(0)}s no input`);
+        // Tell the client why before dropping the socket so the
+        // browser tab reloads back to login instead of just freezing
+        // on the in-game frame.
+        player.socket?.emit('kicked', { reason: 'idle' });
         player.socket?.disconnect(true);
         continue;
       }

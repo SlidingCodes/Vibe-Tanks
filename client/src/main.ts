@@ -258,8 +258,20 @@ if (isMobileDevice()) {
 }
 
 // ── Networking ──
+// If the previous page-load was kicked off by the server (idle, …),
+// surface that as the login overlay's initial error so the player
+// understands why they're back at the form.
+const initialLoginError = (() => {
+  try {
+    const reason = sessionStorage.getItem('vt.kickReason');
+    if (!reason) return undefined;
+    sessionStorage.removeItem('vt.kickReason');
+    if (reason === 'idle') return 'You were kicked for inactivity.';
+    return undefined;
+  } catch { return undefined; }
+})();
 // Block until the player has picked a name + color from the login overlay.
-let login = await showLogin();
+let login = await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
@@ -335,6 +347,13 @@ function clearIdleBanner(): void {
   if (idleCountdown) { clearInterval(idleCountdown); idleCountdown = null; }
   if (idleBanner) idleBanner.classList.remove('visible');
 }
+socket.on('kicked', ({ reason }) => {
+  // Reload back to the login overlay. Stash the reason so the new
+  // page-load can surface it inline instead of starting silently.
+  try { sessionStorage.setItem('vt.kickReason', reason); } catch { /* private mode */ }
+  window.location.reload();
+});
+
 socket.on('idle_warning', ({ secondsRemaining }) => {
   if (!idleBanner || !idleCount) return;
   if (secondsRemaining <= 0) {

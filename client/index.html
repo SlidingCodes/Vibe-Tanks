@@ -351,15 +351,15 @@
       color: #f0c0c0; border-radius: 2px; text-transform: uppercase;
     }
     /* In-game invite-code badge — every room now carries a code, so the
-       badge is always visible. Sits top-right just left of the audio /
-       settings / fullscreen cluster (right: 100px clears all three
-       32px-wide buttons + a small gap). */
+       badge is always visible. Anchored flush against the gear button
+       (right:32 = gear width) so they read as a single top-right group. */
     #invite-badge {
-      position: fixed; top: 0; right: 100px; height: 32px;
+      position: fixed; top: 0; right: 32px; height: 32px;
       padding: 0 10px; display: none; align-items: center; gap: 6px;
       font-family: monospace; font-size: 11px; letter-spacing: 3px;
       background: rgba(0,0,0,0.55); color: #e8d8a0;
       border: 1px solid rgba(216, 176, 88, 0.5);
+      border-right: none;
       cursor: pointer; user-select: none; z-index: 30;
     }
     #invite-badge.visible { display: inline-flex; }
