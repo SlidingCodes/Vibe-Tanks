@@ -524,14 +524,14 @@ export class Room {
     socket.join(this.id);
 
     onValidated(socket, 'movement_input', MovementInputSchema, (data) => {
-      // Freeze all player movement during the start-of-match countdown.
-      if (this.phase === MatchPhase.Countdown) return;
+      // Forward/backward are masked inside tickMovement during Countdown so
+      // tanks can still yaw on the spot. We still accept the raw input here
+      // so left/right (rotation) reaches the physics tick.
       const player = this.players.get(socket.id);
       if (player) player.input = data;
     });
 
     onValidated(socket, 'aim_update', AimUpdateSchema, (data) => {
-      if (this.phase === MatchPhase.Countdown) return;
       const tank = this.tanks.get(socket.id);
       if (tank && tank.alive) {
         tank.turretRotation = data.turretRotation;
@@ -1409,10 +1409,17 @@ export class Room {
     const targetTickMs = simDt * 1000;
 
     this.simInterval = setInterval(() => {
-      // Pause simulation during leaderboard to let players admire the results,
-      // and during the start-of-match countdown so tanks stay frozen.
+      // Pause simulation during leaderboard to let players admire the results.
       if (this.phase === MatchPhase.Leaderboard) return;
-      if (this.phase === MatchPhase.Countdown) return;
+
+      // Start-of-match countdown: tanks stay pinned (forward/backward/turbo
+      // are masked inside tickMovement) but can still rotate on the spot
+      // and aim, so players can scout the spawn arrangement before "FIGHT".
+      // Everything else (projectiles, hazards, pickups, bots) is paused.
+      if (this.phase === MatchPhase.Countdown) {
+        this.tickMovement(simDt);
+        return;
+      }
 
       this.simTime += simDt;
       this.tickBots(simDt);
@@ -1579,9 +1586,16 @@ export class Room {
           }
         }
         const effectiveTurbo = nowSec < player.turboActiveUntil;
-        const effectiveInput: MovementInput = effectiveTurbo
+        let effectiveInput: MovementInput = effectiveTurbo
           ? { ...player.input, turbo: true }
           : { ...player.input, turbo: false };
+        // During the start-of-match countdown, mask translation so tanks
+        // can yaw on the spot but cannot leave their spawn. Turbo is also
+        // masked so a player who held it from the prev match doesn't carry
+        // momentum into the new map.
+        if (this.phase === MatchPhase.Countdown) {
+          effectiveInput = { ...effectiveInput, forward: false, backward: false, turbo: false };
+        }
         this.physics.setTankInput(pid, effectiveInput);
       } else {
         this.physics.setTankInput(pid, EMPTY);

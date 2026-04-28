@@ -1,7 +1,16 @@
-// Center-screen "3 → 2 → 1 → GO!" overlay shown while the match is in
+// Center-screen "3 → 2 → 1 → FIGHT!" overlay shown while the match is in
 // MatchPhase.Countdown. The server publishes `countdownEndsInMs` on every
 // room_snapshot during the countdown, so we drive the displayed digit purely
 // off that deadline (resilient to dropped frames or a late-joining client).
+
+import { playSpeech } from '../audio/sounds';
+
+const SPOKEN: Record<string, string> = {
+  '3': 'Three',
+  '2': 'Two',
+  '1': 'One',
+  'FIGHT!': 'Fight',
+};
 
 let el: HTMLDivElement | null = null;
 let endsAtMs = 0;
@@ -31,13 +40,14 @@ const STYLE = `
     animation: mc-pop 0.9s ease-out;
   }
   #match-countdown .mc-go {
-    font-size: clamp(140px, 26vmin, 340px);
+    font-size: clamp(120px, 22vmin, 280px);
     color: #ffd97a;
     text-shadow:
       0 0 28px rgba(255, 196, 90, 0.8),
       0 6px 18px rgba(0, 0, 0, 0.85),
       0 0 2px #1a1814;
     animation: mc-go 0.6s ease-out;
+    letter-spacing: 0.08em;
   }
   @keyframes mc-pop {
     0%   { transform: scale(0.4); opacity: 0; }
@@ -66,12 +76,12 @@ export function setupMatchCountdown(): void {
     const remainingMs = endsAtMs - performance.now();
     if (remainingMs <= 0) {
       // The server flips phase ~3 s after Countdown started; allow ~500 ms of
-      // "GO!" overshoot in case the room_snapshot is briefly delayed.
+      // "FIGHT!" overshoot in case the room_snapshot is briefly delayed.
       if (remainingMs < -500) {
         hideMatchCountdown();
         return;
       }
-      renderText('GO!', 'mc-go');
+      renderText('FIGHT!', 'mc-go');
       return;
     }
     // ceil so that "1" sits on the screen for the last full second
@@ -86,6 +96,10 @@ function renderText(text: string, cls: string): void {
   if (lastShown === text) return;
   lastShown = text;
   el.innerHTML = `<div class="${cls}">${text}</div>`;
+  // Same announcer pipeline used for kills/deaths/welcome — reads the digit
+  // out loud as it pops on screen.
+  const phrase = SPOKEN[text];
+  if (phrase) playSpeech(phrase);
 }
 
 /** Called on every room_snapshot. `endsInMs <= 0` means we're not in
