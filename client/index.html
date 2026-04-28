@@ -2092,40 +2092,15 @@
       user-select: none;
     }
 
-    /* Hitmarker & Hit Flash */
-    #hit-flash {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 9998;
-      background: white;
-      opacity: 0;
-    }
-
-    #hit-flash.active {
-      animation: hit-flash-anim 0.15s ease-out;
-    }
-
-    @keyframes hit-flash-anim {
-      0% {
-        opacity: 0.8;
-        background: rgba(255, 255, 255, 1);
-        filter: brightness(2) contrast(1.5);
-      }
-
-      100% {
-        opacity: 0;
-        background: transparent;
-      }
-    }
-
-
+    /* Hitmarker — two crossed lines forming an X. No screen flash
+       (pulled deliberately: hold-to-fire weapons turned the screen
+       white). */
     #hit-marker {
       position: fixed;
       top: 50%;
       left: 50%;
-      width: 80px;
-      height: 80px;
+      width: 32px;
+      height: 32px;
       transform: translate(-50%, -50%) scale(0.5);
       pointer-events: none;
       opacity: 0;
@@ -2139,17 +2114,17 @@
 
     @keyframes hit-marker-anim {
       0% {
-        transform: translate(-50%, -50%) scale(0.4) rotate(-15deg);
+        transform: translate(-50%, -50%) scale(0.6);
         opacity: 1;
       }
 
       20% {
-        transform: translate(-50%, -50%) scale(1.5) rotate(10deg);
+        transform: translate(-50%, -50%) scale(1.4);
         opacity: 1;
       }
 
       100% {
-        transform: translate(-50%, -50%) scale(1.2) rotate(0deg);
+        transform: translate(-50%, -50%) scale(1.1);
         opacity: 0;
       }
     }
@@ -2159,36 +2134,24 @@
       position: absolute;
       background: #fff;
       width: 3px;
-      height: 18px;
-      box-shadow: 0 0 8px rgba(255, 255, 255, 1);
+      height: 32px;
+      top: 0;
+      left: 50%;
+      margin-left: -1.5px;
+      box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
     }
 
     .hit-line:nth-child(1) {
-      top: 0;
-      left: 0;
       transform: rotate(45deg);
-      transform-origin: top left;
     }
 
     .hit-line:nth-child(2) {
-      top: 0;
-      right: 0;
       transform: rotate(-45deg);
-      transform-origin: top right;
     }
 
-    .hit-line:nth-child(3) {
-      bottom: 0;
-      left: 0;
-      transform: rotate(-45deg);
-      transform-origin: bottom left;
-    }
-
+    .hit-line:nth-child(3),
     .hit-line:nth-child(4) {
-      bottom: 0;
-      right: 0;
-      transform: rotate(45deg);
-      transform-origin: bottom right;
+      display: none;
     }
 
     #hit-marker.kill .hit-line {
@@ -2416,7 +2379,6 @@
   </div>
   <div id="idle-warning">Inactive — kick in <span class="count" id="idle-warning-count">15</span>s</div>
   <div id="turbo-vfx"></div>
-  <div id="hit-flash"></div>
   <div id="hit-marker">
     <div class="hit-line"></div>
     <div class="hit-line"></div>

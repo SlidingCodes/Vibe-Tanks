@@ -505,19 +505,21 @@ export function playShotAnimation(
   const tm = getAllTankMeshes().get(result.shooterId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
 
-  // Trigger Muzzle FX at the start of the first step
-  if (atmosphere && result.steps.length > 0) {
-    const firstStep = result.steps[0];
-    if (firstStep.trajectory.length >= 2) {
-      const p0 = firstStep.trajectory[0];
-      const p1 = firstStep.trajectory[1];
-      const pos = new THREE.Vector3(p0.x, p0.y, p0.z);
-      const dir = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z).normalize();
-      atmosphere.spawnMuzzleFX(pos, dir);
-      
-      if (tm) {
-        atmosphere.spawnShellCasing(tm.group.position, tm.group.rotation.y, tm.state.turretRotation);
-      }
+  // Trigger Muzzle FX at the start of the first step. Skipped for the
+  // minigun: at ~13 rps the cannon-sized flash and ejected shell case
+  // would pile up into a permanent fireball / brass storm that swallows
+  // the tank — the per-shot tracer + impact spark already read clearly.
+  const firstStep = result.steps.length > 0 ? result.steps[0] : null;
+  const isMinigun = firstStep?.visualStyle === 'minigun_tracer';
+  if (atmosphere && firstStep && firstStep.trajectory.length >= 2 && !isMinigun) {
+    const p0 = firstStep.trajectory[0];
+    const p1 = firstStep.trajectory[1];
+    const pos = new THREE.Vector3(p0.x, p0.y, p0.z);
+    const dir = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z).normalize();
+    atmosphere.spawnMuzzleFX(pos, dir);
+
+    if (tm) {
+      atmosphere.spawnShellCasing(tm.group.position, tm.group.rotation.y, tm.state.turretRotation);
     }
   }
 

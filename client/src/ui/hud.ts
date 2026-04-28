@@ -12,7 +12,6 @@ const deathOverlay = document.getElementById('death-overlay') as HTMLDivElement;
 const deathTimer = document.getElementById('death-timer')!;
 const deathKiller = document.getElementById('death-killer')!;
 const deathRespawnBtn = document.getElementById('death-respawn') as HTMLButtonElement;
-const hitFlash = document.getElementById('hit-flash') as HTMLDivElement;
 const hitMarker = document.getElementById('hit-marker') as HTMLDivElement;
 const turboBar = document.getElementById('turbo-bar') as HTMLDivElement;
 const turboVfx = document.getElementById('turbo-vfx') as HTMLDivElement;
@@ -381,15 +380,6 @@ export function showWaiting(show: boolean): void {
 
 /** Triggers the visual hitmarker and screen flash when hitting an enemy. */
 export function triggerHitFeedback(killed = false): void {
-  // eslint-disable-next-line no-console
-  console.log(`[UI] Hit triggered! Killed: ${killed}`);
-
-  // Restart flash animation
-
-  hitFlash.classList.remove('active');
-  void hitFlash.offsetWidth; // Force reflow
-  hitFlash.classList.add('active');
-
   // Restart hitmarker animation
   hitMarker.classList.remove('active', 'kill');
   void hitMarker.offsetWidth; // Force reflow

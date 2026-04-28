@@ -490,21 +490,27 @@ export function updateTrajectoryPreview(
   }
 
   if (weapon.behavior === 'minigun') {
-    // Hitscan, like rail. Show a thin warm-yellow dotted line out to
-    // the gun's max range; no resolved-endpoint variant since the
-    // beam is short-lived per shot, not a charged held beam.
+    // Hitscan, like rail. The reticle lands on the cursor (aimTarget) so
+    // the player can read where the next round will go, not on a fixed
+    // max-range projection. Falls back to a forward projection if the
+    // raycast missed terrain entirely (mouse over the sky).
     parentMat.color.setHex(0xffd060);
-    const dir = normalize(startVel);
     const range = weapon.behaviorConfig?.minigunRange ?? 55;
-    const end = {
-      x: startPos.x + dir.x * range,
-      y: startPos.y + dir.y * range,
-      z: startPos.z + dir.z * range,
-    };
+    let end: Vec3;
+    if (aimTarget) {
+      end = { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z };
+    } else {
+      const dir = normalize(startVel);
+      end = {
+        x: startPos.x + dir.x * range,
+        y: startPos.y + dir.y * range,
+        z: startPos.z + dir.z * range,
+      };
+    }
     placePoints(parentDots, makeLinePoints(startPos, end, 18));
     placeMarker(end.x, end.y, end.z);
-    marker.group.scale.setScalar(0.35);
-    setMarkerColor(0xffe890, 0xfff0a0);
+    marker.group.scale.setScalar(0.55);
+    setMarkerColor(0xffd060, 0xfff0a0);
     marker.group.visible = true;
     return;
   }
