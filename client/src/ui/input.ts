@@ -26,6 +26,12 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('wheel', (e) => {
   if (weaponCount <= 1) return;
+  // Don't cycle weapons when the wheel is scrolling inside a dialog or
+  // any other UI element — the game canvas is the only on-screen
+  // <canvas> that takes events (minimap + login preview have
+  // pointer-events:none), so a tagName check pins this to the world.
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag !== 'CANVAS') return;
   const dir = e.deltaY > 0 ? 1 : -1;
   currentWeaponSlot = ((currentWeaponSlot + dir) % weaponCount + weaponCount) % weaponCount;
   pendingWeaponSlot = currentWeaponSlot;
@@ -60,6 +66,13 @@ window.addEventListener('mousemove', (e) => {
 });
 
 window.addEventListener('mousedown', (e) => {
+  // Suppress fire when the click landed on UI: HUD chips, settings
+  // dialog, login overlay, invite badge, etc. The WebGL game canvas
+  // is the only on-screen <canvas> that receives clicks (minimap and
+  // the login tank preview both have pointer-events:none), so a
+  // tagName check is enough to pin click-to-fire to the world.
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag !== 'CANVAS') return;
   if (e.button === 0) mouseDown = true;
   else if (e.button === 2) rightMousePressed = true;
 });
