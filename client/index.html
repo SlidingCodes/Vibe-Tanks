@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
@@ -16,310 +17,641 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Vibe Tanks" />
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-    canvas { display: block; }
-    #hud {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      pointer-events: none; font-family: monospace; color: #fff;
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
-    #hud > * { pointer-events: auto; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      font-family: monospace;
+      color: #fff;
+    }
+
+    #hud>* {
+      pointer-events: auto;
+    }
+
     #cooldown-ring {
-      position: absolute; top: 62%; left: 50%;
-      width: 160px; height: 6px; border-radius: 1px;
+      position: absolute;
+      top: 62%;
+      left: 50%;
+      width: 160px;
+      height: 6px;
+      border-radius: 1px;
       background: var(--cd-color, #c89848);
-      box-shadow: 0 0 4px rgba(0,0,0,0.6), inset 0 0 1px rgba(255,255,255,0.25);
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.6), inset 0 0 1px rgba(255, 255, 255, 0.25);
       transform: translate(-50%, -50%) scaleX(var(--cd-scale, 0));
       transform-origin: center center;
       opacity: var(--cd-opacity, 0);
       transition: transform 0.06s linear, opacity 0.2s linear, background 0.08s linear;
       pointer-events: none;
     }
+
     /* Current-weapon ammo counter — parked under the cooldown strip.
        Hidden when the selected slot is the infinite default weapon. */
     #ammo-counter {
-      position: absolute; top: calc(62% + 14px); left: 50%;
+      position: absolute;
+      top: calc(62% + 14px);
+      left: 50%;
       transform: translateX(-50%);
-      font-family: monospace; font-weight: bold;
-      font-size: 16px; color: #e8d8a0;
+      font-family: monospace;
+      font-weight: bold;
+      font-size: 16px;
+      color: #e8d8a0;
       text-shadow: 0 0 3px #000, 0 0 3px #000;
       letter-spacing: 2px;
       pointer-events: none;
     }
-    #ammo-counter::before { content: 'AMMO '; font-size: 10px; opacity: 0.7; letter-spacing: 1px; }
-    #ammo-counter.low { color: #f0a450; }
-    #ammo-counter.empty { color: #c06040; }
-    #health-bar {
-      position: absolute; top: 16px; left: 16px;
-      width: 200px; height: 18px; border-radius: 3px;
-      background: rgba(0,0,0,0.5);
-      border: 1px solid rgba(255,255,255,0.35);
-      overflow: hidden; font-size: 12px;
+
+    #ammo-counter::before {
+      content: 'AMMO ';
+      font-size: 10px;
+      opacity: 0.7;
+      letter-spacing: 1px;
     }
+
+    #ammo-counter.low {
+      color: #f0a450;
+    }
+
+    #ammo-counter.empty {
+      color: #c06040;
+    }
+
+    #health-bar {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 200px;
+      height: 18px;
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      overflow: hidden;
+      font-size: 12px;
+    }
+
     #health-fill {
-      position: absolute; inset: 0; transform-origin: left center;
+      position: absolute;
+      inset: 0;
+      transform-origin: left center;
       transform: scaleX(var(--hp-scale, 1));
       background: var(--hp-color, #4f4);
       transition: transform 0.15s ease-out, background 0.2s linear;
     }
+
     #health-label {
-      position: absolute; inset: 0; display: flex;
-      align-items: center; justify-content: center;
-      font-family: monospace; font-weight: bold;
-      color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000;
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: monospace;
+      font-weight: bold;
+      color: #fff;
+      text-shadow: 0 0 3px #000, 0 0 3px #000;
       letter-spacing: 1px;
     }
+
     #scoreboard {
-      position: absolute; top: 40px; right: 6px;
-      font-size: 14px; text-align: right; text-shadow: 0 0 6px #000;
-      display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+      position: absolute;
+      top: 40px;
+      right: 6px;
+      font-size: 14px;
+      text-align: right;
+      text-shadow: 0 0 6px #000;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
     }
-    #scoreboard div { display: flex; align-items: center; gap: 6px; }
-    .sb-flag { height: 11px; width: auto; border-radius: 1px; box-shadow: 0 0 3px rgba(0,0,0,0.4); }
+
+    #scoreboard div {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sb-flag {
+      height: 11px;
+      width: auto;
+      border-radius: 1px;
+      box-shadow: 0 0 3px rgba(0, 0, 0, 0.4);
+    }
+
     #weapon-hud {
-      position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
-      display: flex; flex-wrap: wrap; justify-content: center; gap: 2px;
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 2px;
       width: min(440px, calc(100vw - 16px));
       padding: 4px 0;
       pointer-events: none;
     }
+
     /* Tactical ordnance-rack look: gunmetal plate, olive edge, desaturated
        slot readout. Selected chip lights up warm (khaki) rather than
        white so the rack reads as a row of loaded rounds with the active
        one spotlit. */
     .weapon-chip {
-      width: 42px; height: 42px; padding: 0;
+      width: 42px;
+      height: 42px;
+      padding: 0;
       border: 1px solid rgba(120, 130, 100, 0.55);
       border-radius: 2px;
-      background: linear-gradient(180deg, rgba(38,40,34,0.82) 0%, rgba(22,24,20,0.88) 100%);
-      display: inline-flex; align-items: center; justify-content: center;
-      position: relative; opacity: 0.85; overflow: hidden;
-      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.5);
+      background: linear-gradient(180deg, rgba(38, 40, 34, 0.82) 0%, rgba(22, 24, 20, 0.88) 100%);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      opacity: 0.85;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5);
       transition: border-color 0.1s linear, opacity 0.1s linear, background 0.1s linear;
     }
+
     .weapon-chip.selected {
       border-color: #d8b058;
-      background: linear-gradient(180deg, rgba(82,72,42,0.85) 0%, rgba(46,40,24,0.9) 100%);
+      background: linear-gradient(180deg, rgba(82, 72, 42, 0.85) 0%, rgba(46, 40, 24, 0.9) 100%);
       opacity: 1;
-      box-shadow: inset 0 0 0 1px rgba(216,176,88,0.5), 0 0 6px rgba(216,176,88,0.35);
+      box-shadow: inset 0 0 0 1px rgba(216, 176, 88, 0.5), 0 0 6px rgba(216, 176, 88, 0.35);
     }
+
     /* Empty slot — dashed outline so the player sees how many pickup
        slots are still available. Non-interactive. */
     .weapon-chip.empty {
       border-style: dashed;
       border-color: rgba(120, 130, 100, 0.35);
-      background: linear-gradient(180deg, rgba(18,18,16,0.5) 0%, rgba(10,10,8,0.55) 100%);
+      background: linear-gradient(180deg, rgba(18, 18, 16, 0.5) 0%, rgba(10, 10, 8, 0.55) 100%);
       opacity: 0.55;
       box-shadow: none;
       cursor: default;
     }
+
     .weapon-chip.empty .weapon-slot {
       color: rgba(180, 190, 160, 0.4);
     }
+
     .weapon-empty-dot {
-      width: 6px; height: 6px; border-radius: 50%;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
       background: rgba(160, 170, 140, 0.35);
-      box-shadow: 0 0 3px rgba(0,0,0,0.4);
+      box-shadow: 0 0 3px rgba(0, 0, 0, 0.4);
     }
+
     .weapon-icon {
-      width: 26px; height: 26px; display: block;
-      filter: drop-shadow(0 1px 1px rgba(0,0,0,0.7));
+      width: 26px;
+      height: 26px;
+      display: block;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.7));
     }
+
     .weapon-chip .weapon-slot {
-      position: absolute; top: 1px; left: 3px;
-      font-family: monospace; font-size: 9px; font-weight: bold;
+      position: absolute;
+      top: 1px;
+      left: 3px;
+      font-family: monospace;
+      font-size: 9px;
+      font-weight: bold;
       color: rgba(200, 210, 180, 0.75);
       letter-spacing: 0.5px;
       text-shadow: 0 0 2px #000;
       pointer-events: none;
     }
+
     .weapon-chip.selected .weapon-slot {
       color: #f0d88a;
     }
+
     .weapon-chip .weapon-ammo {
-      position: absolute; bottom: 3px; right: 3px;
-      font-family: monospace; font-size: 11px; font-weight: bold;
+      position: absolute;
+      bottom: 3px;
+      right: 3px;
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: bold;
       color: #e8d8a0;
       letter-spacing: 0.3px;
       text-shadow: 0 0 2px #000, 0 0 2px #000;
-      pointer-events: none; line-height: 1;
+      pointer-events: none;
+      line-height: 1;
     }
+
     .weapon-chip .weapon-ammo.infinite {
-      color: #bcc0a0; font-size: 14px; bottom: 2px;
+      color: #bcc0a0;
+      font-size: 14px;
+      bottom: 2px;
     }
-    .weapon-chip .weapon-ammo.low { color: #f0a450; }
+
+    .weapon-chip .weapon-ammo.low {
+      color: #f0a450;
+    }
+
     /* Per-weapon cooldown strip — amber → khaki gradient fills left-to-right
        as the shared fire timer elapses. Zero width when the chip is fully
        cooled down (invisible), so ready weapons look crisp. */
     .weapon-chip .weapon-cd {
-      position: absolute; left: 0; bottom: 0; height: 2px;
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 2px;
       width: calc(100% * (1 - var(--cd-fill, 1)));
       background: linear-gradient(90deg, #8c6820 0%, #e8c464 100%);
       opacity: 0.85;
       pointer-events: none;
       transition: width 0.06s linear;
     }
-    body.mobile .weapon-chip { width: 52px; height: 52px; }
-    body.mobile .weapon-icon { width: 34px; height: 34px; }
-    body.mobile .weapon-chip .weapon-ammo { font-size: 13px; }
-    #controls-hint {
-      position: absolute; bottom: 74px; left: 50%; transform: translateX(-50%);
-      font-size: 12px; opacity: 0.5; pointer-events: none;
+
+    body.mobile .weapon-chip {
+      width: 52px;
+      height: 52px;
     }
-    #waiting-overlay {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      font-size: 32px; text-shadow: 0 0 12px #000; display: none;
+
+    body.mobile .weapon-icon {
+      width: 34px;
+      height: 34px;
+    }
+
+    body.mobile .weapon-chip .weapon-ammo {
+      font-size: 13px;
+    }
+
+    #controls-hint {
+      position: absolute;
+      bottom: 74px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      opacity: 0.5;
       pointer-events: none;
     }
+
+    #waiting-overlay {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 32px;
+      text-shadow: 0 0 12px #000;
+      display: none;
+      pointer-events: none;
+    }
+
     #login-overlay {
-      position: fixed; inset: 0;
+      position: fixed;
+      inset: 0;
       /* Field-camo gradient: dusk khaki → olive → deep tactical green */
       background: linear-gradient(to bottom, #1a1c14 0%, #2a2c1e 55%, #14180e 100%);
-      font-family: monospace; color: #e8e0c8; z-index: 10;
+      font-family: monospace;
+      color: #e8e0c8;
+      z-index: 10;
       overflow: hidden;
     }
+
     #tank-preview {
-      position: absolute; inset: 0;
-      width: 100%; height: 100%;
-      display: block; background: transparent;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: transparent;
       pointer-events: none;
     }
+
     #login-title {
-      position: absolute; top: 46px; left: 50%;
+      position: absolute;
+      top: 46px;
+      left: 50%;
       transform: translateX(-50%);
-      font-family: monospace; font-weight: bold;
-      font-size: 56px; letter-spacing: 16px; color: #e8d8a0;
+      font-family: monospace;
+      font-weight: bold;
+      font-size: 56px;
+      letter-spacing: 16px;
+      color: #e8d8a0;
       text-shadow: 0 0 22px rgba(216, 176, 88, 0.4), 0 4px 10px rgba(0, 0, 0, 0.85);
-      pointer-events: none; z-index: 2;
+      pointer-events: none;
+      z-index: 2;
     }
+
     /* Tactical brief panel — gunmetal plate with olive trim */
     #login-panel {
-      position: absolute; right: 64px; top: 50%;
+      position: absolute;
+      right: 64px;
+      top: 50%;
       transform: translateY(-50%);
       background: rgba(20, 22, 16, 0.78);
-      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-      padding: 28px 32px; border-radius: 3px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 28px 32px;
+      border-radius: 3px;
       border: 1px solid rgba(120, 130, 100, 0.5);
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
       width: 320px;
       z-index: 2;
     }
+
     #login-panel label {
-      font-size: 12px; opacity: 0.85; display: block;
-      margin: 0 0 6px; letter-spacing: 2px;
+      font-size: 12px;
+      opacity: 0.85;
+      display: block;
+      margin: 0 0 6px;
+      letter-spacing: 2px;
       color: #c0b890;
     }
-    #login-panel label:not(:first-child) { margin-top: 18px; }
+
+    #login-panel label:not(:first-child) {
+      margin-top: 18px;
+    }
+
     #login-panel input[type=text] {
-      width: 100%; padding: 10px 12px; font-family: inherit; font-size: 15px;
+      width: 100%;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 15px;
       background: rgba(8, 10, 6, 0.85);
-      border: 1px solid rgba(120, 130, 100, 0.45); border-radius: 2px;
-      color: #e8e0c8; outline: none;
+      border: 1px solid rgba(120, 130, 100, 0.45);
+      border-radius: 2px;
+      color: #e8e0c8;
+      outline: none;
     }
-    #login-panel input[type=text]:focus { border-color: rgba(216, 176, 88, 0.75); }
-    #flag-search { margin-top: 6px !important; font-size: 13px !important; padding: 6px 10px !important; }
-    #color-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+
+    #login-panel input[type=text]:focus {
+      border-color: rgba(216, 176, 88, 0.75);
+    }
+
+    #flag-search {
+      margin-top: 6px !important;
+      font-size: 13px !important;
+      padding: 6px 10px !important;
+    }
+
+    #color-swatches {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+    }
+
     .color-swatch {
-      width: 100%; aspect-ratio: 1 / 1; border-radius: 4px; cursor: pointer;
-      border: 2px solid transparent; transition: transform 0.08s;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.08s;
     }
-    .color-swatch:hover { transform: scale(1.08); }
-    .color-swatch.selected { border-color: #d8b058; box-shadow: 0 0 6px rgba(216,176,88,0.5); }
+
+    .color-swatch:hover {
+      transform: scale(1.08);
+    }
+
+    .color-swatch.selected {
+      border-color: #d8b058;
+      box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
+    }
+
     #flag-swatches {
-      display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px;
-      max-height: 140px; overflow-y: auto; padding-right: 4px;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+      max-height: 140px;
+      overflow-y: auto;
+      padding-right: 4px;
     }
-    #flag-swatches::-webkit-scrollbar { width: 4px; }
-    #flag-swatches::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+
+    #flag-swatches::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #flag-swatches::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+    }
+
     .flag-swatch {
-      width: 100%; aspect-ratio: 3 / 2; border-radius: 2px; cursor: pointer;
-      border: 2px solid rgba(255,255,255,0.1); background-size: cover; background-position: center;
+      width: 100%;
+      aspect-ratio: 3 / 2;
+      border-radius: 2px;
+      cursor: pointer;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      background-size: cover;
+      background-position: center;
       transition: transform 0.08s, border-color 0.15s;
     }
-    .flag-swatch:hover { transform: scale(1.08); border-color: rgba(255,255,255,0.5); }
-    .flag-swatch.selected { border-color: #d8b058; box-shadow: 0 0 6px rgba(216,176,88,0.5); }
+
+    .flag-swatch:hover {
+      transform: scale(1.08);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .flag-swatch.selected {
+      border-color: #d8b058;
+      box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
+    }
+
     /* Deploy button — khaki/brass plate with stencil readout. No more
        lime-green call-to-action. */
     #login-panel #login-submit {
-      margin-top: 24px; width: 100%; padding: 12px; font-family: inherit; font-size: 14px;
+      margin-top: 24px;
+      width: 100%;
+      padding: 12px;
+      font-family: inherit;
+      font-size: 14px;
       background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
-      color: #1a1814; border: 1px solid #6a4828; border-radius: 2px; cursor: pointer;
-      font-weight: bold; letter-spacing: 4px; text-transform: uppercase;
-      box-shadow: inset 0 1px 0 rgba(255,230,170,0.3), 0 2px 4px rgba(0,0,0,0.5);
+      color: #1a1814;
+      border: 1px solid #6a4828;
+      border-radius: 2px;
+      cursor: pointer;
+      font-weight: bold;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      box-shadow: inset 0 1px 0 rgba(255, 230, 170, 0.3), 0 2px 4px rgba(0, 0, 0, 0.5);
     }
+
     #login-panel #login-submit:hover {
       background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
     }
+
     #invite-code-input {
-      letter-spacing: 6px !important; text-transform: uppercase !important;
-      text-align: center !important; font-size: 18px !important; font-weight: bold;
+      letter-spacing: 6px !important;
+      text-transform: uppercase !important;
+      text-align: center !important;
+      font-size: 18px !important;
+      font-weight: bold;
     }
+
     /* Placeholder needs its own typography — the bold-uppercase-tracking
        set on the input would otherwise turn "optional" into a giant
        hard-to-read line. */
     #invite-code-input::placeholder {
-      letter-spacing: 0; text-transform: none; font-size: 11px;
-      font-weight: normal; font-style: italic; opacity: 0.55;
+      letter-spacing: 0;
+      text-transform: none;
+      font-size: 11px;
+      font-weight: normal;
+      font-style: italic;
+      opacity: 0.55;
     }
+
     /* Code-input label has a hint for the optional state. */
-    #login-panel label .hint { opacity: 0.55; letter-spacing: 0; text-transform: none; font-size: 10px; }
+    #login-panel label .hint {
+      opacity: 0.55;
+      letter-spacing: 0;
+      text-transform: none;
+      font-size: 10px;
+    }
+
     /* Subtle text-link affordance to open the create-private side panel. */
     #open-create-link {
-      display: block; width: 100%; margin-top: 12px; padding: 6px 0;
-      background: transparent; border: none; color: #c0b890;
-      font-family: monospace; font-size: 11px; letter-spacing: 2px;
-      cursor: pointer; text-transform: uppercase;
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 6px 0;
+      background: transparent;
+      border: none;
+      color: #c0b890;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      text-transform: uppercase;
     }
-    #open-create-link:hover { color: #e8d8a0; }
-    #login-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    #open-create-link:hover {
+      color: #e8d8a0;
+    }
+
+    #login-submit:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     /* Second panel — slides in only when the user opens "Create private". */
     #login-create-panel {
-      position: absolute; right: 414px; top: 50%;
+      position: absolute;
+      right: 414px;
+      top: 50%;
       transform: translateY(-50%);
       background: rgba(20, 22, 16, 0.78);
-      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-      padding: 24px 28px; border-radius: 3px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 24px 28px;
+      border-radius: 3px;
       border: 1px solid rgba(120, 130, 100, 0.5);
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
-      width: 280px; z-index: 2; display: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      width: 280px;
+      z-index: 2;
+      display: none;
     }
-    #login-overlay.creating #login-create-panel { display: block; }
+
+    #login-overlay.creating #login-create-panel {
+      display: block;
+    }
+
     #login-create-panel h3 {
-      margin: 0 0 16px; font-size: 13px; letter-spacing: 4px;
-      color: #d8b058; text-align: center; font-weight: bold;
+      margin: 0 0 16px;
+      font-size: 13px;
+      letter-spacing: 4px;
+      color: #d8b058;
+      text-align: center;
+      font-weight: bold;
     }
+
     #login-create-panel label {
-      font-size: 12px; opacity: 0.85; display: block;
-      margin: 14px 0 4px; letter-spacing: 2px; color: #c0b890;
+      font-size: 12px;
+      opacity: 0.85;
+      display: block;
+      margin: 14px 0 4px;
+      letter-spacing: 2px;
+      color: #c0b890;
     }
-    #login-create-panel label:first-of-type { margin-top: 0; }
+
+    #login-create-panel label:first-of-type {
+      margin-top: 0;
+    }
+
     #create-actions {
-      display: grid; grid-template-columns: 1fr 1.5fr; gap: 8px; margin-top: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1.5fr;
+      gap: 8px;
+      margin-top: 16px;
     }
+
     #create-actions button {
-      padding: 11px 0; font-family: monospace; font-size: 12px;
-      letter-spacing: 3px; text-transform: uppercase; cursor: pointer;
-      border-radius: 2px; font-weight: bold;
+      padding: 11px 0;
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 2px;
+      font-weight: bold;
     }
+
     #create-back {
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
       border: 1px solid rgba(120, 130, 100, 0.4);
     }
-    #create-back:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+
+    #create-back:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
     #create-submit {
       background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
-      color: #1a1814; border: 1px solid #6a4828;
-      box-shadow: inset 0 1px 0 rgba(255,230,170,0.3), 0 2px 4px rgba(0,0,0,0.5);
+      color: #1a1814;
+      border: 1px solid #6a4828;
+      box-shadow: inset 0 1px 0 rgba(255, 230, 170, 0.3), 0 2px 4px rgba(0, 0, 0, 0.5);
     }
-    #create-submit:hover { background: linear-gradient(180deg, #d8b058 0%, #a08038 100%); }
+
+    #create-submit:hover {
+      background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
+    }
+
     /* Per-room settings — sliders + weapon toggles. */
-    #settings-bots-row { display: flex; align-items: baseline; gap: 8px; }
+    #settings-bots-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
     #settings-bots-value {
-      color: #d8b058; font-weight: bold; font-variant-numeric: tabular-nums;
+      color: #d8b058;
+      font-weight: bold;
+      font-variant-numeric: tabular-nums;
     }
+
     #settings-bots-slider {
-      width: 100%; margin-top: 6px; accent-color: #d8b058;
+      width: 100%;
+      margin-top: 6px;
+      accent-color: #d8b058;
     }
+
     /* Allow-list cards mirror the settings weapon-guide layout exactly.
        NB: rules are scoped under #settings-weapons so they outrank the
        `#login-create-panel label { display: block; ... }` cascade
@@ -328,87 +660,225 @@
        grid columns collapse, producing the icon-over-text stack the
        user reported. */
     #settings-weapons {
-      display: flex; flex-direction: column;
-      padding: 0 8px; margin-top: 6px;
+      display: flex;
+      flex-direction: column;
+      max-height: 280px;
+      overflow-y: auto;
+      padding: 0;
+      margin-top: 6px;
       background: rgba(8, 10, 6, 0.55);
       border: 1px solid rgba(120, 130, 100, 0.3);
       border-radius: 2px;
     }
-    #settings-weapons .weapon-card {
-      display: grid; grid-template-columns: 32px 1fr;
-      align-items: center; gap: 10px;
-      padding: 0 4px; cursor: pointer; user-select: none;
-      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
-      transition: background 0.12s;
+
+    #settings-weapons::-webkit-scrollbar {
+      width: 6px;
     }
-    #settings-weapons .weapon-card:last-child { border-bottom: none; }
-    #settings-weapons .weapon-card:hover { background: rgba(40, 45, 30, 0.4); }
+
+    #settings-weapons::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #settings-weapons::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 3px;
+    }
+
+    #settings-weapons::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    #settings-weapons .weapon-card {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.12s;
+      margin: 0;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
+    }
+
+    #settings-weapons .weapon-card:last-child {
+      border-bottom: none;
+    }
+
+    #settings-weapons .weapon-card:hover {
+      background: rgba(40, 45, 30, 0.6);
+    }
+
     #settings-weapons .weapon-card:has(input:checked) {
       background: rgba(80, 64, 32, 0.5);
     }
-    #settings-weapons .weapon-card input { display: none; }
+
+    #settings-weapons .weapon-card input {
+      display: none;
+    }
+
     #settings-weapons .weapon-card-icon {
-      width: 32px; height: 32px;
-      opacity: 0.45; transition: opacity 0.12s;
+      width: 32px;
+      height: 32px;
+      opacity: 0.45;
+      transition: opacity 0.12s;
     }
-    #settings-weapons .weapon-card:has(input:checked) .weapon-card-icon { opacity: 1; }
-    #settings-weapons .weapon-card-info { line-height: 1.3; min-width: 0; }
+
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-icon {
+      opacity: 1;
+    }
+
+    #settings-weapons .weapon-card-info {
+      line-height: 1.3;
+      min-width: 0;
+    }
+
     #settings-weapons .weapon-card-name {
-      font-size: 11px; letter-spacing: 1.5px; color: #c0b890;
-      font-weight: bold; text-transform: uppercase;
-    }
-    #settings-weapons .weapon-card:has(input:checked) .weapon-card-name { color: #e8d8a0; }
-    #settings-weapons .weapon-card-desc {
-      font-size: 10px; line-height: 1.35;
-      color: #8a7858; margin-top: 2px;
-    }
-    #settings-weapons .weapon-card:has(input:checked) .weapon-card-desc { color: #a89868; }
-    #settings-weapons-actions {
-      display: flex; gap: 6px; margin-top: 6px; font-size: 10px;
-    }
-    .weapons-toggle-all {
-      flex: 1; padding: 4px 0; font-family: monospace; letter-spacing: 1px;
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
-      border: 1px solid rgba(120, 130, 100, 0.4); border-radius: 2px; cursor: pointer;
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      color: #c0b890;
+      font-weight: bold;
       text-transform: uppercase;
     }
-    .weapons-toggle-all:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
-    #login-error {
-      margin-top: 10px; padding: 8px 10px; font-size: 11px; letter-spacing: 1px;
-      background: rgba(180, 60, 60, 0.18); border: 1px solid rgba(180, 60, 60, 0.5);
-      color: #f0c0c0; border-radius: 2px; text-transform: uppercase;
+
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-name {
+      color: #e8d8a0;
     }
+
+    #settings-weapons .weapon-card-desc {
+      font-size: 10px;
+      line-height: 1.35;
+      color: #8a7858;
+      margin-top: 2px;
+    }
+
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-desc {
+      color: #a89868;
+    }
+
+    #settings-weapons-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 10px;
+    }
+
+    .weapons-toggle-all {
+      flex: 1;
+      padding: 4px 0;
+      font-family: monospace;
+      letter-spacing: 1px;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+      border-radius: 2px;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+
+    .weapons-toggle-all:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
+    #login-error {
+      margin-top: 10px;
+      padding: 8px 10px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      background: rgba(180, 60, 60, 0.18);
+      border: 1px solid rgba(180, 60, 60, 0.5);
+      color: #f0c0c0;
+      border-radius: 2px;
+      text-transform: uppercase;
+    }
+
     /* In-game invite-code badge — every room now carries a code, so the
        badge is always visible. Anchored flush against the gear button
        (right:32 = gear width) so they read as a single top-right group. */
     #invite-badge {
-      position: fixed; top: 0; right: 32px; height: 32px;
-      padding: 0 10px; display: none; align-items: center; gap: 6px;
-      font-family: monospace; font-size: 11px; letter-spacing: 3px;
-      background: rgba(0,0,0,0.55); color: #e8d8a0;
+      position: fixed;
+      top: 0;
+      right: 32px;
+      height: 32px;
+      padding: 0 10px;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 3px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #e8d8a0;
       border: 1px solid rgba(216, 176, 88, 0.5);
       border-right: none;
-      cursor: pointer; user-select: none; z-index: 30;
+      cursor: pointer;
+      user-select: none;
+      z-index: 30;
     }
-    #invite-badge.visible { display: inline-flex; }
-    #invite-badge:hover { background: rgba(0,0,0,0.85); border-color: rgba(216, 176, 88, 0.9); }
-    #invite-badge .label { color: #c0b890; font-size: 10px; letter-spacing: 1px; }
-    #invite-badge.copied { color: #b8e88a; border-color: rgba(184, 232, 138, 0.7); }
+
+    #invite-badge.visible {
+      display: inline-flex;
+    }
+
+    #invite-badge:hover {
+      background: rgba(0, 0, 0, 0.85);
+      border-color: rgba(216, 176, 88, 0.9);
+    }
+
+    #invite-badge .label {
+      color: #c0b890;
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+
+    #invite-badge.copied {
+      color: #b8e88a;
+      border-color: rgba(184, 232, 138, 0.7);
+    }
+
     @media (max-width: 720px) {
-      #login-title { font-size: 28px; letter-spacing: 5px; top: 14px; }
+      #login-title {
+        font-size: 28px;
+        letter-spacing: 5px;
+        top: 14px;
+      }
+
       #login-panel {
-        right: 12px; left: 12px; width: auto;
-        top: auto; bottom: 12px; transform: none;
+        right: 12px;
+        left: 12px;
+        width: auto;
+        top: auto;
+        bottom: 12px;
+        transform: none;
         padding: 14px 16px;
       }
-      #login-panel label { margin: 0 0 4px; font-size: 11px; }
-      #login-panel label:not(:first-child) { margin-top: 10px; }
-      #login-panel input[type=text] { padding: 8px 10px; font-size: 14px; }
+
+      #login-panel label {
+        margin: 0 0 4px;
+        font-size: 11px;
+      }
+
+      #login-panel label:not(:first-child) {
+        margin-top: 10px;
+      }
+
+      #login-panel input[type=text] {
+        padding: 8px 10px;
+        font-size: 14px;
+      }
+
       #flag-swatches {
         grid-template-columns: repeat(6, 1fr);
-        max-height: 72px; margin-top: 6px;
+        max-height: 72px;
+        margin-top: 6px;
       }
-      #login-panel button { margin-top: 14px; padding: 10px; }
+
+      #login-panel button {
+        margin-top: 14px;
+        padding: 10px;
+      }
+
       /* Mobile create flow: both panels stacked + overlay scrolls. The
          pilot panel un-anchors from the bottom so the create panel can
          sit above it inside the scroll container. */
@@ -417,669 +887,1473 @@
         -webkit-overflow-scrolling: touch;
         padding: 60px 0 12px;
       }
+
       #login-overlay.creating #login-panel {
-        position: relative; right: auto; left: auto; bottom: auto;
+        position: relative;
+        right: auto;
+        left: auto;
+        bottom: auto;
         margin: 0 12px;
       }
+
       #login-create-panel {
-        right: auto; left: auto; transform: none;
-        position: relative; top: auto;
-        width: auto; margin: 0 12px 12px;
+        right: auto;
+        left: auto;
+        transform: none;
+        position: relative;
+        top: auto;
+        width: auto;
+        margin: 0 12px 12px;
       }
     }
+
     /* Damage popups — stacked animation layers so rise + shake + flicker
        don't stomp each other's transform property. */
     .damage-popup-rise {
-      position: absolute; left: 0; top: 0;
-      animation-name: dmg-rise; animation-timing-function: ease-out;
-      animation-fill-mode: forwards; will-change: transform, opacity;
+      position: absolute;
+      left: 0;
+      top: 0;
+      animation-name: dmg-rise;
+      animation-timing-function: ease-out;
+      animation-fill-mode: forwards;
+      will-change: transform, opacity;
       transform: translate(-50%, 0);
     }
+
     @keyframes dmg-rise {
-      0%   { transform: translate(-50%, 0)     scale(0.55); opacity: 0; }
-      10%  { transform: translate(-50%, -12px) scale(1.25); opacity: 1; }
-      22%  { transform: translate(-50%, -20px) scale(1.0);  opacity: 1; }
-      70%  { transform: translate(-50%, -60px) scale(1.0);  opacity: 1; }
-      100% { transform: translate(-50%, -95px) scale(0.95); opacity: 0; }
+      0% {
+        transform: translate(-50%, 0) scale(0.55);
+        opacity: 0;
+      }
+
+      10% {
+        transform: translate(-50%, -12px) scale(1.25);
+        opacity: 1;
+      }
+
+      22% {
+        transform: translate(-50%, -20px) scale(1.0);
+        opacity: 1;
+      }
+
+      70% {
+        transform: translate(-50%, -60px) scale(1.0);
+        opacity: 1;
+      }
+
+      100% {
+        transform: translate(-50%, -95px) scale(0.95);
+        opacity: 0;
+      }
     }
-    .damage-popup-shake { display: inline-flex; align-items: center; gap: 4px; }
-    .damage-popup-shake.active { animation: dmg-shake 0.09s linear infinite; }
+
+    .damage-popup-shake {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .damage-popup-shake.active {
+      animation: dmg-shake 0.09s linear infinite;
+    }
+
     @keyframes dmg-shake {
-      0%   { transform: translate(0, 0)    rotate(-2deg); }
-      25%  { transform: translate(2px, -1px) rotate(2deg); }
-      50%  { transform: translate(-2px, 1px) rotate(-1deg); }
-      75%  { transform: translate(1px, 2px) rotate(2deg); }
-      100% { transform: translate(-1px, -1px) rotate(-2deg); }
+      0% {
+        transform: translate(0, 0) rotate(-2deg);
+      }
+
+      25% {
+        transform: translate(2px, -1px) rotate(2deg);
+      }
+
+      50% {
+        transform: translate(-2px, 1px) rotate(-1deg);
+      }
+
+      75% {
+        transform: translate(1px, 2px) rotate(2deg);
+      }
+
+      100% {
+        transform: translate(-1px, -1px) rotate(-2deg);
+      }
     }
+
     .damage-popup-text {
-      font-family: monospace; font-weight: bold; white-space: nowrap;
+      font-family: monospace;
+      font-weight: bold;
+      white-space: nowrap;
       text-shadow: 0 0 3px #000, 1px 1px 0 #000;
     }
-    .damage-popup-text.glow { animation: dmg-glow 0.35s ease-in-out infinite alternate; }
-    @keyframes dmg-glow {
-      from { filter: brightness(1)   drop-shadow(0 0 4px currentColor); }
-      to   { filter: brightness(1.5) drop-shadow(0 0 14px currentColor); }
+
+    .damage-popup-text.glow {
+      animation: dmg-glow 0.35s ease-in-out infinite alternate;
     }
+
+    @keyframes dmg-glow {
+      from {
+        filter: brightness(1) drop-shadow(0 0 4px currentColor);
+      }
+
+      to {
+        filter: brightness(1.5) drop-shadow(0 0 14px currentColor);
+      }
+    }
+
     .damage-popup-fire {
       display: inline-block;
       animation: dmg-fire-flicker 0.18s ease-in-out infinite alternate;
       filter: drop-shadow(0 0 6px #ff7722);
     }
+
     @keyframes dmg-fire-flicker {
-      0%   { transform: translateY(0)    scale(1)   rotate(-6deg); opacity: 0.85; }
-      100% { transform: translateY(-2px) scale(1.15) rotate(8deg); opacity: 1; }
+      0% {
+        transform: translateY(0) scale(1) rotate(-6deg);
+        opacity: 0.85;
+      }
+
+      100% {
+        transform: translateY(-2px) scale(1.15) rotate(8deg);
+        opacity: 1;
+      }
     }
-    
+
     .tank-name-label {
-      font-family: monospace; font-size: 12px; color: #fff;
+      font-family: monospace;
+      font-size: 12px;
+      color: #fff;
       text-shadow: 0 0 4px #000, 0 0 4px #000;
-      padding: 2px 6px; border-radius: 3px; background: rgba(0,0,0,0.35);
-      pointer-events: none; white-space: nowrap;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      white-space: nowrap;
     }
+
     /* Death overlay — letterbox layout: opaque bands top+bottom, the
        middle of the screen stays transparent so the killcam is visible
        through the overlay. */
     #death-overlay {
-      position: fixed; inset: 0; display: none; z-index: 20;
-      pointer-events: none; /* only the respawn button re-enables pointer events */
+      position: fixed;
+      inset: 0;
+      display: none;
+      z-index: 20;
+      pointer-events: none;
+      /* only the respawn button re-enables pointer events */
       animation: death-fade 0.6s ease-out;
-      font-family: 'Times New Roman', serif; color: #9a1313;
-      text-shadow: 0 0 18px rgba(154,19,19,0.6), 0 0 4px #000;
+      font-family: 'Times New Roman', serif;
+      color: #9a1313;
+      text-shadow: 0 0 18px rgba(154, 19, 19, 0.6), 0 0 4px #000;
     }
-    @keyframes death-fade { from { opacity: 0; } to { opacity: 1; } }
-    #death-top, #death-bottom {
-      position: absolute; left: 0; right: 0;
-      display: flex; flex-direction: column; align-items: center; gap: 12px;
+
+    @keyframes death-fade {
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
     }
-    #death-top {
-      top: 0; padding: 28px 16px 72px;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
-    }
+
+    #death-top,
     #death-bottom {
-      bottom: 0; padding: 72px 16px 72px;
-      background: linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0) 100%);
+      position: absolute;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
     }
+
+    #death-top {
+      top: 0;
+      padding: 28px 16px 72px;
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0) 100%);
+    }
+
+    #death-bottom {
+      bottom: 0;
+      padding: 72px 16px 72px;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0) 100%);
+    }
+
     #death-title {
-      font-size: 64px; letter-spacing: 14px; font-style: italic;
-      font-weight: bold; border-top: 1px solid rgba(154,19,19,0.5);
-      border-bottom: 1px solid rgba(154,19,19,0.5); padding: 14px 48px;
+      font-size: 64px;
+      letter-spacing: 14px;
+      font-style: italic;
+      font-weight: bold;
+      border-top: 1px solid rgba(154, 19, 19, 0.5);
+      border-bottom: 1px solid rgba(154, 19, 19, 0.5);
+      padding: 14px 48px;
     }
+
     #death-killer {
-      font-family: monospace; font-size: 16px; letter-spacing: 3px;
-      color: rgba(255,255,255,0.85); text-shadow: 0 0 4px #000; min-height: 20px;
+      font-family: monospace;
+      font-size: 16px;
+      letter-spacing: 3px;
+      color: rgba(255, 255, 255, 0.85);
+      text-shadow: 0 0 4px #000;
+      min-height: 20px;
     }
-    #death-killer .death-killer-name { font-weight: bold; }
+
+    #death-killer .death-killer-name {
+      font-weight: bold;
+    }
+
     #death-timer {
-      font-family: monospace; font-size: 18px;
-      color: rgba(255,255,255,0.7); letter-spacing: 2px; text-shadow: 0 0 4px #000;
+      font-family: monospace;
+      font-size: 18px;
+      color: rgba(255, 255, 255, 0.7);
+      letter-spacing: 2px;
+      text-shadow: 0 0 4px #000;
       min-height: 22px;
     }
+
     #death-respawn {
-      padding: 14px 36px; font-family: inherit; font-size: 22px;
-      letter-spacing: 6px; font-style: italic; background: transparent;
-      color: #9a1313; border: 1px solid rgba(154,19,19,0.6); cursor: pointer;
-      text-shadow: 0 0 6px rgba(154,19,19,0.6); transition: all 0.15s;
-      pointer-events: auto; display: flex; flex-direction: column; align-items: center;
+      padding: 14px 36px;
+      font-family: inherit;
+      font-size: 22px;
+      letter-spacing: 6px;
+      font-style: italic;
+      background: transparent;
+      color: #9a1313;
+      border: 1px solid rgba(154, 19, 19, 0.6);
+      cursor: pointer;
+      text-shadow: 0 0 6px rgba(154, 19, 19, 0.6);
+      transition: all 0.15s;
+      pointer-events: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
+
     #death-respawn .death-respawn-hint {
-      font-size: 11px; letter-spacing: 4px; font-style: normal;
-      opacity: 0.55; margin-top: 4px;
+      font-size: 11px;
+      letter-spacing: 4px;
+      font-style: normal;
+      opacity: 0.55;
+      margin-top: 4px;
     }
-    #death-respawn:disabled { opacity: 0.25; cursor: default; }
+
+    #death-respawn:disabled {
+      opacity: 0.25;
+      cursor: default;
+    }
+
     #death-respawn:not(:disabled):hover {
-      background: rgba(154,19,19,0.15); color: #c22;
-      border-color: rgba(194,34,34,0.9);
+      background: rgba(154, 19, 19, 0.15);
+      color: #c22;
+      border-color: rgba(194, 34, 34, 0.9);
     }
+
     /* Kill Overlay — same letterbox style as death, but with a warm
        brass/khaki "confirmed kill" palette instead of cyan victory. */
     #kill-overlay {
-      position: fixed; inset: 0; display: none; z-index: 25;
+      position: fixed;
+      inset: 0;
+      display: none;
+      z-index: 25;
       pointer-events: none;
-      font-family: 'Times New Roman', serif; color: #d8b058;
+      font-family: 'Times New Roman', serif;
+      color: #d8b058;
       text-shadow: 0 0 18px rgba(216, 176, 88, 0.55), 0 0 4px #000;
     }
-    #kill-top, #kill-bottom {
-      position: absolute; left: 0; right: 0;
-      display: flex; flex-direction: column; align-items: center; gap: 8px;
+
+    #kill-top,
+    #kill-bottom {
+      position: absolute;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
     }
+
     #kill-top {
-      top: 0; padding: 48px 16px 64px;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      top: 0;
+      padding: 48px 16px 64px;
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0) 100%);
       animation: kill-slide-down 0.5s cubic-bezier(0.19, 1, 0.22, 1);
     }
+
     #kill-bottom {
-      bottom: 0; padding: 64px 16px 48px;
-      background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 100%);
+      bottom: 0;
+      padding: 64px 16px 48px;
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0) 100%);
       animation: kill-slide-up 0.5s cubic-bezier(0.19, 1, 0.22, 1);
     }
-    @keyframes kill-slide-down { from { transform: translateY(-100%); } to { transform: translateY(0); } }
-    @keyframes kill-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
-    @keyframes kill-fade-out { from { opacity: 1; } to { opacity: 0; } }
-    #kill-overlay.fade-out { animation: kill-fade-out 0.4s ease-in forwards; }
+
+    @keyframes kill-slide-down {
+      from {
+        transform: translateY(-100%);
+      }
+
+      to {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes kill-slide-up {
+      from {
+        transform: translateY(100%);
+      }
+
+      to {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes kill-fade-out {
+      from {
+        opacity: 1;
+      }
+
+      to {
+        opacity: 0;
+      }
+    }
+
+    #kill-overlay.fade-out {
+      animation: kill-fade-out 0.4s ease-in forwards;
+    }
 
     #kill-title {
-      font-size: 52px; letter-spacing: 12px; font-style: italic;
-      font-weight: bold; border-top: 1px solid rgba(216, 176, 88, 0.5);
-      border-bottom: 1px solid rgba(216, 176, 88, 0.5); padding: 12px 40px;
-      color: #f0d088; text-shadow: 0 0 20px rgba(216, 176, 88, 0.7), 0 0 4px #000;
+      font-size: 52px;
+      letter-spacing: 12px;
+      font-style: italic;
+      font-weight: bold;
+      border-top: 1px solid rgba(216, 176, 88, 0.5);
+      border-bottom: 1px solid rgba(216, 176, 88, 0.5);
+      padding: 12px 40px;
+      color: #f0d088;
+      text-shadow: 0 0 20px rgba(216, 176, 88, 0.7), 0 0 4px #000;
     }
-    #kill-victim .kill-victim-name { font-weight: bold; }
+
+    #kill-victim .kill-victim-name {
+      font-weight: bold;
+    }
 
     /* Leaderboard Overlay — post-engagement debrief: gunmetal table on
        a dark olive-tinted curtain. Brass title, khaki winner highlight,
        no more gold/cyan/red victory palette. */
     #leaderboard-overlay {
-      position: fixed; inset: 0; display: none; z-index: 30;
+      position: fixed;
+      inset: 0;
+      display: none;
+      z-index: 30;
       background: rgba(10, 12, 8, 0.88);
       backdrop-filter: blur(8px);
-      flex-direction: column; align-items: center; justify-content: center;
-      color: #e8e0c8; font-family: 'Times New Roman', serif;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #e8e0c8;
+      font-family: 'Times New Roman', serif;
     }
+
     #leaderboard-title {
-      font-size: 52px; letter-spacing: 16px; font-weight: bold;
-      text-transform: uppercase; margin-bottom: 40px;
+      font-size: 52px;
+      letter-spacing: 16px;
+      font-weight: bold;
+      text-transform: uppercase;
+      margin-bottom: 40px;
       text-shadow: 0 0 20px rgba(216, 176, 88, 0.35);
       color: #c8a868;
     }
+
     #leaderboard-table {
-      width: 80%; max-width: 800px;
-      border-collapse: collapse; font-family: monospace;
+      width: 80%;
+      max-width: 800px;
+      border-collapse: collapse;
+      font-family: monospace;
       font-size: 18px;
     }
+
     #leaderboard-table th {
-      text-align: left; padding: 12px; border-bottom: 1px solid rgba(120, 130, 100, 0.4);
-      color: rgba(192, 184, 144, 0.75); text-transform: uppercase; letter-spacing: 2px;
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.4);
+      color: rgba(192, 184, 144, 0.75);
+      text-transform: uppercase;
+      letter-spacing: 2px;
       font-size: 14px;
     }
-    #leaderboard-table td {
-      padding: 16px 12px; border-bottom: 1px solid rgba(120, 130, 100, 0.15);
-    }
-    #leaderboard-table tr:first-child { color: #e8c878; font-size: 24px; }
-    #leaderboard-table tr:first-child td { border-bottom: 1px solid rgba(216, 176, 88, 0.45); }
 
-    .lb-rank { width: 60px; opacity: 0.55; }
-    .lb-name { font-weight: bold; letter-spacing: 1px; }
-    .lb-flag { height: 16px; width: auto; vertical-align: middle; margin-right: 10px; border-radius: 1px; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
-    .lb-kills { color: #c0b890; text-align: center; width: 80px; }
-    .lb-deaths { color: #a86848; text-align: center; width: 80px; }
-    .lb-score { color: #e8e0c8; text-align: right; width: 100px; font-weight: bold; }
+    #leaderboard-table td {
+      padding: 16px 12px;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
+    }
+
+    #leaderboard-table tr:first-child {
+      color: #e8c878;
+      font-size: 24px;
+    }
+
+    #leaderboard-table tr:first-child td {
+      border-bottom: 1px solid rgba(216, 176, 88, 0.45);
+    }
+
+    .lb-rank {
+      width: 60px;
+      opacity: 0.55;
+    }
+
+    .lb-name {
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+
+    .lb-flag {
+      height: 16px;
+      width: auto;
+      vertical-align: middle;
+      margin-right: 10px;
+      border-radius: 1px;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+    }
+
+    .lb-kills {
+      color: #c0b890;
+      text-align: center;
+      width: 80px;
+    }
+
+    .lb-deaths {
+      color: #a86848;
+      text-align: center;
+      width: 80px;
+    }
+
+    .lb-score {
+      color: #e8e0c8;
+      text-align: right;
+      width: 100px;
+      font-weight: bold;
+    }
 
     #leaderboard-timer {
-      margin-top: 40px; font-size: 14px; opacity: 0.6;
-      letter-spacing: 4px; text-transform: uppercase;
+      margin-top: 40px;
+      font-size: 14px;
+      opacity: 0.6;
+      letter-spacing: 4px;
+      text-transform: uppercase;
       color: #a89868;
     }
+
     /* Single gear button replaces the old audio/settings/fullscreen
        cluster. Opens the settings modal (also bound to the ESC key). */
     #settings-gear {
-      position: fixed; top: 0; right: 0; width: 32px; height: 32px;
-      background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.35);
-      border-radius: 0; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
-      z-index: 30; font-family: sans-serif;
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 32px;
+      height: 32px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 0;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      z-index: 30;
+      font-family: sans-serif;
     }
-    #settings-gear:hover { background: rgba(0,0,0,0.85); border-color: rgba(255,255,255,0.6); }
+
+    #settings-gear:hover {
+      background: rgba(0, 0, 0, 0.85);
+      border-color: rgba(255, 255, 255, 0.6);
+    }
+
     /* Settings modal — shares the gunmetal/brass palette of the login. */
     #settings-overlay {
-      position: fixed; inset: 0;
+      position: fixed;
+      inset: 0;
       background: rgba(10, 12, 8, 0.78);
-      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-      display: none; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
       z-index: 35;
       font-family: monospace;
     }
-    #settings-overlay.open { display: flex; }
+
+    #settings-overlay.open {
+      display: flex;
+    }
+
     #settings-dialog {
       position: relative;
-      width: 480px; max-width: calc(100vw - 32px);
+      width: 480px;
+      max-width: calc(100vw - 32px);
       max-height: calc(100vh - 60px);
       overflow-y: auto;
       background: rgba(20, 22, 16, 0.95);
       border: 1px solid rgba(120, 130, 100, 0.5);
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
-      border-radius: 3px; padding: 24px 28px; color: #e8e0c8;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
+      border-radius: 3px;
+      padding: 24px 28px;
+      color: #e8e0c8;
     }
+
     #settings-dialog h2 {
-      margin: 0 0 20px; font-size: 22px; letter-spacing: 6px;
-      color: #e8d8a0; text-align: center; font-weight: bold;
+      margin: 0 0 20px;
+      font-size: 22px;
+      letter-spacing: 6px;
+      color: #e8d8a0;
+      text-align: center;
+      font-weight: bold;
     }
+
     #settings-close {
-      position: absolute; top: 8px; right: 12px; width: 28px; height: 28px;
-      background: transparent; border: none; color: #c0b890;
-      font-size: 22px; line-height: 1; cursor: pointer; font-family: sans-serif;
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      width: 28px;
+      height: 28px;
+      background: transparent;
+      border: none;
+      color: #c0b890;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      font-family: sans-serif;
     }
-    #settings-close:hover { color: #e8d8a0; }
-    .settings-section { margin-bottom: 20px; }
+
+    #settings-close:hover {
+      color: #e8d8a0;
+    }
+
+    .settings-section {
+      margin-bottom: 20px;
+    }
+
     .settings-section h3 {
-      margin: 0 0 10px; font-size: 11px; letter-spacing: 3px;
-      color: #d8b058; font-weight: bold; padding-bottom: 4px;
+      margin: 0 0 10px;
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #d8b058;
+      font-weight: bold;
+      padding-bottom: 4px;
       border-bottom: 1px solid rgba(120, 130, 100, 0.3);
     }
+
     .settings-slider-row {
-      display: grid; grid-template-columns: 80px 1fr 50px;
-      align-items: center; gap: 10px; padding: 6px 0;
-      font-size: 11px; letter-spacing: 2px; color: #c0b890;
+      display: grid;
+      grid-template-columns: 80px 1fr 50px;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: #c0b890;
     }
+
     .settings-slider-row input[type=range] {
-      width: 100%; accent-color: #d8b058;
+      width: 100%;
+      accent-color: #d8b058;
     }
+
     .settings-slider-row .slider-value {
-      text-align: right; color: #e8d8a0; font-variant-numeric: tabular-nums;
+      text-align: right;
+      color: #e8d8a0;
+      font-variant-numeric: tabular-nums;
     }
+
     .settings-toggle-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 6px 0; font-size: 11px; letter-spacing: 2px; color: #c0b890;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: #c0b890;
       cursor: pointer;
     }
+
     /* iOS-style switch — drops the native checkbox in favour of a
        sliding thumb in the brass / gunmetal palette. The <input> stays
        in the DOM (visually hidden) so the existing change handler and
        `.checked` reads keep working unchanged. */
     .toggle-switch {
-      position: relative; display: inline-block;
-      width: 40px; height: 22px; flex-shrink: 0;
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+      flex-shrink: 0;
     }
+
     .toggle-switch input {
-      opacity: 0; width: 0; height: 0; margin: 0;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
       position: absolute;
     }
+
     .toggle-slider {
-      position: absolute; inset: 0; cursor: pointer;
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
       background: rgba(0, 0, 0, 0.7);
       border: 1px solid rgba(120, 130, 100, 0.5);
       border-radius: 11px;
       transition: background 0.15s, border-color 0.15s;
     }
+
     .toggle-slider::before {
-      content: ''; position: absolute; top: 2px; left: 2px;
-      width: 16px; height: 16px; border-radius: 50%;
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
       background: #8a7858;
       transition: transform 0.15s, background 0.15s, box-shadow 0.15s;
     }
-    .toggle-switch input:checked + .toggle-slider {
+
+    .toggle-switch input:checked+.toggle-slider {
       background: rgba(80, 64, 32, 0.6);
       border-color: rgba(216, 176, 88, 0.85);
     }
-    .toggle-switch input:checked + .toggle-slider::before {
+
+    .toggle-switch input:checked+.toggle-slider::before {
       transform: translateX(18px);
       background: #e8d8a0;
       box-shadow: 0 0 8px rgba(216, 176, 88, 0.55);
     }
-    .toggle-switch input:focus-visible + .toggle-slider {
+
+    .toggle-switch input:focus-visible+.toggle-slider {
       outline: 2px solid rgba(216, 176, 88, 0.7);
       outline-offset: 2px;
     }
+
     .settings-cameras {
-      display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
       margin-top: 8px;
     }
+
     .settings-cam-btn {
-      padding: 8px; font-family: monospace; font-size: 11px;
-      letter-spacing: 1px; text-transform: uppercase;
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
-      border: 1px solid rgba(120, 130, 100, 0.4); border-radius: 2px; cursor: pointer;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+      border-radius: 2px;
+      cursor: pointer;
     }
-    .settings-cam-btn:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+
+    .settings-cam-btn:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
     .settings-cam-btn.selected {
       background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
-      color: #1a1814; border-color: #6a4828;
+      color: #1a1814;
+      border-color: #6a4828;
     }
+
     #settings-weapon-guide {
-      max-height: 260px; overflow-y: auto;
+      max-height: 260px;
+      overflow-y: auto;
       padding: 8px 10px;
       background: rgba(8, 10, 6, 0.55);
-      border: 1px solid rgba(120, 130, 100, 0.3); border-radius: 2px;
-    }
-    #settings-weapon-guide::-webkit-scrollbar { width: 4px; }
-    #settings-weapon-guide::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); }
-    .settings-weapon-item {
-      display: grid; grid-template-columns: 32px 1fr; gap: 10px;
-      align-items: center; padding: 6px 0;
-      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
-    }
-    .settings-weapon-item:last-child { border-bottom: none; }
-    .settings-weapon-item img { width: 32px; height: 32px; opacity: 0.9; }
-    .settings-weapon-name {
-      font-size: 12px; letter-spacing: 2px; color: #e8d8a0; font-weight: bold;
-      text-transform: uppercase;
-    }
-    .settings-weapon-desc {
-      font-size: 11px; line-height: 1.3; color: #a89868; margin-top: 2px;
-    }
-    #settings-exit {
-      width: 100%; padding: 11px; margin-top: 4px;
-      background: rgba(180, 60, 60, 0.18);
-      border: 1px solid rgba(180, 60, 60, 0.5); color: #f0c0c0;
-      font-family: monospace; font-size: 12px; letter-spacing: 4px;
-      text-transform: uppercase; cursor: pointer; font-weight: bold;
+      border: 1px solid rgba(120, 130, 100, 0.3);
       border-radius: 2px;
     }
-    #settings-exit:hover { background: rgba(180, 60, 60, 0.32); color: #ffe0e0; }
+
+    #settings-weapon-guide::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #settings-weapon-guide::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .settings-weapon-item {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
+    }
+
+    .settings-weapon-item:last-child {
+      border-bottom: none;
+    }
+
+    .settings-weapon-item img {
+      width: 32px;
+      height: 32px;
+      opacity: 0.9;
+    }
+
+    .settings-weapon-name {
+      font-size: 12px;
+      letter-spacing: 2px;
+      color: #e8d8a0;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+
+    .settings-weapon-desc {
+      font-size: 11px;
+      line-height: 1.3;
+      color: #a89868;
+      margin-top: 2px;
+    }
+
+    #settings-exit {
+      width: 100%;
+      padding: 11px;
+      margin-top: 4px;
+      background: rgba(180, 60, 60, 0.18);
+      border: 1px solid rgba(180, 60, 60, 0.5);
+      color: #f0c0c0;
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      cursor: pointer;
+      font-weight: bold;
+      border-radius: 2px;
+    }
+
+    #settings-exit:hover {
+      background: rgba(180, 60, 60, 0.32);
+      color: #ffe0e0;
+    }
+
     #settings-exit-confirm {
-      display: none; gap: 6px;
-      grid-template-columns: 2fr 1fr 1fr; align-items: center;
+      display: none;
+      gap: 6px;
+      grid-template-columns: 2fr 1fr 1fr;
+      align-items: center;
       margin-top: 4px;
     }
-    #settings-exit-confirm.open { display: grid; }
+
+    #settings-exit-confirm.open {
+      display: grid;
+    }
+
     #settings-exit-confirm .label {
-      font-size: 11px; letter-spacing: 2px; color: #f0c0c0;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: #f0c0c0;
     }
+
     #settings-exit-confirm button {
-      padding: 9px; font-family: monospace; font-size: 11px;
-      letter-spacing: 2px; cursor: pointer; font-weight: bold;
-      border-radius: 2px; text-transform: uppercase;
+      padding: 9px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      font-weight: bold;
+      border-radius: 2px;
+      text-transform: uppercase;
     }
+
     #exit-yes {
-      background: rgba(180, 60, 60, 0.4); color: #ffe0e0;
+      background: rgba(180, 60, 60, 0.4);
+      color: #ffe0e0;
       border: 1px solid rgba(180, 60, 60, 0.7);
     }
-    #exit-yes:hover { background: rgba(180, 60, 60, 0.6); }
+
+    #exit-yes:hover {
+      background: rgba(180, 60, 60, 0.6);
+    }
+
     #exit-no {
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
       border: 1px solid rgba(120, 130, 100, 0.4);
     }
-    #exit-no:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
-    @media (max-width: 720px) {
-      #settings-dialog { padding: 18px 20px; max-height: calc(100vh - 32px); }
-      #settings-dialog h2 { font-size: 18px; letter-spacing: 4px; }
-      #settings-weapon-guide { max-height: 220px; }
+
+    #exit-no:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
     }
+
+    @media (max-width: 720px) {
+      #settings-dialog {
+        padding: 18px 20px;
+        max-height: calc(100vh - 32px);
+      }
+
+      #settings-dialog h2 {
+        font-size: 18px;
+        letter-spacing: 4px;
+      }
+
+      #settings-weapon-guide {
+        max-height: 220px;
+      }
+    }
+
     /* Invite dialog — opens when the player clicks the code badge.
        Same gunmetal/brass palette as the settings modal. */
     #invite-dialog-overlay {
-      position: fixed; inset: 0;
+      position: fixed;
+      inset: 0;
       background: rgba(10, 12, 8, 0.78);
-      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-      display: none; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
       z-index: 35;
       font-family: monospace;
     }
-    #invite-dialog-overlay.open { display: flex; }
+
+    #invite-dialog-overlay.open {
+      display: flex;
+    }
+
     #invite-dialog {
       position: relative;
-      width: 420px; max-width: calc(100vw - 32px);
+      width: 420px;
+      max-width: calc(100vw - 32px);
       background: rgba(20, 22, 16, 0.95);
       border: 1px solid rgba(120, 130, 100, 0.5);
-      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
-      border-radius: 3px; padding: 26px 30px; color: #e8e0c8;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
+      border-radius: 3px;
+      padding: 26px 30px;
+      color: #e8e0c8;
     }
+
     #invite-dialog h2 {
-      margin: 0 0 6px; font-size: 22px; letter-spacing: 6px;
-      color: #e8d8a0; text-align: center; font-weight: bold;
+      margin: 0 0 6px;
+      font-size: 22px;
+      letter-spacing: 6px;
+      color: #e8d8a0;
+      text-align: center;
+      font-weight: bold;
     }
+
     .invite-help {
-      margin: 0 0 18px; font-size: 11px; line-height: 1.5;
-      color: #a89868; letter-spacing: 1px; text-align: center;
+      margin: 0 0 18px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #a89868;
+      letter-spacing: 1px;
+      text-align: center;
     }
+
     .invite-help-small {
-      margin: 6px 0 0; font-size: 10px; color: #8a7858;
-      letter-spacing: 1px; line-height: 1.4;
+      margin: 6px 0 0;
+      font-size: 10px;
+      color: #8a7858;
+      letter-spacing: 1px;
+      line-height: 1.4;
     }
+
     #invite-dialog-close {
-      position: absolute; top: 8px; right: 12px; width: 28px; height: 28px;
-      background: transparent; border: none; color: #c0b890;
-      font-size: 22px; line-height: 1; cursor: pointer; font-family: sans-serif;
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      width: 28px;
+      height: 28px;
+      background: transparent;
+      border: none;
+      color: #c0b890;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      font-family: sans-serif;
     }
-    #invite-dialog-close:hover { color: #e8d8a0; }
-    .invite-section { margin-bottom: 16px; }
-    .invite-section:last-child { margin-bottom: 0; }
+
+    #invite-dialog-close:hover {
+      color: #e8d8a0;
+    }
+
+    .invite-section {
+      margin-bottom: 16px;
+    }
+
+    .invite-section:last-child {
+      margin-bottom: 0;
+    }
+
     .invite-section-label {
-      font-size: 10px; letter-spacing: 3px; color: #c0b890;
-      margin-bottom: 5px; font-weight: bold;
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: #c0b890;
+      margin-bottom: 5px;
+      font-weight: bold;
     }
+
     .invite-copyable {
       position: relative;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       padding: 12px 14px;
       background: rgba(8, 10, 6, 0.85);
       border: 1px solid rgba(120, 130, 100, 0.4);
-      border-radius: 2px; cursor: pointer; user-select: none;
+      border-radius: 2px;
+      cursor: pointer;
+      user-select: none;
       transition: border-color 0.12s, background 0.12s;
     }
+
     .invite-copyable:hover {
       background: rgba(40, 45, 30, 0.85);
       border-color: rgba(216, 176, 88, 0.6);
     }
+
     .invite-copyable.copied {
       border-color: rgba(184, 232, 138, 0.7);
       background: rgba(40, 70, 30, 0.6);
     }
+
     .invite-copyable-text {
-      font-size: 22px; letter-spacing: 8px; color: #e8d8a0;
-      font-weight: bold; flex: 1;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 22px;
+      letter-spacing: 8px;
+      color: #e8d8a0;
+      font-weight: bold;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
+
     .invite-copyable-link {
-      font-size: 12px; letter-spacing: 0; font-weight: normal;
+      font-size: 12px;
+      letter-spacing: 0;
+      font-weight: normal;
       color: #c0b890;
     }
+
     .invite-copyable-action {
-      font-size: 10px; letter-spacing: 2px; color: #8a7858;
-      flex-shrink: 0; text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #8a7858;
+      flex-shrink: 0;
+      text-transform: uppercase;
     }
-    .invite-copyable.copied .invite-copyable-action { color: #b8e88a; }
-    .invite-copyable.copied .invite-copyable-text { color: #b8e88a; }
+
+    .invite-copyable.copied .invite-copyable-action {
+      color: #b8e88a;
+    }
+
+    .invite-copyable.copied .invite-copyable-text {
+      color: #b8e88a;
+    }
+
     @media (max-width: 720px) {
-      #invite-dialog { padding: 20px 22px; }
-      .invite-copyable-text { font-size: 18px; letter-spacing: 5px; }
+      #invite-dialog {
+        padding: 20px 22px;
+      }
+
+      .invite-copyable-text {
+        font-size: 18px;
+        letter-spacing: 5px;
+      }
     }
+
     /* Idle-kick warning — fixed top banner that appears when the server
        sends idle_warning > 0 and self-counts down. Any input on the
        client clears it locally; the server also clears it on the next
        activity by emitting idle_warning { secondsRemaining: 0 }. */
     #idle-warning {
-      position: fixed; top: 0; left: 50%; transform: translateX(-50%);
-      padding: 8px 18px; font-family: monospace; font-size: 12px;
-      letter-spacing: 3px; text-transform: uppercase;
-      background: rgba(180, 60, 60, 0.85); color: #fff8e0;
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 18px;
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      background: rgba(180, 60, 60, 0.85);
+      color: #fff8e0;
       border: 1px solid rgba(255, 200, 80, 0.7);
-      border-top: none; z-index: 36;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+      border-top: none;
+      z-index: 36;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
       display: none;
     }
-    #idle-warning.visible { display: block; }
-    #idle-warning .count { color: #ffd860; font-weight: bold; }
+
+    #idle-warning.visible {
+      display: block;
+    }
+
+    #idle-warning .count {
+      color: #ffd860;
+      font-weight: bold;
+    }
+
     /* Inline iOS fullscreen hint inside the settings dialog. Shown only
        when the browser exposes no FS API but the UA looks like iPhone
        Safari running in-browser (i.e. not Add-to-Home-Screen mode), so
        we can guide the user to install + relaunch. */
     #settings-fs-ios {
-      width: 100%; padding: 9px 11px; margin-top: 4px;
-      background: rgba(8, 10, 6, 0.85); color: #c0b890;
-      border: 1px solid rgba(120, 130, 100, 0.4); border-radius: 2px;
-      font-family: monospace; font-size: 11px; letter-spacing: 1px;
-      cursor: pointer; text-align: left; text-transform: none;
+      width: 100%;
+      padding: 9px 11px;
+      margin-top: 4px;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+      border-radius: 2px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      text-align: left;
+      text-transform: none;
     }
-    #settings-fs-ios:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
-    #settings-fs-ios::after { content: ' ▾'; opacity: 0.55; }
-    #settings-fs-ios.expanded::after { content: ' ▴'; }
+
+    #settings-fs-ios:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
+    #settings-fs-ios::after {
+      content: ' ▾';
+      opacity: 0.55;
+    }
+
+    #settings-fs-ios.expanded::after {
+      content: ' ▴';
+    }
+
     #settings-fs-ios-panel {
-      margin-top: 6px; padding: 10px 12px;
+      margin-top: 6px;
+      padding: 10px 12px;
       background: rgba(8, 10, 6, 0.55);
       border: 1px solid rgba(120, 130, 100, 0.3);
-      border-radius: 2px; font-size: 11px; line-height: 1.5; color: #c0b890;
+      border-radius: 2px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #c0b890;
     }
-    #settings-fs-ios-panel p { margin: 0 0 6px; }
-    #settings-fs-ios-panel ol { margin: 0; padding-left: 18px; }
-    #settings-fs-ios-panel li { margin: 3px 0; }
-    #settings-fs-ios-panel .ios-share { color: #d8b058; font-weight: bold; }
+
+    #settings-fs-ios-panel p {
+      margin: 0 0 6px;
+    }
+
+    #settings-fs-ios-panel ol {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    #settings-fs-ios-panel li {
+      margin: 3px 0;
+    }
+
+    #settings-fs-ios-panel .ios-share {
+      color: #d8b058;
+      font-weight: bold;
+    }
+
     #minimap {
-      position: fixed; bottom: 0; right: 0;
-      width: 180px; height: 180px; border-radius: 0;
-      pointer-events: none; z-index: 5;
-      box-shadow: 0 0 12px rgba(0,0,0,0.5);
+      position: fixed;
+      bottom: 0;
+      right: 0;
+      width: 180px;
+      height: 180px;
+      border-radius: 0;
+      pointer-events: none;
+      z-index: 5;
+      box-shadow: 0 0 12px rgba(0, 0, 0, 0.5);
     }
+
     body.mobile #minimap {
-      width: 120px; height: 120px;
-      top: 56px; left: 12px; right: auto; bottom: auto;
+      width: 120px;
+      height: 120px;
+      top: 56px;
+      left: 12px;
+      right: auto;
+      bottom: auto;
     }
+
     /* Mobile overlay controls — hidden by default, shown when body has .mobile */
-    #mobile-controls { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 4; }
-    body.mobile #mobile-controls { display: block; }
-    body.mobile #controls-hint { display: none; }
-    body.mobile { touch-action: none; -webkit-user-select: none; user-select: none; }
-    body.mobile #weapon-hud { pointer-events: auto; bottom: 0; }
+    #mobile-controls {
+      display: none;
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    body.mobile #mobile-controls {
+      display: block;
+    }
+
+    body.mobile #controls-hint {
+      display: none;
+    }
+
+    body.mobile {
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    body.mobile #weapon-hud {
+      pointer-events: auto;
+      bottom: 0;
+    }
+
     #mc-joystick-base {
-      position: absolute; left: 32px; bottom: 40px;
-      width: 140px; height: 140px; border-radius: 50%;
-      background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
-      pointer-events: auto; touch-action: none;
+      position: absolute;
+      left: 32px;
+      bottom: 40px;
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      pointer-events: auto;
+      touch-action: none;
     }
+
     #mc-joystick-knob {
-      position: absolute; top: 50%; left: 50%; margin: -28px 0 0 -28px;
-      width: 56px; height: 56px; border-radius: 50%;
-      background: rgba(255,255,255,0.35); border: 2px solid rgba(255,255,255,0.6);
-      pointer-events: none; transition: transform 0.05s linear;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      margin: -28px 0 0 -28px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.35);
+      border: 2px solid rgba(255, 255, 255, 0.6);
+      pointer-events: none;
+      transition: transform 0.05s linear;
     }
+
     #mc-aim-bar {
-      position: absolute; right: 40px; bottom: 40px;
-      width: 80px; height: 260px; border-radius: 40px;
-      background: rgba(154,19,19,0.18); border: 2px solid rgba(255,120,120,0.45);
-      pointer-events: auto; touch-action: none; overflow: hidden;
+      position: absolute;
+      right: 40px;
+      bottom: 40px;
+      width: 80px;
+      height: 260px;
+      border-radius: 40px;
+      background: rgba(154, 19, 19, 0.18);
+      border: 2px solid rgba(255, 120, 120, 0.45);
+      pointer-events: auto;
+      touch-action: none;
+      overflow: hidden;
     }
-    #mc-aim-bar.active { border-color: rgba(255,180,180,0.9); }
+
+    #mc-aim-bar.active {
+      border-color: rgba(255, 180, 180, 0.9);
+    }
+
     #mc-aim-bar-fill {
-      position: absolute; left: 0; right: 0; bottom: 0;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
       background: linear-gradient(to top, #ff7744, #ffcc55);
       height: 50%;
       transition: height 0.05s linear;
       opacity: 0.55;
     }
+
     #mc-aim-bar-knob {
-      position: absolute; top: 50%; left: 50%; margin: -20px 0 0 -20px;
-      width: 40px; height: 40px; border-radius: 50%;
-      background: rgba(255,220,180,0.92); border: 2px solid rgba(255,255,255,0.85);
-      box-shadow: 0 0 8px rgba(255,120,60,0.6);
-      pointer-events: none; transition: transform 0.05s linear;
-    }
-    #mc-aim-bar-label {
-      position: absolute; top: 8px; left: 0; right: 0; text-align: center;
-      color: rgba(255,230,230,0.75); font-family: monospace; font-size: 10px;
-      letter-spacing: 2px; pointer-events: none; user-select: none;
-    }
-    /* Hitmarker & Hit Flash */
-    #hit-flash {
-      position: fixed; inset: 0; pointer-events: none; z-index: 9998;
-      background: white; opacity: 0;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      margin: -20px 0 0 -20px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(255, 220, 180, 0.92);
+      border: 2px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 0 8px rgba(255, 120, 60, 0.6);
+      pointer-events: none;
+      transition: transform 0.05s linear;
     }
 
-    #hit-flash.active { animation: hit-flash-anim 0.15s ease-out; }
+    #mc-aim-bar-label {
+      position: absolute;
+      top: 8px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: rgba(255, 230, 230, 0.75);
+      font-family: monospace;
+      font-size: 10px;
+      letter-spacing: 2px;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* Hitmarker & Hit Flash */
+    #hit-flash {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9998;
+      background: white;
+      opacity: 0;
+    }
+
+    #hit-flash.active {
+      animation: hit-flash-anim 0.15s ease-out;
+    }
+
     @keyframes hit-flash-anim {
-      0% { opacity: 0.8; background: rgba(255, 255, 255, 1); filter: brightness(2) contrast(1.5); }
-      100% { opacity: 0; background: transparent; }
+      0% {
+        opacity: 0.8;
+        background: rgba(255, 255, 255, 1);
+        filter: brightness(2) contrast(1.5);
+      }
+
+      100% {
+        opacity: 0;
+        background: transparent;
+      }
     }
 
 
     #hit-marker {
-      position: fixed; top: 50%; left: 50%; width: 80px; height: 80px;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 80px;
+      height: 80px;
       transform: translate(-50%, -50%) scale(0.5);
-      pointer-events: none; opacity: 0; z-index: 9999;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 9999;
     }
 
 
-    #hit-marker.active { animation: hit-marker-anim 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards; }
+    #hit-marker.active {
+      animation: hit-marker-anim 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards;
+    }
+
     @keyframes hit-marker-anim {
-      0% { transform: translate(-50%, -50%) scale(0.4) rotate(-15deg); opacity: 1; }
-      20% { transform: translate(-50%, -50%) scale(1.5) rotate(10deg); opacity: 1; }
-      100% { transform: translate(-50%, -50%) scale(1.2) rotate(0deg); opacity: 0; }
+      0% {
+        transform: translate(-50%, -50%) scale(0.4) rotate(-15deg);
+        opacity: 1;
+      }
+
+      20% {
+        transform: translate(-50%, -50%) scale(1.5) rotate(10deg);
+        opacity: 1;
+      }
+
+      100% {
+        transform: translate(-50%, -50%) scale(1.2) rotate(0deg);
+        opacity: 0;
+      }
     }
 
 
     .hit-line {
-      position: absolute; background: #fff; width: 3px; height: 18px;
-      box-shadow: 0 0 8px rgba(255,255,255,1);
+      position: absolute;
+      background: #fff;
+      width: 3px;
+      height: 18px;
+      box-shadow: 0 0 8px rgba(255, 255, 255, 1);
     }
 
-    .hit-line:nth-child(1) { top: 0; left: 0; transform: rotate(45deg); transform-origin: top left; }
-    .hit-line:nth-child(2) { top: 0; right: 0; transform: rotate(-45deg); transform-origin: top right; }
-    .hit-line:nth-child(3) { bottom: 0; left: 0; transform: rotate(-45deg); transform-origin: bottom left; }
-    .hit-line:nth-child(4) { bottom: 0; right: 0; transform: rotate(45deg); transform-origin: bottom right; }
-    #hit-marker.kill .hit-line { background: #ff3333; box-shadow: 0 0 6px rgba(255,51,51,0.9); }
+    .hit-line:nth-child(1) {
+      top: 0;
+      left: 0;
+      transform: rotate(45deg);
+      transform-origin: top left;
+    }
+
+    .hit-line:nth-child(2) {
+      top: 0;
+      right: 0;
+      transform: rotate(-45deg);
+      transform-origin: top right;
+    }
+
+    .hit-line:nth-child(3) {
+      bottom: 0;
+      left: 0;
+      transform: rotate(-45deg);
+      transform-origin: bottom left;
+    }
+
+    .hit-line:nth-child(4) {
+      bottom: 0;
+      right: 0;
+      transform: rotate(45deg);
+      transform-origin: bottom right;
+    }
+
+    #hit-marker.kill .hit-line {
+      background: #ff3333;
+      box-shadow: 0 0 6px rgba(255, 51, 51, 0.9);
+    }
+
     .hit-particle {
-      position: absolute; width: 6px; height: 6px; border-radius: 50%;
-      background: #fff; pointer-events: none; opacity: 0; z-index: 999;
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fff;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 999;
       box-shadow: 0 0 6px #fff;
     }
-    .hit-particle.active { animation: hit-particle-anim 0.5s cubic-bezier(0.165, 0.84, 0.44, 1) forwards; }
+
+    .hit-particle.active {
+      animation: hit-particle-anim 0.5s cubic-bezier(0.165, 0.84, 0.44, 1) forwards;
+    }
+
     @keyframes hit-particle-anim {
-      0% { transform: translate(0, 0) scale(1.5); opacity: 1; }
-      100% { transform: translate(var(--tx), var(--ty)) scale(0); opacity: 0; }
+      0% {
+        transform: translate(0, 0) scale(1.5);
+        opacity: 1;
+      }
+
+      100% {
+        transform: translate(var(--tx), var(--ty)) scale(0);
+        opacity: 0;
+      }
     }
 
     /* ── Left-side stat bars (shield above boost) ── */
     #left-bars {
-      position: absolute; bottom: 74px; left: 12px;
-      display: flex; flex-direction: column; gap: 7px;
+      position: absolute;
+      bottom: 74px;
+      left: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
       pointer-events: none;
     }
-    #shield-wrap, #turbo-wrap {
-      display: flex; flex-direction: row; align-items: center; gap: 8px;
+
+    #shield-wrap,
+    #turbo-wrap {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
     }
-    #shield-label, #turbo-label {
-      font-family: monospace; font-size: 9px; letter-spacing: 2px;
-      color: rgba(255,255,255,0.7); text-shadow: 0 0 6px #000, 0 1px 2px #000;
-      width: 38px; text-align: right; flex-shrink: 0;
+
+    #shield-label,
+    #turbo-label {
+      font-family: monospace;
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: rgba(255, 255, 255, 0.7);
+      text-shadow: 0 0 6px #000, 0 1px 2px #000;
+      width: 38px;
+      text-align: right;
+      flex-shrink: 0;
     }
-    #shield-track, #turbo-track {
-      width: 148px; height: 9px; border-radius: 5px;
-      background: rgba(0,0,0,0.55);
-      border: 1px solid rgba(255,255,255,0.18);
-      box-shadow: inset 0 1px 4px rgba(0,0,0,0.7);
-      overflow: hidden; flex-shrink: 0;
+
+    #shield-track,
+    #turbo-track {
+      width: 148px;
+      height: 9px;
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.7);
+      overflow: hidden;
+      flex-shrink: 0;
     }
+
     #shield-bar {
-      height: 100%; border-radius: 5px;
+      height: 100%;
+      border-radius: 5px;
       transform-origin: left center;
       transform: scaleX(var(--sh-scale, 1));
       background: linear-gradient(to right, #1a5fff, #00d4ff);
-      box-shadow: 0 0 8px rgba(40,160,255,0.7);
+      box-shadow: 0 0 8px rgba(40, 160, 255, 0.7);
       transition: transform 0.12s linear, box-shadow 0.15s linear;
     }
+
     #shield-bar.active {
-      box-shadow: 0 0 16px rgba(80,210,255,1), 0 0 5px #aef;
+      box-shadow: 0 0 16px rgba(80, 210, 255, 1), 0 0 5px #aef;
       animation: shield-active-pulse 1.2s ease-in-out infinite alternate;
     }
+
     @keyframes shield-active-pulse {
-      from { opacity: 0.82; }
-      to   { opacity: 1; }
+      from {
+        opacity: 0.82;
+      }
+
+      to {
+        opacity: 1;
+      }
     }
+
     #turbo-bar {
-      height: 100%; border-radius: 5px;
+      height: 100%;
+      border-radius: 5px;
       transform-origin: left center;
       transform: scaleX(var(--tb-scale, 0));
       background: linear-gradient(to right, #e09000, #ff3300);
-      box-shadow: 0 0 8px rgba(255,130,0,0.6);
+      box-shadow: 0 0 8px rgba(255, 130, 0, 0.6);
       transition: transform 0.1s linear, box-shadow 0.15s linear;
     }
+
     #turbo-bar.active {
-      box-shadow: 0 0 16px rgba(255,180,0,0.95), 0 0 5px #ffe;
+      box-shadow: 0 0 16px rgba(255, 180, 0, 0.95), 0 0 5px #ffe;
     }
+
     #turbo-bar.ready-ping {
       animation: turbo-ready-ping 0.55s ease-out forwards;
     }
+
     @keyframes turbo-ready-ping {
-      0%   { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
-      25%  { box-shadow: 0 0 26px rgba(255,220,0,1), 0 0 8px #fff; }
-      60%  { box-shadow: 0 0 14px rgba(255,150,0,0.9); }
-      100% { box-shadow: 0 0 8px rgba(255,130,0,0.6); }
+      0% {
+        box-shadow: 0 0 8px rgba(255, 130, 0, 0.6);
+      }
+
+      25% {
+        box-shadow: 0 0 26px rgba(255, 220, 0, 1), 0 0 8px #fff;
+      }
+
+      60% {
+        box-shadow: 0 0 14px rgba(255, 150, 0, 0.9);
+      }
+
+      100% {
+        box-shadow: 0 0 8px rgba(255, 130, 0, 0.6);
+      }
     }
 
     /* ── Turbo boost screen VFX ── */
     #turbo-vfx {
-      position: fixed; inset: 0; pointer-events: none; z-index: 5;
-      box-shadow: inset 0 0 0 rgba(255,140,0,0);
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      box-shadow: inset 0 0 0 rgba(255, 140, 0, 0);
       transition: box-shadow 0.15s ease-out;
     }
+
     #turbo-vfx.active {
       animation: turbo-vfx-pulse 0.4s ease-in-out infinite alternate;
     }
+
     @keyframes turbo-vfx-pulse {
-      from { box-shadow: inset 0 0 60px rgba(255,160,0,0.30), inset 0 0 20px rgba(255,80,0,0.15); }
-      to   { box-shadow: inset 0 0 100px rgba(255,180,0,0.45), inset 0 0 40px rgba(255,100,0,0.25); }
+      from {
+        box-shadow: inset 0 0 60px rgba(255, 160, 0, 0.30), inset 0 0 20px rgba(255, 80, 0, 0.15);
+      }
+
+      to {
+        box-shadow: inset 0 0 100px rgba(255, 180, 0, 0.45), inset 0 0 40px rgba(255, 100, 0, 0.25);
+      }
     }
-
-
   </style>
 </head>
+
 <body>
   <div id="login-overlay">
     <canvas id="tank-preview"></canvas>
@@ -1093,7 +2367,8 @@
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
       <label for="invite-code-input">MATCH CODE</label>
-      <input id="invite-code-input" type="text" maxlength="4" autocomplete="off" placeholder="optional — leave blank to quick-join" />
+      <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
+        placeholder="optional — leave blank to quick-join" />
       <div id="login-error" style="display:none"></div>
       <button id="login-submit">QUICK JOIN</button>
       <button id="open-create-link" type="button">or create a private match &rarr;</button>
@@ -1155,18 +2430,26 @@
     <div id="left-bars">
       <div id="shield-wrap" style="display:none">
         <div id="shield-label">SHIELD</div>
-        <div id="shield-track"><div id="shield-bar"></div></div>
+        <div id="shield-track">
+          <div id="shield-bar"></div>
+        </div>
       </div>
       <div id="turbo-wrap">
         <div id="turbo-label">BOOST</div>
-        <div id="turbo-track"><div id="turbo-bar"></div></div>
+        <div id="turbo-track">
+          <div id="turbo-bar"></div>
+        </div>
       </div>
     </div>
 
-    <div id="health-bar"><div id="health-fill"></div><div id="health-label"></div></div>
+    <div id="health-bar">
+      <div id="health-fill"></div>
+      <div id="health-label"></div>
+    </div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
-    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch weapon</div>
+    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch
+      weapon</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
   </div>
   <div id="kill-overlay">
@@ -1209,7 +2492,9 @@
   </div>
 
   <div id="mobile-controls">
-    <div id="mc-joystick-base"><div id="mc-joystick-knob"></div></div>
+    <div id="mc-joystick-base">
+      <div id="mc-joystick-knob"></div>
+    </div>
     <div id="mc-aim-bar">
       <div id="mc-aim-bar-fill"></div>
       <div id="mc-aim-bar-knob"></div>
@@ -1273,4 +2558,5 @@
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
+
 </html>
