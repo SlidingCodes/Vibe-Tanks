@@ -293,7 +293,9 @@ socket.on('join_error', async ({ reason }) => {
   sendJoin();
 });
 
-// In-game invite-code badge — only visible while inside a private room.
+// In-game invite-code badge — every room (public and private) carries a
+// code, so the badge is shown for every match. Click-to-copy lets the
+// player share the code without opening the settings dialog.
 const inviteBadge = document.getElementById('invite-badge') as HTMLDivElement | null;
 const inviteBadgeCode = document.getElementById('invite-badge-code') as HTMLSpanElement | null;
 let lastInviteCode: string | undefined;
@@ -302,11 +304,11 @@ function updateInviteBadge(code: string | undefined): void {
   if (code === lastInviteCode) return;
   lastInviteCode = code;
   if (!code) {
-    inviteBadge.style.display = 'none';
+    inviteBadge.classList.remove('visible');
     return;
   }
   inviteBadgeCode.textContent = code;
-  inviteBadge.style.display = '';
+  inviteBadge.classList.add('visible');
 }
 inviteBadge?.addEventListener('click', async () => {
   if (!lastInviteCode) return;

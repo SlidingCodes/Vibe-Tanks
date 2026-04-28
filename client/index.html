@@ -343,19 +343,21 @@
       background: rgba(180, 60, 60, 0.18); border: 1px solid rgba(180, 60, 60, 0.5);
       color: #f0c0c0; border-radius: 2px; text-transform: uppercase;
     }
-    /* In-game invite-code badge — only mounted when the player is inside a
-       private room. Top-center pill that click-to-copies. */
+    /* In-game invite-code badge — every room now carries a code, so the
+       badge is always visible. Sits top-right just left of the audio /
+       settings / fullscreen cluster (right: 100px clears all three
+       32px-wide buttons + a small gap). */
     #invite-badge {
-      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-      padding: 6px 14px; font-family: monospace; font-size: 12px; letter-spacing: 4px;
-      background: rgba(20, 22, 16, 0.85); color: #e8d8a0;
-      border: 1px solid rgba(216, 176, 88, 0.6); border-radius: 3px;
-      cursor: pointer; user-select: none; z-index: 6;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-      display: none;
+      position: fixed; top: 0; right: 100px; height: 32px;
+      padding: 0 10px; display: none; align-items: center; gap: 6px;
+      font-family: monospace; font-size: 11px; letter-spacing: 3px;
+      background: rgba(0,0,0,0.55); color: #e8d8a0;
+      border: 1px solid rgba(216, 176, 88, 0.5);
+      cursor: pointer; user-select: none; z-index: 30;
     }
-    #invite-badge:hover { background: rgba(40, 36, 24, 0.9); border-color: rgba(216, 176, 88, 0.9); }
-    #invite-badge .label { color: #c0b890; margin-right: 6px; }
+    #invite-badge.visible { display: inline-flex; }
+    #invite-badge:hover { background: rgba(0,0,0,0.85); border-color: rgba(216, 176, 88, 0.9); }
+    #invite-badge .label { color: #c0b890; font-size: 10px; letter-spacing: 1px; }
     #invite-badge.copied { color: #b8e88a; border-color: rgba(184, 232, 138, 0.7); }
     @media (max-width: 720px) {
       #login-title { font-size: 28px; letter-spacing: 5px; top: 14px; }
