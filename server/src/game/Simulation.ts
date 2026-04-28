@@ -489,6 +489,45 @@ function simulateStandardShot(
   ], damageTotals, allTanks);
 }
 
+/** Nuke shot: identical solver to airburst (lobs a shell that detonates a
+ *  configurable distance above ground), but the step ships visualStyle
+ *  'nuke' so the client renders a mushroom cloud + blinding flash instead
+ *  of the standard HE puff. Big blastRadius / damage live on the weapon
+ *  config — the simulator just routes them through the airburst plumbing. */
+function simulateNukeShot(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  terrain: SimulationTerrain,
+  allTanks: TankState[],
+): ShotResult {
+  const startPos = createMuzzlePosition(shooter);
+  const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
+  const damageTotals: DamageTotals = new Map();
+  const segment = simulateSegment(startPos, startVel, terrain, {
+    airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 3,
+    hitCandidates: hitCandidatesFor(shooter, allTanks),
+  });
+
+  const terrainDamage = segment.reason === 'impact' ? weapon.terrainDamage : weapon.terrainDamage * 0.6;
+  let carveTerrain: boolean;
+  if (segment.reason === 'direct_hit' || segment.reason === 'impact') {
+    carveTerrain = applySegmentImpact(
+      segment, weapon.blastRadius, weapon.damage, terrainDamage, allTanks, damageTotals,
+    );
+  } else {
+    carveTerrain = applyImpact({
+      point: segment.endPoint,
+      blastRadius: weapon.blastRadius,
+      damage: weapon.damage,
+      terrainDamage,
+    }, allTanks, damageTotals);
+  }
+
+  return createPredictedShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'nuke'),
+  ], damageTotals, allTanks);
+}
+
 function simulateAirburstShot(
   shooter: TankState,
   weapon: WeaponDefinition,
@@ -585,6 +624,37 @@ function simulateSplitShot(
   return createPredictedShotResult(shooter.playerId, weapon.id, steps, damageTotals, allTanks);
 }
 
+/** Range (m) within which the bouncer's bounce snaps its outgoing XZ
+ *  direction onto the nearest enemy. Outside this radius the geometric
+ *  reflection is preserved, so a long-range bounce off a wall behaves
+ *  predictably when no target is around. */
+const BOUNCER_RETARGET_RADIUS = 30;
+/** Range (m) within which the drill steers underground toward the
+ *  nearest enemy on entry. Mirrors BOUNCER_RETARGET_RADIUS. */
+const DRILL_RETARGET_RADIUS = 30;
+
+function findNearestEnemy(
+  shooterId: string,
+  fromXZ: { x: number; z: number },
+  allTanks: TankState[],
+  maxRadius: number,
+): TankState | null {
+  let best: TankState | null = null;
+  let bestDist2 = maxRadius * maxRadius;
+  for (const tank of allTanks) {
+    if (tank.playerId === shooterId) continue;
+    if (!tank.alive) continue;
+    const dx = tank.position.x - fromXZ.x;
+    const dz = tank.position.z - fromXZ.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      best = tank;
+    }
+  }
+  return best;
+}
+
 function simulateBounceShot(
   shooter: TankState,
   weapon: WeaponDefinition,
@@ -610,7 +680,26 @@ function simulateBounceShot(
 
   const impactNormal = terrain.getSurfaceNormal(firstSegment.endPoint.x, firstSegment.endPoint.z);
   const damping = weapon.behaviorConfig?.bounceDamping ?? 0.72;
-  const bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
+  let bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
+  // Smart bounce: snap the outgoing XZ direction to the nearest enemy if any
+  // is within range. Preserves the magnitude of the geometric bounce, the
+  // Y component (so the shell still arcs up and back down), and damping —
+  // only the horizontal heading is rewritten so the second segment steers
+  // toward a target instead of off a useless wall.
+  const target = findNearestEnemy(shooter.playerId, firstSegment.endPoint, allTanks, BOUNCER_RETARGET_RADIUS);
+  if (target) {
+    const tx = target.position.x - firstSegment.endPoint.x;
+    const tz = target.position.z - firstSegment.endPoint.z;
+    const horizLen = Math.sqrt(tx * tx + tz * tz);
+    if (horizLen > 1e-3) {
+      const horizSpeed = Math.sqrt(bouncedVelocity.x * bouncedVelocity.x + bouncedVelocity.z * bouncedVelocity.z);
+      bouncedVelocity = {
+        x: (tx / horizLen) * horizSpeed,
+        y: bouncedVelocity.y,
+        z: (tz / horizLen) * horizSpeed,
+      };
+    }
+  }
   const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
   const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain, { hitCandidates: candidates });
   const carveTerrain = applySegmentImpact(
@@ -828,6 +917,7 @@ export function planDrillShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
+  allTanks: TankState[] = [],
 ): DrillPlan {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
@@ -843,7 +933,18 @@ export function planDrillShot(
     y: 0,
     z: Math.cos(shooter.turretRotation),
   };
-  const direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+  let direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+  // Smart underground steering: when entering the ground, redirect the burrow
+  // toward the nearest enemy (XZ only) so the eruption surfaces under them
+  // instead of along the inertial heading. Falls back to the geometric
+  // direction if no enemy is in range.
+  const target = findNearestEnemy(shooter.playerId, segment.endPoint, allTanks, DRILL_RETARGET_RADIUS);
+  if (target) {
+    const tx = target.position.x - segment.endPoint.x;
+    const tz = target.position.z - segment.endPoint.z;
+    const horizLen = Math.sqrt(tx * tx + tz * tz);
+    if (horizLen > 1e-3) direction = { x: tx / horizLen, y: 0, z: tz / horizLen };
+  }
   const drillDistance = weapon.behaviorConfig?.drillDistance ?? 5;
   const eruptionXZ = {
     x: segment.endPoint.x + direction.x * drillDistance,
@@ -891,6 +992,8 @@ export function simulateShot(
   switch (weapon.behavior) {
     case 'airburst':
       return simulateAirburstShot(shooter, weapon, terrain, allTanks);
+    case 'nuke':
+      return simulateNukeShot(shooter, weapon, terrain, allTanks);
     case 'split':
       return simulateSplitShot(shooter, weapon, terrain, allTanks);
     case 'bounce':

@@ -186,7 +186,10 @@ export const WEAPONS: WeaponDefinition[] = [
     maxAmmo: 8,
     behaviorConfig: {
       mineArmTime: 0.8,
-      mineLifetime: 14,
+      // Mines no longer expire on a timer — they persist until they
+      // detonate (proximity, chain, or shot) or until the next match
+      // reset. Field kept as a stat for HUD use; server ignores it.
+      mineLifetime: 9999,
       mineTriggerRadius: 2.5,
       mineBlastRadius: 3.6,
       mineDamage: 36,
@@ -268,6 +271,27 @@ export const WEAPONS: WeaponDefinition[] = [
       rampLength: 12,
       rampWidth: 5,
       rampHeight: 3.5,
+    },
+  },
+  {
+    // Little Boy: single-use nuclear airburst. One round per loadout, a
+    // blast that levels the neighbourhood, and a visible mushroom cloud
+    // afterwards. Tuned hot on damage and radius — having one in your
+    // inventory should change how a fight ends, not just chip extra HP.
+    id: 'little_boy',
+    name: 'Little Boy',
+    description: 'One-shot nuke — fungo nucleare, raggio enorme. Una sola munizione.',
+    projectileSpeed: 14,
+    blastRadius: 22,
+    damage: 90,
+    // Big crater on impact — a nuke leaves a mark.
+    terrainDamage: 6,
+    behavior: 'nuke',
+    cooldown: 6,
+    startAmmo: 1,
+    maxAmmo: 1,
+    behaviorConfig: {
+      airburstHeight: 3,
     },
   },
   {

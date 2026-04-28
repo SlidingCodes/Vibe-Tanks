@@ -122,6 +122,11 @@ const IDLE_WARN_SECONDS = 75;
  *  idle clock or a stationary player camping the cursor would never be
  *  considered idle. ~0.6° on either axis. */
 const IDLE_AIM_EPSILON = 0.01;
+/** Extra distance (m) beyond a mine's triggerRadius at which an enemy
+ *  starts seeing the mine in their state_update. Small enough to feel
+ *  like "preavviso minimo" — they get a frame or two of warning, never
+ *  free intel about the whole minefield from across the map. */
+const MINE_STEALTH_REVEAL_MARGIN = 1.2;
 
 interface PlayerState {
   socket?: Socket;
@@ -953,11 +958,17 @@ export class Room {
     for (const step of result.steps) {
       const flightSeconds = this.getStepFlightSeconds(step);
       lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
-      if (!step.carveTerrain) continue;
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        this.applyTerrainStep(step);
-        this.regroundAliveTanks();
+        if (step.carveTerrain) {
+          this.applyTerrainStep(step);
+          this.regroundAliveTanks();
+        }
+        // Chain-trigger any mine whose centre lies inside this step's
+        // blast — fires whether or not the step actually carves, so a
+        // direct-hit shell with a non-zero blastRadius still detonates
+        // mines in the splash without needing a terrain crater.
+        if (step.blastRadius > 0) this.triggerMinesInBlast(step.endPoint, step.blastRadius);
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
     }
@@ -983,6 +994,14 @@ export class Room {
     if (appliedCarve) this.regroundAliveTanks();
 
     this.applyResolvedDamage(ownerId, weaponId, result.damageDealt, result.impulses);
+
+    // Chain-trigger any mine sitting inside any step's blast. Same hook as
+    // scheduleShotResult but evaluated immediately for instant-resolve
+    // weapons (mortar landings, drill eruptions, mine-trigger detonations).
+    for (const step of result.steps) {
+      if (step.blastRadius <= 0) continue;
+      this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+    }
   }
 
   private applyResolvedDamage(
@@ -1084,7 +1103,7 @@ export class Room {
   }
 
   private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const plan = planDrillShot(tank, weapon, this.voxels);
+    const plan = planDrillShot(tank, weapon, this.voxels, this.getTankList());
     this.io.to(this.id).emit('shot_resolved', plan.entryResult);
 
     if (!plan.didImpact) return;
@@ -1243,7 +1262,12 @@ export class Room {
           position: segment.endPoint,
           radius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
           armed: false,
-          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 12,
+          // Mines persist for the whole match (tickHazards no longer
+          // decays mine timeRemaining). The stored value is only used to
+          // populate the wire field; clients display the mine the same
+          // way regardless. Keep the configured lifetime as a stat for
+          // future use.
+          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 9999,
           damage: weapon.behaviorConfig?.mineDamage ?? weapon.damage,
           tickInterval: 0,
           tickTimer: weapon.behaviorConfig?.mineArmTime ?? 0.8,
@@ -1559,7 +1583,14 @@ export class Room {
     }, targetTickMs);
 
     this.broadcastInterval = setInterval(() => {
-      this.io.to(this.id).emit('state_update', this.getStateUpdate());
+      // Per-recipient state_update so we can hide enemy mines outside
+      // their proximity-reveal range. Bots have no socket and are skipped.
+      // Cost: O(humans × hazards) per tick — small (≤8 humans, a handful
+      // of mines) so the saved fan-out from io.to() is a wash.
+      for (const [pid, player] of this.players) {
+        if (!player.socket) continue;
+        player.socket.emit('state_update', this.getStateUpdateFor(pid));
+      }
     }, (1 / TICK_RATE) * 1000);
 
     const fireDt = 1 / FIRE_TICK_RATE;
@@ -1985,36 +2016,90 @@ export class Room {
 
   private tickHazards(dt: number): void {
     for (const [hazardId, hazard] of this.activeHazards) {
-      hazard.timeRemaining -= dt;
-      hazard.wire.timeRemaining = hazard.timeRemaining;
-
-      if (hazard.type === 'mine') {
-        if (!hazard.armed) {
-          hazard.tickTimer -= dt;
-          if (hazard.tickTimer <= 0) {
-            hazard.armed = true;
-            hazard.wire.armed = true;
-          }
-        } else {
-          const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
-          if (triggered) {
-            const damageTotals: DamageTotals = new Map();
-            const carveTerrain = applyImpact({
-              point: hazard.position,
-              blastRadius: hazard.blastRadius,
-              damage: hazard.damage,
-              terrainDamage: hazard.terrainDamage,
-            }, this.getTankList(), damageTotals);
-            const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', carveTerrain, damageTotals);
-            this.unregisterHazard(hazardId);
-            this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
-            continue;
-          }
+      // Mines persist for the whole match — they only disappear when they
+      // detonate (proximity trigger or chain reaction) or on match reset.
+      // All other hazards keep their lifetime decay.
+      if (hazard.type !== 'mine') {
+        hazard.timeRemaining -= dt;
+        hazard.wire.timeRemaining = hazard.timeRemaining;
+        if (hazard.timeRemaining <= 0) {
+          this.unregisterHazard(hazardId);
+          continue;
         }
+        continue;
       }
 
-      if (hazard.timeRemaining <= 0) {
+      if (!hazard.armed) {
+        hazard.tickTimer -= dt;
+        if (hazard.tickTimer <= 0) {
+          hazard.armed = true;
+          hazard.wire.armed = true;
+        }
+      } else {
+        const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
+        if (triggered) {
+          this.unregisterHazard(hazardId);
+          this.detonateMine(hazard);
+          // Walking on one mine also chains nearby mines — the player
+          // who tripped the wire may be inside another mine's splash.
+          this.triggerMinesInBlast(hazard.position, hazard.blastRadius);
+        }
+      }
+    }
+  }
+
+  /** Detonate a single mine: emit shot_resolved, commit carve, apply
+   *  damage to every alive tank in blast (owner included — chain or
+   *  proximity, the splash doesn't discriminate). Caller is responsible
+   *  for unregisterHazard before calling so the mine can't double-trigger
+   *  inside applyResolvedDamage's spawn-protection branch. */
+  private detonateMine(hazard: ActiveHazardRuntime): void {
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: hazard.position,
+      blastRadius: hazard.blastRadius,
+      damage: hazard.damage,
+      terrainDamage: hazard.terrainDamage,
+    }, this.getTankList(), damageTotals);
+    const result = buildImpactResult(
+      hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', carveTerrain, damageTotals,
+    );
+    this.io.to(this.id).emit('shot_resolved', result);
+    let appliedCarve = false;
+    for (const step of result.steps) {
+      if (!step.carveTerrain) continue;
+      this.applyTerrainStep(step);
+      appliedCarve = true;
+    }
+    if (appliedCarve) this.regroundAliveTanks();
+    this.applyResolvedDamage(hazard.ownerId, hazard.weaponId, result.damageDealt, result.impulses);
+  }
+
+  /** Worklist-based chain trigger: any active mine whose centre lies inside
+   *  a blast (point + blastRadius) detonates, and the resulting blast is
+   *  queued back so subsequent mines in its splash chain too. Owner of a
+   *  chained mine is damaged like everyone else — a careless shot at your
+   *  own minefield is supposed to hurt. */
+  private triggerMinesInBlast(point: Vec3, blastRadius: number): void {
+    if (blastRadius <= 0) return;
+    const queue: { center: Vec3; radius: number }[] = [
+      { center: { x: point.x, y: point.y, z: point.z }, radius: blastRadius },
+    ];
+    while (queue.length > 0) {
+      const { center, radius } = queue.shift()!;
+      const r2 = radius * radius;
+      for (const [hazardId, hazard] of this.activeHazards) {
+        if (hazard.type !== 'mine') continue;
+        const dx = hazard.position.x - center.x;
+        const dy = hazard.position.y - center.y;
+        const dz = hazard.position.z - center.z;
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
         this.unregisterHazard(hazardId);
+        this.detonateMine(hazard);
+        queue.push({
+          center: { x: hazard.position.x, y: hazard.position.y, z: hazard.position.z },
+          radius: hazard.blastRadius,
+        });
       }
     }
   }
@@ -2258,6 +2343,37 @@ export class Room {
       tanks: this.tankList,
       projectiles: this.wireProjectiles,
       hazards: this.wireHazards,
+      pickups: this.wirePickups,
+    };
+  }
+
+  /** Recipient-aware variant of getStateUpdate. Enemy mines are filtered
+   *  out unless the recipient's tank is within the mine's trigger radius
+   *  + a small grace margin — the "preavviso minimo" model: stealth at
+   *  range, brief warning the moment you're already inside the kill box.
+   *  Owner always sees their own mines for placement awareness. */
+  private getStateUpdateFor(recipientId: PlayerId): RoomStateUpdate {
+    const tank = this.tanks.get(recipientId);
+    const px = tank?.position.x ?? 0;
+    const pz = tank?.position.z ?? 0;
+    const alive = !!(tank && tank.alive);
+
+    const filteredHazards: HazardState[] = [];
+    for (const [, runtime] of this.activeHazards) {
+      if (runtime.type === 'mine' && runtime.ownerId !== recipientId) {
+        if (!alive) continue;
+        const dx = runtime.position.x - px;
+        const dz = runtime.position.z - pz;
+        const reveal = runtime.triggerRadius + MINE_STEALTH_REVEAL_MARGIN;
+        if (dx * dx + dz * dz > reveal * reveal) continue;
+      }
+      filteredHazards.push(runtime.wire);
+    }
+
+    return {
+      tanks: this.tankList,
+      projectiles: this.wireProjectiles,
+      hazards: filteredHazards,
       pickups: this.wirePickups,
     };
   }

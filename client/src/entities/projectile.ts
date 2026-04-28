@@ -304,6 +304,21 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xa8763a,    // brass dust
         explosionScale: 0.18,
       };
+    case 'nuke':
+      // Heavy bomb silhouette — bigger shell, dim warm emissive (no neon),
+      // greyed-out trail. The real money shot is showNukeExplosion; the
+      // shell itself reads as a fat "Fat Man / Little Boy" projectile.
+      return {
+        projectileRadius: 0.42,
+        projectileColor: 0x6a625a,   // dull steel
+        emissiveColor: 0xb8842c,     // warm caution-amber
+        trailColor: 0x504a44,
+        trailSize: 0.6,
+        pathColor: 0x8a7a52,
+        pathOpacity: 0.2,
+        explosionColor: 0xfff0b8,
+        explosionScale: 1.6,
+      };
     case 'standard':
     default:
       return {
@@ -622,6 +637,144 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
   animate();
 }
 
+/** Nuke detonation: blinding flash, expanding fireball, ascending stem,
+ *  mushroom cap, and a wide ground dust ring. All the same camera-facing
+ *  sprite primitives the standard explosion uses, just bigger / longer-
+ *  lived / sequenced so it reads as a genuine nuclear blast. The full
+ *  effect plays for ~6 s and disposes itself afterwards. */
+function showNukeExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
+  const { fireBurst, smokePuff } = getParticleTextures();
+  const baseRadius = Math.max(20, step.blastRadius);
+  const origin = new THREE.Vector3(step.endPoint.x, step.endPoint.y, step.endPoint.z);
+
+  const fireMat = (tint: number, opacity: number, rot: number) =>
+    new THREE.SpriteMaterial({
+      map: fireBurst, color: tint, transparent: true, opacity,
+      depthWrite: false, blending: THREE.AdditiveBlending, rotation: rot,
+    });
+  const smokeMat = (tint: number, opacity: number, rot: number) =>
+    new THREE.SpriteMaterial({
+      map: smokePuff, color: tint, transparent: true, opacity,
+      depthWrite: false, blending: THREE.NormalBlending, rotation: rot,
+    });
+
+  // Layer 1 — blinding white flash
+  const flash = new THREE.Sprite(fireMat(0xffffff, 1.0, 0));
+  flash.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.25, 0));
+  flash.scale.setScalar(baseRadius * 3);
+  scene.add(flash);
+
+  // Layer 2 — orange fireball that expands then collapses
+  const fire = new THREE.Sprite(fireMat(0xffa040, 0.95, 0.3));
+  fire.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.4, 0));
+  fire.scale.setScalar(baseRadius * 2);
+  scene.add(fire);
+
+  // Layer 3 — rising stem (tall narrow plume)
+  const stem = new THREE.Sprite(smokeMat(0x4a3a30, 0, 0.1));
+  stem.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.6, 0));
+  stem.scale.set(baseRadius * 0.7, baseRadius * 0.4, 1);
+  scene.add(stem);
+
+  // Layer 4 — mushroom cap, two overlapping plumes
+  const cap1 = new THREE.Sprite(smokeMat(0x5a4838, 0, 0.2));
+  const cap2 = new THREE.Sprite(smokeMat(0x3a2a20, 0, -0.3));
+  cap1.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 1.2, 0));
+  cap2.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 1.0, 0));
+  cap1.scale.setScalar(baseRadius * 0.6);
+  cap2.scale.setScalar(baseRadius * 0.5);
+  scene.add(cap1);
+  scene.add(cap2);
+
+  // Layer 5 — wide ground dust shockwave
+  const dustGeo = new THREE.RingGeometry(baseRadius * 0.4, baseRadius * 0.7, 48);
+  const dustMat = new THREE.MeshBasicMaterial({
+    map: smokePuff,
+    color: 0x9a8a6a,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const dust = new THREE.Mesh(dustGeo, dustMat);
+  dust.rotation.x = -Math.PI / 2;
+  dust.position.set(origin.x, origin.y + 0.1, origin.z);
+  scene.add(dust);
+
+  let frame = 0;
+  const animate = () => {
+    frame++;
+    const flashMat = flash.material as THREE.SpriteMaterial;
+    const fireMatRef = fire.material as THREE.SpriteMaterial;
+    const stemMat = stem.material as THREE.SpriteMaterial;
+    const cap1Mat = cap1.material as THREE.SpriteMaterial;
+    const cap2Mat = cap2.material as THREE.SpriteMaterial;
+
+    // Flash burns out across the first ~10 frames
+    flash.scale.setScalar(baseRadius * 3 * (1 + frame * 0.06));
+    flashMat.opacity = Math.max(0, 1.0 - frame * 0.1);
+
+    // Fireball expands then collapses
+    const fireGrow = frame < 14 ? 1 + frame * 0.08 : 1 + 14 * 0.08 - (frame - 14) * 0.02;
+    fire.scale.setScalar(baseRadius * 2 * Math.max(0.3, fireGrow));
+    fireMatRef.opacity = frame < 6
+      ? 0.95 - frame * 0.02
+      : Math.max(0, 0.85 - (frame - 6) * 0.025);
+    fireMatRef.rotation += 0.01;
+
+    // Stem rises continuously during the early window, then holds
+    if (frame < 90) {
+      stem.position.y += baseRadius * 0.012;
+      stem.scale.x = baseRadius * 0.7 * (1 + frame * 0.012);
+      stem.scale.y = baseRadius * 0.4 * (1 + frame * 0.05);
+      stemMat.opacity = Math.min(0.7, frame * 0.012);
+    } else {
+      stemMat.opacity = Math.max(0, 0.7 - (frame - 90) * 0.005);
+    }
+
+    // Mushroom cap: rises slower, expands, lingers long
+    if (frame < 140) {
+      cap1.position.y += baseRadius * 0.008;
+      cap2.position.y += baseRadius * 0.007;
+      const capGrow = 1 + frame * 0.018;
+      cap1.scale.setScalar(baseRadius * 0.6 * capGrow);
+      cap2.scale.setScalar(baseRadius * 0.5 * capGrow);
+      cap1Mat.opacity = Math.min(0.85, frame * 0.012);
+      cap2Mat.opacity = Math.min(0.7, frame * 0.01);
+      cap1Mat.rotation += 0.002;
+      cap2Mat.rotation -= 0.0015;
+    } else {
+      cap1Mat.opacity = Math.max(0, 0.85 - (frame - 140) * 0.005);
+      cap2Mat.opacity = Math.max(0, 0.7 - (frame - 140) * 0.004);
+    }
+
+    // Dust shockwave: expands fast, fades by frame 80
+    dust.scale.setScalar(1 + frame * 0.06);
+    dustMat.opacity = frame < 12
+      ? 0.7 + frame * 0.005
+      : Math.max(0, 0.78 - (frame - 12) * 0.012);
+
+    if (frame < 320) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(flash);
+      scene.remove(fire);
+      scene.remove(stem);
+      scene.remove(cap1);
+      scene.remove(cap2);
+      scene.remove(dust);
+      flashMat.dispose();
+      fireMatRef.dispose();
+      stemMat.dispose();
+      cap1Mat.dispose();
+      cap2Mat.dispose();
+      dustGeo.dispose();
+      dustMat.dispose();
+    }
+  };
+  animate();
+}
+
 function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
   const color = step.colorOverride !== null ? step.colorOverride : 0x9ab4c0;
   const geo = new THREE.SphereGeometry(0.45, 12, 12);
@@ -894,6 +1047,8 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showBounceFlash(step, scene);
       } else if (step.visualStyle === 'mine_deploy' || step.visualStyle === 'drill_entry') {
         showDeployFlash(step, scene);
+      } else if (step.visualStyle === 'nuke') {
+        showNukeExplosion(step, scene);
       } else {
         showExplosion(step, scene);
       }

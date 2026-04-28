@@ -110,7 +110,8 @@ export type WeaponBehavior =
   | 'digger'
   | 'wall'
   | 'ramp'
-  | 'jump';
+  | 'jump'
+  | 'nuke';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -132,7 +133,8 @@ export type ShotVisualStyle =
   | 'digger_shell'
   | 'wall_shell'
   | 'ramp_shell'
-  | 'jump_launch';
+  | 'jump_launch'
+  | 'nuke';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 

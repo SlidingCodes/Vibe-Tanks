@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="lbCap" cx="0.5" cy="0.4" r="0.5">
+      <stop offset="0" stop-color="#f8e0a0"/>
+      <stop offset="0.35" stop-color="#c08040"/>
+      <stop offset="0.75" stop-color="#6a3818"/>
+      <stop offset="1" stop-color="#2a1810"/>
+    </radialGradient>
+    <linearGradient id="lbStem" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#7a5838"/>
+      <stop offset="1" stop-color="#3a2818"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="32" cy="20" rx="22" ry="10" fill="url(#lbCap)" stroke="#1a1410" stroke-width="1.5"/>
+  <ellipse cx="32" cy="16" rx="12" ry="5" fill="#f8e0a0" opacity="0.6"/>
+  <rect x="24" y="26" width="16" height="22" fill="url(#lbStem)" stroke="#1a1410" stroke-width="1.5" rx="2"/>
+  <ellipse cx="32" cy="52" rx="22" ry="6" fill="#5a4828" stroke="#1a1410" stroke-width="1.5" opacity="0.8"/>
+  <circle cx="32" cy="20" r="3" fill="#fff8d8" opacity="0.7"/>
+</svg>
