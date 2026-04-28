@@ -749,6 +749,85 @@
       #settings-dialog h2 { font-size: 18px; letter-spacing: 4px; }
       #settings-weapon-guide { max-height: 220px; }
     }
+    /* Invite dialog — opens when the player clicks the code badge.
+       Same gunmetal/brass palette as the settings modal. */
+    #invite-dialog-overlay {
+      position: fixed; inset: 0;
+      background: rgba(10, 12, 8, 0.78);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+      z-index: 35;
+      font-family: monospace;
+    }
+    #invite-dialog-overlay.open { display: flex; }
+    #invite-dialog {
+      position: relative;
+      width: 420px; max-width: calc(100vw - 32px);
+      background: rgba(20, 22, 16, 0.95);
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
+      border-radius: 3px; padding: 26px 30px; color: #e8e0c8;
+    }
+    #invite-dialog h2 {
+      margin: 0 0 6px; font-size: 22px; letter-spacing: 6px;
+      color: #e8d8a0; text-align: center; font-weight: bold;
+    }
+    .invite-help {
+      margin: 0 0 18px; font-size: 11px; line-height: 1.5;
+      color: #a89868; letter-spacing: 1px; text-align: center;
+    }
+    .invite-help-small {
+      margin: 6px 0 0; font-size: 10px; color: #8a7858;
+      letter-spacing: 1px; line-height: 1.4;
+    }
+    #invite-dialog-close {
+      position: absolute; top: 8px; right: 12px; width: 28px; height: 28px;
+      background: transparent; border: none; color: #c0b890;
+      font-size: 22px; line-height: 1; cursor: pointer; font-family: sans-serif;
+    }
+    #invite-dialog-close:hover { color: #e8d8a0; }
+    .invite-section { margin-bottom: 16px; }
+    .invite-section:last-child { margin-bottom: 0; }
+    .invite-section-label {
+      font-size: 10px; letter-spacing: 3px; color: #c0b890;
+      margin-bottom: 5px; font-weight: bold;
+    }
+    .invite-copyable {
+      position: relative;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px;
+      background: rgba(8, 10, 6, 0.85);
+      border: 1px solid rgba(120, 130, 100, 0.4);
+      border-radius: 2px; cursor: pointer; user-select: none;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .invite-copyable:hover {
+      background: rgba(40, 45, 30, 0.85);
+      border-color: rgba(216, 176, 88, 0.6);
+    }
+    .invite-copyable.copied {
+      border-color: rgba(184, 232, 138, 0.7);
+      background: rgba(40, 70, 30, 0.6);
+    }
+    .invite-copyable-text {
+      font-size: 22px; letter-spacing: 8px; color: #e8d8a0;
+      font-weight: bold; flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .invite-copyable-link {
+      font-size: 12px; letter-spacing: 0; font-weight: normal;
+      color: #c0b890;
+    }
+    .invite-copyable-action {
+      font-size: 10px; letter-spacing: 2px; color: #8a7858;
+      flex-shrink: 0; text-transform: uppercase;
+    }
+    .invite-copyable.copied .invite-copyable-action { color: #b8e88a; }
+    .invite-copyable.copied .invite-copyable-text { color: #b8e88a; }
+    @media (max-width: 720px) {
+      #invite-dialog { padding: 20px 22px; }
+      .invite-copyable-text { font-size: 18px; letter-spacing: 5px; }
+    }
     /* Idle-kick warning — fixed top banner that appears when the server
        sends idle_warning > 0 and self-counts down. Any input on the
        client clears it locally; the server also clears it on the next
@@ -999,6 +1078,28 @@
     </div>
   </div>
   <div id="invite-badge"><span class="label">INVITE</span><span id="invite-badge-code">— —</span></div>
+  <div id="invite-dialog-overlay">
+    <div id="invite-dialog">
+      <button id="invite-dialog-close" type="button" aria-label="Close">×</button>
+      <h2>INVITE</h2>
+      <p class="invite-help">Share the code or the link below so friends can drop into your match.</p>
+      <div class="invite-section">
+        <div class="invite-section-label">MATCH CODE</div>
+        <div class="invite-copyable" id="invite-dialog-code-row">
+          <span class="invite-copyable-text" id="invite-dialog-code">— —</span>
+          <span class="invite-copyable-action">click to copy</span>
+        </div>
+      </div>
+      <div class="invite-section">
+        <div class="invite-section-label">SHARE LINK</div>
+        <div class="invite-copyable" id="invite-dialog-link-row">
+          <span class="invite-copyable-text invite-copyable-link" id="invite-dialog-link">—</span>
+          <span class="invite-copyable-action">click to copy</span>
+        </div>
+        <div class="invite-help-small">Opening this link auto-fills the match code on the login screen.</div>
+      </div>
+    </div>
+  </div>
   <div id="idle-warning">Inactive — kick in <span class="count" id="idle-warning-count">15</span>s</div>
   <div id="turbo-vfx"></div>
   <div id="hit-flash"></div>

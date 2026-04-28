@@ -291,6 +291,18 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     }
 
     inviteInput.value = '';
+    // Auto-fill the code from a ?code=XXXX query string (e.g. someone
+    // pasted the share link). Validate against the same alphabet the
+    // server uses, then strip the param from the URL so a future reload
+    // doesn't re-bind to a stale code.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const presetCode = params.get('code');
+      if (presetCode && /^[A-Z2-9]{4}$/i.test(presetCode)) {
+        inviteInput.value = presetCode.toUpperCase();
+        history.replaceState(null, '', window.location.pathname + window.location.hash);
+      }
+    } catch { /* malformed URL — ignore */ }
 
     // JOIN button label tracks the code field: empty = quick-join, 4 chars
     // = "JOIN K7M2", 1-3 chars = disabled (incomplete code). Removes the

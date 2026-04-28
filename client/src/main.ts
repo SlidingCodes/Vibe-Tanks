@@ -43,6 +43,7 @@ import {
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
+import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
@@ -310,15 +311,17 @@ socket.on('join_error', async ({ reason }) => {
 });
 
 // In-game invite-code badge — every room (public and private) carries a
-// code, so the badge is shown for every match. Click-to-copy lets the
-// player share the code without opening the settings dialog.
+// code, so the badge is shown for every match. Clicking it opens the
+// invite dialog (code + share-link with click-to-copy on each).
 const inviteBadge = document.getElementById('invite-badge') as HTMLDivElement | null;
 const inviteBadgeCode = document.getElementById('invite-badge-code') as HTMLSpanElement | null;
+const inviteDialog = setupInviteDialog();
 let lastInviteCode: string | undefined;
 function updateInviteBadge(code: string | undefined): void {
   if (!inviteBadge || !inviteBadgeCode) return;
   if (code === lastInviteCode) return;
   lastInviteCode = code;
+  inviteDialog.setCode(code);
   if (!code) {
     inviteBadge.classList.remove('visible');
     return;
@@ -326,14 +329,6 @@ function updateInviteBadge(code: string | undefined): void {
   inviteBadgeCode.textContent = code;
   inviteBadge.classList.add('visible');
 }
-inviteBadge?.addEventListener('click', async () => {
-  if (!lastInviteCode) return;
-  try {
-    await navigator.clipboard.writeText(lastInviteCode);
-    inviteBadge.classList.add('copied');
-    setTimeout(() => inviteBadge.classList.remove('copied'), 900);
-  } catch { /* clipboard blocked — silently no-op */ }
-});
 
 // Idle-kick warning: server fires once when crossing the 75 s no-input
 // threshold; the banner counts down locally so we don't depend on

@@ -159,10 +159,15 @@ export function setupSettingsDialog(onExit: () => void): void {
   dialog.addEventListener('click', (e) => e.stopPropagation());
   // ESC toggles, but only after the player is past the login. Inside
   // the login overlay ESC is a no-op (the form has its own input flow).
+  // Yields to the invite dialog when *that* is open, so a single ESC
+  // press closes whichever modal is on screen instead of toggling
+  // settings underneath.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     const login = document.getElementById('login-overlay') as HTMLDivElement | null;
     if (login && login.style.display !== 'none' && getComputedStyle(login).display !== 'none') return;
+    const invite = document.getElementById('invite-dialog-overlay');
+    if (invite?.classList.contains('open')) return;
     e.preventDefault();
     setOpen(!overlay.classList.contains('open'));
   });
