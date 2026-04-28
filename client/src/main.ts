@@ -1556,10 +1556,14 @@ function animate(): void {
         let barrelPitch: number;
         let railEndPoint: { x: number; y: number; z: number } | null = null;
         let railStartPoint: { x: number; y: number; z: number } | null = null;
-        if (selectedWeapon.behavior === 'rail') {
-          const railAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
-          nextTurretRotation = railAim.turretRotation;
-          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, railAim.barrelPitch));
+        // Hitscan weapons (rail + minigun) need to point the barrel
+        // straight at the cursor — the ballistic solver below would
+        // divide by projectileSpeed²=0 for the minigun and explode.
+        const isHitscanAim = selectedWeapon.behavior === 'rail' || selectedWeapon.behavior === 'minigun';
+        if (isHitscanAim) {
+          const directAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
+          nextTurretRotation = directAim.turretRotation;
+          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, directAim.barrelPitch));
         } else {
           const a = (g * dist * dist) / (2 * v * v);
           const disc = dist * dist - 4 * a * (dy + a);
@@ -1586,10 +1590,14 @@ function animate(): void {
 
         const muzzle = computeMuzzle(predictedState);
         const previewStart = railStartPoint ?? muzzle.origin;
+        // Hitscan weapons have projectileSpeed 0, which would zero out the
+        // direction vector the trajectory preview normalises. Use a unit
+        // direction in that case so the preview line still extends.
+        const previewSpeed = v > 0 ? v : 1;
         updateTrajectoryPreview(
           scene,
           previewStart.x, previewStart.y, previewStart.z,
-          muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+          muzzle.direction.x * previewSpeed, muzzle.direction.y * previewSpeed, muzzle.direction.z * previewSpeed,
           selectedWeapon,
           { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
           railEndPoint,
