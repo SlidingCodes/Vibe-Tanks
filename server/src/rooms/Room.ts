@@ -203,6 +203,8 @@ export interface RoomOptions {
   /** When true, the room is hidden from quick-join and is only reachable
    *  via its invite code. */
   private?: boolean;
+  /** 4-char share code for private rooms. Undefined for public rooms. */
+  inviteCode?: string;
   /** Called once when the last human leaves. Lets the RoomManager drop
    *  the room and call shutdown() to free Rapier wasm + intervals. */
   onEmpty?: () => void;
@@ -267,6 +269,8 @@ export class Room {
   /** True for rooms created via an invite code. Public quick-join skips
    *  these so a private lobby doesn't accidentally pull in strangers. */
   readonly private: boolean;
+  /** 4-letter share code shown to private-room creators / joiners. */
+  readonly inviteCode?: string;
   /** Manager hook fired the instant the last human leaves so the manager
    *  can call shutdown() and drop the room. Bots alone never keep a room
    *  alive — they exist only to give a human someone to shoot at. */
@@ -281,6 +285,7 @@ export class Room {
     this.id = id;
     this.io = io;
     this.private = options.private ?? false;
+    this.inviteCode = options.inviteCode;
     this.onEmpty = options.onEmpty;
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
@@ -2182,6 +2187,7 @@ export class Room {
       countdownEndsInMs: this.phase === MatchPhase.Countdown
         ? Math.max(0, this.countdownEndsAt - Date.now())
         : 0,
+      inviteCode: this.inviteCode,
     };
   }
 }

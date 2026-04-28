@@ -256,16 +256,64 @@ if (isMobileDevice()) {
 
 // ── Networking ──
 // Block until the player has picked a name + color from the login overlay.
-const login = await showLogin();
+let login = await showLogin();
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
+const sendJoin = (): void => {
+  socket.emit('join_room', {
+    playerName: login.name,
+    color: login.color,
+    flagId: login.flagId,
+    mode: login.mode,
+    inviteCode: login.inviteCode,
+  });
+  hud.showWaiting(true);
+};
+
 socket.on('connect', () => {
   myId = socket.id!;
-  socket.emit('join_room', { playerName: login.name, color: login.color, flagId: login.flagId });
-  hud.showWaiting(true);
+  sendJoin();
+});
+
+socket.on('join_error', async ({ reason }) => {
+  const message: string = (() => {
+    switch (reason) {
+      case 'invalid_code': return 'Invite code not found. Check with the host.';
+      case 'room_full':    return 'That room is full. Try Quick Match.';
+      case 'cap_reached':  return 'Server is at capacity. Try again in a moment.';
+      case 'missing_code': return 'Enter a 4-letter invite code.';
+      default:             return 'Could not join. Try again.';
+    }
+  })();
+  login = await showLogin(message);
+  sendJoin();
+});
+
+// In-game invite-code badge — only visible while inside a private room.
+const inviteBadge = document.getElementById('invite-badge') as HTMLDivElement | null;
+const inviteBadgeCode = document.getElementById('invite-badge-code') as HTMLSpanElement | null;
+let lastInviteCode: string | undefined;
+function updateInviteBadge(code: string | undefined): void {
+  if (!inviteBadge || !inviteBadgeCode) return;
+  if (code === lastInviteCode) return;
+  lastInviteCode = code;
+  if (!code) {
+    inviteBadge.style.display = 'none';
+    return;
+  }
+  inviteBadgeCode.textContent = code;
+  inviteBadge.style.display = '';
+}
+inviteBadge?.addEventListener('click', async () => {
+  if (!lastInviteCode) return;
+  try {
+    await navigator.clipboard.writeText(lastInviteCode);
+    inviteBadge.classList.add('copied');
+    setTimeout(() => inviteBadge.classList.remove('copied'), 900);
+  } catch { /* clipboard blocked — silently no-op */ }
 });
 
 // RTT probe: emit a ping every 2 s stamped with performance.now(). The server
@@ -282,6 +330,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
   pickupScene.sync(snap.pickups ?? []);
+  updateInviteBadge(snap.inviteCode);
 
   if (!hasPlayedWelcomeAnnounce) {
     playAnnouncer('VIBE TANKS!');

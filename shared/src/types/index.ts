@@ -366,7 +366,25 @@ export interface MatchSnapshot {
   resetsInSeconds: number;
   /** Milliseconds remaining in the start-of-match Countdown phase. 0 outside Countdown. */
   countdownEndsInMs: number;
+  /** 4-letter share code for private rooms (omitted for public quick-join
+   *  rooms). Lets the room creator paste it into chat for friends to join. */
+  inviteCode?: string;
 }
+
+/** How a client wants to be routed by the RoomManager. Default is 'quick'
+ *  (find or create a public room). 'create_private' spins up a fresh
+ *  invite-only room and returns its code via MatchSnapshot.inviteCode.
+ *  'join_private' targets the room with the supplied inviteCode. */
+export type JoinMode = 'quick' | 'create_private' | 'join_private';
+
+/** Reason the server rejected a join_room request. The client surfaces
+ *  these to the user so they know whether to retry, change mode, or
+ *  fix the code. */
+export type JoinErrorReason =
+  | 'invalid_code'
+  | 'room_full'
+  | 'cap_reached'
+  | 'missing_code';
 
 // ── Fire (napalm cellular automaton) ──
 export interface FireCell {
@@ -440,7 +458,16 @@ export interface ShotResult {
 
 // ── Network events: client → server ──
 export interface ClientEvents {
-  join_room: (data: { playerName: string; color?: string; flagId?: string }) => void;
+  join_room: (data: {
+    playerName: string;
+    color?: string;
+    flagId?: string;
+    /** Routing mode. Omitted = 'quick'. */
+    mode?: JoinMode;
+    /** Required when mode === 'join_private'. 4 letters from a no-confusables
+     *  alphabet — the server lookup is case-insensitive. */
+    inviteCode?: string;
+  }) => void;
   respawn_request: () => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
@@ -500,4 +527,7 @@ export interface ServerEvents {
     playerId?: PlayerId;
     outcome?: PickupCollectOutcome;
   }) => void;
+  /** Server refused the join_room. Client surfaces the reason and
+   *  re-shows the login overlay so the player can retry / fix the code. */
+  join_error: (data: { reason: JoinErrorReason }) => void;
 }

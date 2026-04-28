@@ -16,10 +16,18 @@ const finiteNumber = z.number().finite();
 // palette uses the short form, while user-typed colors tend to be long.
 const hexColor = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
 
+// Invite codes are 4 chars from a no-confusables base32 alphabet. Accept
+// both cases on the wire and let the server normalize to upper before
+// comparing. The strict regex is what protects the lookup table from
+// arbitrary user input ("' OR 1=1" etc); we don't trust it being short.
+const inviteCode = z.string().regex(/^[A-Za-z2-9]{4}$/);
+
 export const JoinRoomSchema = z.object({
   playerName: z.string().min(1).max(32),
   color: hexColor.optional(),
   flagId: z.string().optional(),
+  mode: z.enum(['quick', 'create_private', 'join_private']).optional(),
+  inviteCode: inviteCode.optional(),
 });
 
 export const MovementInputSchema = z.object({

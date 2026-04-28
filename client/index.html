@@ -240,16 +240,55 @@
     .flag-swatch.selected { border-color: #d8b058; box-shadow: 0 0 6px rgba(216,176,88,0.5); }
     /* Deploy button — khaki/brass plate with stencil readout. No more
        lime-green call-to-action. */
-    #login-panel button {
+    #login-panel #login-submit {
       margin-top: 24px; width: 100%; padding: 12px; font-family: inherit; font-size: 14px;
       background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
       color: #1a1814; border: 1px solid #6a4828; border-radius: 2px; cursor: pointer;
       font-weight: bold; letter-spacing: 4px; text-transform: uppercase;
       box-shadow: inset 0 1px 0 rgba(255,230,170,0.3), 0 2px 4px rgba(0,0,0,0.5);
     }
-    #login-panel button:hover {
+    #login-panel #login-submit:hover {
       background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
     }
+    /* Mode picker — segmented row of 3 buttons (QUICK / JOIN / CREATE).
+       Stays inside the gunmetal/khaki palette of the rest of the panel. */
+    #mode-segment {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0;
+      border: 1px solid rgba(120, 130, 100, 0.45); border-radius: 2px;
+      overflow: hidden; margin-top: 0;
+    }
+    .mode-btn {
+      padding: 9px 0; font-family: monospace; font-size: 11px; letter-spacing: 2px;
+      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      border: none; cursor: pointer; text-transform: uppercase;
+      transition: background 0.1s, color 0.1s;
+    }
+    .mode-btn + .mode-btn { border-left: 1px solid rgba(120, 130, 100, 0.3); }
+    .mode-btn.active { background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%); color: #1a1814; font-weight: bold; }
+    .mode-btn:hover:not(.active) { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+    #invite-code-input {
+      letter-spacing: 6px !important; text-transform: uppercase !important;
+      text-align: center !important; font-size: 18px !important; font-weight: bold;
+    }
+    #login-error {
+      margin-top: 10px; padding: 8px 10px; font-size: 11px; letter-spacing: 1px;
+      background: rgba(180, 60, 60, 0.18); border: 1px solid rgba(180, 60, 60, 0.5);
+      color: #f0c0c0; border-radius: 2px; text-transform: uppercase;
+    }
+    /* In-game invite-code badge — only mounted when the player is inside a
+       private room. Top-center pill that click-to-copies. */
+    #invite-badge {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 6px 14px; font-family: monospace; font-size: 12px; letter-spacing: 4px;
+      background: rgba(20, 22, 16, 0.85); color: #e8d8a0;
+      border: 1px solid rgba(216, 176, 88, 0.6); border-radius: 3px;
+      cursor: pointer; user-select: none; z-index: 6;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+      display: none;
+    }
+    #invite-badge:hover { background: rgba(40, 36, 24, 0.9); border-color: rgba(216, 176, 88, 0.9); }
+    #invite-badge .label { color: #c0b890; margin-right: 6px; }
+    #invite-badge.copied { color: #b8e88a; border-color: rgba(184, 232, 138, 0.7); }
     @media (max-width: 720px) {
       #login-title { font-size: 28px; letter-spacing: 5px; top: 14px; }
       #login-panel {
@@ -666,9 +705,21 @@
       <label>FLAG</label>
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
+      <label>MODE</label>
+      <div id="mode-segment">
+        <button type="button" class="mode-btn active" data-mode="quick">Quick</button>
+        <button type="button" class="mode-btn" data-mode="join_private">Join</button>
+        <button type="button" class="mode-btn" data-mode="create_private">Create</button>
+      </div>
+      <div id="invite-code-row" style="display:none">
+        <label for="invite-code-input">INVITE CODE</label>
+        <input id="invite-code-input" type="text" maxlength="4" autocomplete="off" placeholder="K7M2" />
+      </div>
+      <div id="login-error" style="display:none"></div>
       <button id="login-submit">JOIN BATTLE</button>
     </div>
   </div>
+  <div id="invite-badge"><span class="label">INVITE</span><span id="invite-badge-code">— —</span></div>
   <div id="turbo-vfx"></div>
   <div id="hit-flash"></div>
   <div id="hit-marker">

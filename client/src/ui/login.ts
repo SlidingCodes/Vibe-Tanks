@@ -244,14 +244,21 @@ function pickRandomName(): string {
   return randomNames[Math.floor(Math.random() * randomNames.length)];
 }
 
+export type JoinMode = 'quick' | 'create_private' | 'join_private';
+
 export interface LoginResult {
   name: string;
   color: string;
   flagId: string;
+  mode: JoinMode;
+  /** Set only when mode === 'join_private'. Always 4 uppercase chars. */
+  inviteCode?: string;
 }
 
-/** Block until the player submits a name + color. */
-export function showLogin(): Promise<LoginResult> {
+/** Block until the player submits a name + color. The promise rejects if
+ *  the caller invokes the returned `reject` hook (e.g. on a server-side
+ *  join_error so we can re-show the login overlay with a message). */
+export function showLogin(initialError?: string): Promise<LoginResult> {
   return new Promise(async (resolve) => {
     const overlay = document.getElementById('login-overlay') as HTMLDivElement;
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
@@ -260,6 +267,51 @@ export function showLogin(): Promise<LoginResult> {
     const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
+    const modeSegment = document.getElementById('mode-segment') as HTMLDivElement;
+    const inviteRow = document.getElementById('invite-code-row') as HTMLDivElement;
+    const inviteInput = document.getElementById('invite-code-input') as HTMLInputElement;
+    const errorBox = document.getElementById('login-error') as HTMLDivElement;
+
+    overlay.style.display = '';
+    if (initialError) {
+      errorBox.textContent = initialError;
+      errorBox.style.display = 'block';
+    } else {
+      errorBox.style.display = 'none';
+    }
+
+    let selectedMode: JoinMode = 'quick';
+    inviteInput.value = '';
+
+    const submitLabel = (m: JoinMode): string => {
+      if (m === 'join_private') return 'JOIN PRIVATE';
+      if (m === 'create_private') return 'CREATE PRIVATE';
+      return 'JOIN BATTLE';
+    };
+    submit.textContent = submitLabel(selectedMode);
+
+    const setMode = (m: JoinMode): void => {
+      selectedMode = m;
+      modeSegment.querySelectorAll('.mode-btn').forEach((b) => {
+        const el = b as HTMLButtonElement;
+        el.classList.toggle('active', el.dataset.mode === m);
+      });
+      inviteRow.style.display = m === 'join_private' ? 'block' : 'none';
+      submit.textContent = submitLabel(m);
+      // Clear stale validation errors when the user changes intent.
+      errorBox.style.display = 'none';
+    };
+    setMode('quick');
+    modeSegment.querySelectorAll('.mode-btn').forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      el.addEventListener('click', () => setMode(el.dataset.mode as JoinMode));
+    });
+
+    // Force uppercase + strip non-alphabet chars as the user types.
+    const onCodeInput = (): void => {
+      inviteInput.value = inviteInput.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+    };
+    inviteInput.addEventListener('input', onCodeInput);
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
@@ -339,17 +391,35 @@ export function showLogin(): Promise<LoginResult> {
 
     const done = () => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
+      // For join_private, require a 4-char code before dismissing. The
+      // server would reject otherwise and we'd just bounce back here, so
+      // catching it client-side avoids an empty round-trip.
+      if (selectedMode === 'join_private' && inviteInput.value.length !== 4) {
+        errorBox.textContent = 'Enter a 4-letter invite code.';
+        errorBox.style.display = 'block';
+        inviteInput.focus();
+        return;
+      }
       overlay.style.display = 'none';
       submit.removeEventListener('click', done);
       nameInput.removeEventListener('keydown', onKey);
+      inviteInput.removeEventListener('keydown', onKey);
+      inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected, flagId: selectedFlag });
+      resolve({
+        name,
+        color: selected,
+        flagId: selectedFlag,
+        mode: selectedMode,
+        inviteCode: selectedMode === 'join_private' ? inviteInput.value : undefined,
+      });
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };
 
     submit.addEventListener('click', done);
     nameInput.addEventListener('keydown', onKey);
+    inviteInput.addEventListener('keydown', onKey);
     nameInput.focus();
     nameInput.select();
   });

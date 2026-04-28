@@ -11,8 +11,17 @@ import { Room } from './Room';
  *  while leaving headroom for a temporary spike during reconnects. */
 const MAX_ROOMS = 16;
 
+/** Invite-code alphabet — base32 minus the visually ambiguous 0/O/1/I.
+ *  4 chars × 31 = 923 K combos, far more than the 16-room cap so every
+ *  fresh code lands cleanly even with a tiny retry loop. */
+const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const INVITE_CODE_LEN = 4;
+
 export class RoomManager {
   private rooms: Map<RoomId, Room> = new Map();
+  /** Reverse index for invite-code lookup. Only populated for private
+   *  rooms; cleared in removeRoom alongside the main map. */
+  private codes: Map<string, RoomId> = new Map();
   private nextRoomNum = 1;
 
   constructor(private io: Server<ClientEvents, ServerEvents>) {}
@@ -27,19 +36,56 @@ export class RoomManager {
       if (room.humanCount() < MAX_PLAYERS) return room;
     }
     if (this.rooms.size >= MAX_ROOMS) return null;
-    return this.createRoom(false);
+    return this.createRoom({ private: false });
   }
 
-  private createRoom(isPrivate: boolean): Room {
+  /** Spin up a brand-new private room with a fresh invite code. The
+   *  caller is expected to immediately addPlayer the creator. Returns
+   *  null at the cap (same DoS gate as quick-join). */
+  createPrivate(): Room | null {
+    if (this.rooms.size >= MAX_ROOMS) return null;
+    return this.createRoom({ private: true, inviteCode: this.freshCode() });
+  }
+
+  /** Look up a private room by its share code (case-insensitive). Returns
+   *  null when the code is unknown OR the room has filled up since it was
+   *  created — the caller distinguishes the cases by checking
+   *  humanCount() against MAX_PLAYERS. */
+  findByInviteCode(rawCode: string): Room | null {
+    const code = rawCode.toUpperCase();
+    const id = this.codes.get(code);
+    if (!id) return null;
+    const room = this.rooms.get(id);
+    return room ?? null;
+  }
+
+  private freshCode(): string {
+    // 31^4 = 923 K combos vs at most 16 active rooms, so collisions are
+    // a once-in-many-trillion-room event. The retry loop is here purely
+    // for correctness — a hit just regenerates and tries again.
+    while (true) {
+      let code = '';
+      for (let i = 0; i < INVITE_CODE_LEN; i++) {
+        code += INVITE_ALPHABET[Math.floor(Math.random() * INVITE_ALPHABET.length)];
+      }
+      if (!this.codes.has(code)) return code;
+    }
+  }
+
+  private createRoom(opts: { private: boolean; inviteCode?: string }): Room {
     const id = `room_${this.nextRoomNum++}`;
     const presetId = getRandomTerrainPresetId();
     const room = new Room(id, this.io, presetId, {
-      private: isPrivate,
+      private: opts.private,
+      inviteCode: opts.inviteCode,
       onEmpty: () => this.removeRoom(id),
     });
     this.rooms.set(id, room);
+    if (opts.inviteCode) this.codes.set(opts.inviteCode, id);
     // eslint-disable-next-line no-console
-    console.log(`[rooms] created ${id} (private=${isPrivate}); active=${this.rooms.size}`);
+    console.log(
+      `[rooms] created ${id} (private=${opts.private}${opts.inviteCode ? `, code=${opts.inviteCode}` : ''}); active=${this.rooms.size}`,
+    );
     return room;
   }
 
@@ -47,6 +93,7 @@ export class RoomManager {
     const room = this.rooms.get(id);
     if (!room) return;
     this.rooms.delete(id);
+    if (room.inviteCode) this.codes.delete(room.inviteCode);
     room.shutdown();
     // eslint-disable-next-line no-console
     console.log(`[rooms] disposed ${id}; active=${this.rooms.size}`);

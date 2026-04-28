@@ -1,7 +1,7 @@
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '@shared/types/index';
-import { SERVER_PORT } from '@shared/constants';
+import { MAX_PLAYERS, SERVER_PORT } from '@shared/constants';
 import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
@@ -38,14 +38,39 @@ async function main(): Promise<void> {
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
-      const room = manager.findOrCreatePublic();
-      if (!room) {
-        console.warn(`[join] rejected ${data.playerName} (${socket.id}): server room cap reached`);
-        socket.disconnect(true);
-        return;
+      const mode = data.mode ?? 'quick';
+      let room: ReturnType<typeof manager.findOrCreatePublic>;
+      if (mode === 'create_private') {
+        room = manager.createPrivate();
+        if (!room) {
+          socket.emit('join_error', { reason: 'cap_reached' });
+          return;
+        }
+      } else if (mode === 'join_private') {
+        if (!data.inviteCode) {
+          socket.emit('join_error', { reason: 'missing_code' });
+          return;
+        }
+        room = manager.findByInviteCode(data.inviteCode);
+        if (!room) {
+          socket.emit('join_error', { reason: 'invalid_code' });
+          return;
+        }
+        // Re-check humanCount up-front so we send a clean error rather
+        // than letting addPlayer's silent-drop guard kick in.
+        if (room.humanCount() >= MAX_PLAYERS) {
+          socket.emit('join_error', { reason: 'room_full' });
+          return;
+        }
+      } else {
+        room = manager.findOrCreatePublic();
+        if (!room) {
+          socket.emit('join_error', { reason: 'cap_reached' });
+          return;
+        }
       }
       room.addPlayer(socket, data.playerName, data.color, data.flagId);
-      console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id}`);
+      console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id} (mode=${mode})`);
     });
 
     socket.on('disconnect', () => {
