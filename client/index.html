@@ -581,15 +581,143 @@
       letter-spacing: 4px; text-transform: uppercase;
       color: #a89868;
     }
-    /* Fullscreen toggle — always visible, tiny, top-right. z-index must
-       sit above login (10) and death (20) overlays. */
-    #fullscreen-btn {
+    /* Single gear button replaces the old audio/settings/fullscreen
+       cluster. Opens the settings modal (also bound to the ESC key). */
+    #settings-gear {
       position: fixed; top: 0; right: 0; width: 32px; height: 32px;
       background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.35);
       border-radius: 0; font-size: 18px; cursor: pointer; padding: 0; line-height: 1;
       z-index: 30; font-family: sans-serif;
     }
-    #fullscreen-btn:hover { background: rgba(0,0,0,0.75); }
+    #settings-gear:hover { background: rgba(0,0,0,0.85); border-color: rgba(255,255,255,0.6); }
+    /* Settings modal — shares the gunmetal/brass palette of the login. */
+    #settings-overlay {
+      position: fixed; inset: 0;
+      background: rgba(10, 12, 8, 0.78);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+      z-index: 35;
+      font-family: monospace;
+    }
+    #settings-overlay.open { display: flex; }
+    #settings-dialog {
+      position: relative;
+      width: 480px; max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 60px);
+      overflow-y: auto;
+      background: rgba(20, 22, 16, 0.95);
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.7);
+      border-radius: 3px; padding: 24px 28px; color: #e8e0c8;
+    }
+    #settings-dialog h2 {
+      margin: 0 0 20px; font-size: 22px; letter-spacing: 6px;
+      color: #e8d8a0; text-align: center; font-weight: bold;
+    }
+    #settings-close {
+      position: absolute; top: 8px; right: 12px; width: 28px; height: 28px;
+      background: transparent; border: none; color: #c0b890;
+      font-size: 22px; line-height: 1; cursor: pointer; font-family: sans-serif;
+    }
+    #settings-close:hover { color: #e8d8a0; }
+    .settings-section { margin-bottom: 20px; }
+    .settings-section h3 {
+      margin: 0 0 10px; font-size: 11px; letter-spacing: 3px;
+      color: #d8b058; font-weight: bold; padding-bottom: 4px;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.3);
+    }
+    .settings-slider-row {
+      display: grid; grid-template-columns: 80px 1fr 50px;
+      align-items: center; gap: 10px; padding: 6px 0;
+      font-size: 11px; letter-spacing: 2px; color: #c0b890;
+    }
+    .settings-slider-row input[type=range] {
+      width: 100%; accent-color: #d8b058;
+    }
+    .settings-slider-row .slider-value {
+      text-align: right; color: #e8d8a0; font-variant-numeric: tabular-nums;
+    }
+    .settings-toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0; font-size: 11px; letter-spacing: 2px; color: #c0b890;
+      cursor: pointer;
+    }
+    .settings-toggle-row input { accent-color: #d8b058; cursor: pointer; }
+    .settings-cameras {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+      margin-top: 8px;
+    }
+    .settings-cam-btn {
+      padding: 8px; font-family: monospace; font-size: 11px;
+      letter-spacing: 1px; text-transform: uppercase;
+      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4); border-radius: 2px; cursor: pointer;
+    }
+    .settings-cam-btn:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+    .settings-cam-btn.selected {
+      background: linear-gradient(180deg, #c0a058 0%, #8a7038 100%);
+      color: #1a1814; border-color: #6a4828;
+    }
+    #settings-weapon-guide {
+      max-height: 260px; overflow-y: auto;
+      padding: 8px 10px;
+      background: rgba(8, 10, 6, 0.55);
+      border: 1px solid rgba(120, 130, 100, 0.3); border-radius: 2px;
+    }
+    #settings-weapon-guide::-webkit-scrollbar { width: 4px; }
+    #settings-weapon-guide::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); }
+    .settings-weapon-item {
+      display: grid; grid-template-columns: 32px 1fr; gap: 10px;
+      align-items: center; padding: 6px 0;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
+    }
+    .settings-weapon-item:last-child { border-bottom: none; }
+    .settings-weapon-item img { width: 32px; height: 32px; opacity: 0.9; }
+    .settings-weapon-name {
+      font-size: 12px; letter-spacing: 2px; color: #e8d8a0; font-weight: bold;
+      text-transform: uppercase;
+    }
+    .settings-weapon-desc {
+      font-size: 11px; line-height: 1.3; color: #a89868; margin-top: 2px;
+    }
+    #settings-exit {
+      width: 100%; padding: 11px; margin-top: 4px;
+      background: rgba(180, 60, 60, 0.18);
+      border: 1px solid rgba(180, 60, 60, 0.5); color: #f0c0c0;
+      font-family: monospace; font-size: 12px; letter-spacing: 4px;
+      text-transform: uppercase; cursor: pointer; font-weight: bold;
+      border-radius: 2px;
+    }
+    #settings-exit:hover { background: rgba(180, 60, 60, 0.32); color: #ffe0e0; }
+    #settings-exit-confirm {
+      display: none; gap: 6px;
+      grid-template-columns: 2fr 1fr 1fr; align-items: center;
+      margin-top: 4px;
+    }
+    #settings-exit-confirm.open { display: grid; }
+    #settings-exit-confirm .label {
+      font-size: 11px; letter-spacing: 2px; color: #f0c0c0;
+    }
+    #settings-exit-confirm button {
+      padding: 9px; font-family: monospace; font-size: 11px;
+      letter-spacing: 2px; cursor: pointer; font-weight: bold;
+      border-radius: 2px; text-transform: uppercase;
+    }
+    #exit-yes {
+      background: rgba(180, 60, 60, 0.4); color: #ffe0e0;
+      border: 1px solid rgba(180, 60, 60, 0.7);
+    }
+    #exit-yes:hover { background: rgba(180, 60, 60, 0.6); }
+    #exit-no {
+      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+    }
+    #exit-no:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+    @media (max-width: 720px) {
+      #settings-dialog { padding: 18px 20px; max-height: calc(100vh - 32px); }
+      #settings-dialog h2 { font-size: 18px; letter-spacing: 4px; }
+      #settings-weapon-guide { max-height: 220px; }
+    }
     #ios-fs-hint {
       position: fixed; inset: 0; background: rgba(0,0,0,0.8);
       display: flex; align-items: center; justify-content: center; z-index: 40;
@@ -900,7 +1028,49 @@
       <div id="mc-aim-bar-label">ARC</div>
     </div>
   </div>
-  <button id="fullscreen-btn" type="button" title="Enter fullscreen">⤢</button>
+  <button id="settings-gear" type="button" title="Settings (ESC)">⚙</button>
+  <div id="settings-overlay">
+    <div id="settings-dialog">
+      <button id="settings-close" type="button" aria-label="Close">×</button>
+      <h2>SETTINGS</h2>
+      <div class="settings-section">
+        <h3>AUDIO</h3>
+        <label class="settings-slider-row">
+          <span>MUSIC</span>
+          <input id="settings-music-slider" type="range" min="0" max="1" step="0.01" value="0.5" />
+          <span class="slider-value" id="settings-music-value">50%</span>
+        </label>
+        <label class="settings-slider-row">
+          <span>SFX</span>
+          <input id="settings-sfx-slider" type="range" min="0" max="1" step="0.01" value="1" />
+          <span class="slider-value" id="settings-sfx-value">100%</span>
+        </label>
+      </div>
+      <div class="settings-section">
+        <h3>DISPLAY</h3>
+        <label class="settings-toggle-row">
+          <span>FULLSCREEN</span>
+          <input id="settings-fullscreen" type="checkbox" />
+        </label>
+        <div style="margin-top:10px">
+          <span style="font-size:10px;letter-spacing:2px;color:#c0b890;text-transform:uppercase;">Camera</span>
+          <div id="settings-cameras" class="settings-cameras"></div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h3>WEAPON GUIDE</h3>
+        <div id="settings-weapon-guide"></div>
+      </div>
+      <div class="settings-section">
+        <button id="settings-exit" type="button">EXIT MATCH</button>
+        <div id="settings-exit-confirm">
+          <span class="label">Exit current match?</span>
+          <button id="exit-no" type="button">No</button>
+          <button id="exit-yes" type="button">Exit</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

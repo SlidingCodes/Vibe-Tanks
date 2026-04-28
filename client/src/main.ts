@@ -42,9 +42,7 @@ import {
   isShiftHeld, consumeRightClick, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
-import { setupFullscreenButton } from './ui/fullscreen';
-import { setupSettingsMenu } from './ui/settings';
-import { setupAudioToggle } from './ui/audioToggle';
+import { setupSettingsDialog } from './ui/settingsDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
@@ -240,10 +238,15 @@ const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
 hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
 setWeaponCount(1);
 
-// Fullscreen button is always available (desktop + mobile).
-setupFullscreenButton();
-setupSettingsMenu();
-setupAudioToggle();
+// Single ESC-bound settings dialog hosts audio, fullscreen, camera
+// presets, the weapon guide, and exit-match. Replaces the old scattered
+// audio/settings/fullscreen cluster.
+setupSettingsDialog(() => {
+  // Exit confirmed: page reload drops the socket, clears all in-memory
+  // state, and re-shows the login. Persisted prefs (volumes, camera
+  // preset) survive in localStorage.
+  window.location.reload();
+});
 setupFeed();
 setupMatchTimer();
 setupMatchCountdown();
