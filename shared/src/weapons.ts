@@ -307,14 +307,19 @@ export const LOADOUT_RANDOM_COUNT = 3;
 /** Roll a random loadout for a freshly-spawned tank. Slot 0 is always the
  *  infinite `standard` weapon; the remaining slots are a sample without
  *  replacement from the consumable pool, optionally restricted to a
- *  per-room allow-list. An empty / undefined `allowedIds` means "no
- *  restriction" (full pool). `standard` is always included regardless
- *  — without it, players who exhaust their consumables would have no
- *  way to fight back. */
+ *  per-room allow-list. Three states:
+ *    `undefined` → no restriction (full pool — public-room default).
+ *    `[]`        → explicit "no consumables"; loadout is just `standard`.
+ *    `[ids]`     → only those IDs are eligible.
+ *  `standard` is always included regardless — without it, players who
+ *  exhaust their consumables would have no way to fight back. */
 export function createRandomLoadout(
   allowedIds?: ReadonlyArray<string>,
 ): { weaponId: string; ammo: number | 'infinite' }[] {
-  const allowed = allowedIds && allowedIds.length > 0 ? new Set(allowedIds) : null;
+  // `undefined` = unrestricted, but `[]` is an *explicit* empty set:
+  // the previous `length > 0` guard collapsed those two into one and
+  // turned "no weapons" private rooms into "all weapons" by accident.
+  const allowed = allowedIds ? new Set(allowedIds) : null;
   const pool = WEAPONS.filter(
     (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
   );

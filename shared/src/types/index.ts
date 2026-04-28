@@ -402,15 +402,17 @@ export interface RoomSettings {
    *  more humans join. */
   maxBots: number;
   /** Whitelist of consumable weapon IDs that may appear in random
-   *  loadouts and pickup crates. Empty = no restriction. The infinite
-   *  default `standard` is always available regardless of this list —
-   *  it's the fallback when consumables run out. */
-  weaponAllowed: string[];
+   *  loadouts and pickup crates. Three states:
+   *    undefined → no restriction (all weapons available — public default).
+   *    []        → explicit "no consumables" (only the infinite `standard`).
+   *    [ids]     → only the listed consumables.
+   *  The infinite default `standard` is always available regardless. */
+  weaponAllowed?: string[];
 }
 
 export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
   maxBots: 3,
-  weaponAllowed: [],
+  // weaponAllowed left undefined → no restriction for public rooms.
 };
 
 // ── Fire (napalm cellular automaton) ──

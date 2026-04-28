@@ -478,15 +478,14 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       let settings: RoomSettings | undefined;
       if (creating) {
         mode = 'create_private';
-        // Empty allow-list = "no restriction", which is what an all-on
-        // grid means semantically. Send [] in that case so the server
-        // doesn't carry a 13-id list for the equivalent default.
-        const allowed = checkedIds.size === consumables.length
-          ? []
-          : Array.from(checkedIds);
+        // Always send the literal selection. The previous "all checked
+        // collapses to []" optimization conflicted with "none checked",
+        // since both produced [] on the wire — and the server treated
+        // [] as "no restriction", so a host who unchecked every box
+        // ended up with all weapons available anyway.
         settings = {
           maxBots: parseInt(botsSlider.value, 10),
-          weaponAllowed: allowed,
+          weaponAllowed: Array.from(checkedIds),
         };
       } else if (inviteInput.value.length === 4) {
         mode = 'join_private';

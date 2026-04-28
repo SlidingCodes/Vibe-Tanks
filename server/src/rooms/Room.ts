@@ -1395,14 +1395,16 @@ export class Room {
     let kind: PickupKind;
     let weaponId: string | undefined;
     if (isWeaponCrate) {
-      const allowed = this.settings.weaponAllowed.length > 0
+      // `undefined` = no restriction; `[]` = explicit "no consumables"
+      // (private room locked to the standard cannon). The two are NOT
+      // collapsed — empty array means an empty pool and we drop down
+      // to an ammo crate so we don't crash on pool[0].
+      const allowed = this.settings.weaponAllowed
         ? new Set(this.settings.weaponAllowed)
         : null;
       const pool = WEAPONS.filter(
         (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
       );
-      // Whitelist might exclude every consumable — fall back to an ammo
-      // crate so we don't crash on pool[0] when the array is empty.
       if (pool.length === 0) {
         kind = 'ammo';
       } else {
