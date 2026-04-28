@@ -320,55 +320,52 @@
     #settings-bots-slider {
       width: 100%; margin-top: 6px; accent-color: #d8b058;
     }
-    /* Allow-list cards mirror the settings weapon-guide layout: icon
-       on the left, name + full description on the right. Selection is
-       conveyed entirely by the card highlight (no visible checkbox);
-       the underlying <input type="checkbox"> stays in the DOM for the
-       :has(input:checked) selector + form state. */
+    /* Allow-list cards mirror the settings weapon-guide layout exactly.
+       NB: rules are scoped under #settings-weapons so they outrank the
+       `#login-create-panel label { display: block; ... }` cascade
+       (specificity 110 vs 101) — without the parent ID prefix every
+       <label class="weapon-card"> falls back to display:block and the
+       grid columns collapse, producing the icon-over-text stack the
+       user reported. */
     #settings-weapons {
-      display: flex; flex-direction: column; gap: 5px;
+      display: flex; flex-direction: column;
       max-height: 280px; overflow-y: auto;
-      padding: 6px; margin-top: 6px;
+      padding: 4px 8px; margin-top: 6px;
       background: rgba(8, 10, 6, 0.55);
       border: 1px solid rgba(120, 130, 100, 0.3);
       border-radius: 2px;
     }
     #settings-weapons::-webkit-scrollbar { width: 4px; }
     #settings-weapons::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); }
-    .weapon-card {
+    #settings-weapons .weapon-card {
       display: grid; grid-template-columns: 32px 1fr;
       align-items: center; gap: 10px;
-      padding: 8px 10px; cursor: pointer; user-select: none;
-      background: rgba(0, 0, 0, 0.35);
-      border: 1px solid rgba(120, 130, 100, 0.18);
-      border-radius: 2px;
-      transition: background 0.12s, border-color 0.12s;
+      padding: 6px 4px; cursor: pointer; user-select: none;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.15);
+      transition: background 0.12s;
     }
-    .weapon-card:hover {
-      background: rgba(40, 45, 30, 0.6);
-      border-color: rgba(216, 176, 88, 0.35);
+    #settings-weapons .weapon-card:last-child { border-bottom: none; }
+    #settings-weapons .weapon-card:hover { background: rgba(40, 45, 30, 0.4); }
+    #settings-weapons .weapon-card:has(input:checked) {
+      background: rgba(80, 64, 32, 0.5);
     }
-    .weapon-card:has(input:checked) {
-      background: rgba(80, 64, 32, 0.4);
-      border-color: rgba(216, 176, 88, 0.65);
-    }
-    .weapon-card input { display: none; }
-    .weapon-card-icon {
+    #settings-weapons .weapon-card input { display: none; }
+    #settings-weapons .weapon-card-icon {
       width: 32px; height: 32px;
       opacity: 0.45; transition: opacity 0.12s;
     }
-    .weapon-card:has(input:checked) .weapon-card-icon { opacity: 1; }
-    .weapon-card-info { line-height: 1.3; min-width: 0; }
-    .weapon-card-name {
-      font-size: 12px; letter-spacing: 2px; color: #c0b890;
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-icon { opacity: 1; }
+    #settings-weapons .weapon-card-info { line-height: 1.3; min-width: 0; }
+    #settings-weapons .weapon-card-name {
+      font-size: 11px; letter-spacing: 1.5px; color: #c0b890;
       font-weight: bold; text-transform: uppercase;
     }
-    .weapon-card:has(input:checked) .weapon-card-name { color: #e8d8a0; }
-    .weapon-card-desc {
-      font-size: 11px; line-height: 1.3;
-      color: #8a7858; margin-top: 3px;
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-name { color: #e8d8a0; }
+    #settings-weapons .weapon-card-desc {
+      font-size: 10px; line-height: 1.35;
+      color: #8a7858; margin-top: 2px;
     }
-    .weapon-card:has(input:checked) .weapon-card-desc { color: #a89868; }
+    #settings-weapons .weapon-card:has(input:checked) .weapon-card-desc { color: #a89868; }
     #settings-weapons-actions {
       display: flex; gap: 6px; margin-top: 6px; font-size: 10px;
     }
