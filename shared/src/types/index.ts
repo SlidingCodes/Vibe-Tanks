@@ -560,4 +560,9 @@ export interface ServerEvents {
   /** Server refused the join_room. Client surfaces the reason and
    *  re-shows the login overlay so the player can retry / fix the code. */
   join_error: (data: { reason: JoinErrorReason }) => void;
+  /** Sent on the transition into / out of the idle-kick warning window
+   *  (75 s of no input). secondsRemaining is the seconds-until-kick when
+   *  entering the window and 0 when activity has been detected and the
+   *  warning is cleared. */
+  idle_warning: (data: { secondsRemaining: number }) => void;
 }

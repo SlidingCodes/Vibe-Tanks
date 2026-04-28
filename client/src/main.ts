@@ -323,6 +323,38 @@ inviteBadge?.addEventListener('click', async () => {
   } catch { /* clipboard blocked — silently no-op */ }
 });
 
+// Idle-kick warning: server fires once when crossing the 75 s no-input
+// threshold; the banner counts down locally so we don't depend on
+// further server messages. The next genuine input on this end will
+// reset the server clock and trigger a clearing event.
+const idleBanner = document.getElementById('idle-warning') as HTMLDivElement | null;
+const idleCount = document.getElementById('idle-warning-count') as HTMLSpanElement | null;
+let idleCountdown: ReturnType<typeof setInterval> | null = null;
+let idleSecondsLeft = 0;
+function clearIdleBanner(): void {
+  if (idleCountdown) { clearInterval(idleCountdown); idleCountdown = null; }
+  if (idleBanner) idleBanner.classList.remove('visible');
+}
+socket.on('idle_warning', ({ secondsRemaining }) => {
+  if (!idleBanner || !idleCount) return;
+  if (secondsRemaining <= 0) {
+    clearIdleBanner();
+    return;
+  }
+  idleSecondsLeft = secondsRemaining;
+  idleCount.textContent = String(idleSecondsLeft);
+  idleBanner.classList.add('visible');
+  if (idleCountdown) clearInterval(idleCountdown);
+  idleCountdown = setInterval(() => {
+    idleSecondsLeft -= 1;
+    if (idleSecondsLeft <= 0) {
+      clearIdleBanner();
+      return;
+    }
+    idleCount.textContent = String(idleSecondsLeft);
+  }, 1000);
+});
+
 // RTT probe: emit a ping every 2 s stamped with performance.now(). The server
 // echoes the same timestamp back via 'pong', so the round-trip = now - t.
 socket.on('pong', (t: number) => {

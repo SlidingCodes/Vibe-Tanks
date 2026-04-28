@@ -112,10 +112,30 @@ const FIRE_HULL_SAMPLE_OFFSETS: Array<[number, number]> = [
   [0.8, -0.8],
   [-0.8, -0.8],
 ];
+/** Seconds of no user input before a player is auto-kicked. The 15 s
+ *  warning ahead of it gives the user time to wiggle the mouse before
+ *  the connection drops. */
+const IDLE_KICK_SECONDS = 90;
+const IDLE_WARN_SECONDS = 75;
+/** Aim-change threshold below which an aim_update is treated as
+ *  "passive" — small mouse jitter or auto-tracking shouldn't reset the
+ *  idle clock or a stationary player camping the cursor would never be
+ *  considered idle. ~0.6° on either axis. */
+const IDLE_AIM_EPSILON = 0.01;
 
 interface PlayerState {
   socket?: Socket;
   input: MovementInput;
+  /** Epoch seconds of the last user-intent event (movement input change,
+   *  significant aim change, fire, respawn, shield). Drives the
+   *  inactivity kick — bots are exempt (they're always "active" via
+   *  the bot AI). Initialised to player join time so freshly-spawned
+   *  players have the full grace window. */
+  lastInputAt: number;
+  /** True while the client has been notified that an idle kick is N s
+   *  away. Reset when the player resumes input. Prevents spamming the
+   *  warning event every tick. */
+  idleWarned: boolean;
   /** Per-weapon last-fire timestamps (epoch seconds). Each weapon has its
    *  own cooldown clock, so sparking off a standard shot doesn't gate a
    *  seeker that's been ready for minutes. Missing entry = never fired. */
@@ -255,6 +275,11 @@ export class Room {
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
   private fireInterval: ReturnType<typeof setInterval> | null = null;
+  /** 1 Hz idle-kick scan. Cheap (linear in human players) so it
+   *  doesn't need to share the 60 Hz sim tick. Skipped during
+   *  Countdown / Leaderboard so AFK during a non-playable phase
+   *  isn't punished. */
+  private idleInterval: ReturnType<typeof setInterval> | null = null;
   private simTime = 0;
   private nextProjectileId = 1;
   private nextHazardId = 1;
@@ -426,6 +451,8 @@ export class Room {
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastInputAt: Date.now() / 1000,
+      idleWarned: false,
       lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
@@ -613,12 +640,29 @@ export class Room {
       // tanks can still yaw on the spot. We still accept the raw input here
       // so left/right (rotation) reaches the physics tick.
       const player = this.players.get(socket.id);
-      if (player) player.input = data;
+      if (player) {
+        player.input = data;
+        // movement_input is sent only on key state change, so every
+        // arrival is a genuine activity signal.
+        player.lastInputAt = Date.now() / 1000;
+      }
     });
 
     onValidated(socket, 'aim_update', AimUpdateSchema, (data) => {
       const tank = this.tanks.get(socket.id);
+      const player = this.players.get(socket.id);
       if (tank && tank.alive) {
+        // Stamp activity only when the aim actually moves — aim_update
+        // fires every frame regardless of mouse motion, so a treating
+        // it as a heartbeat would let an AFK player camp the cursor
+        // forever and never trigger the idle kick.
+        if (player) {
+          const dT = Math.abs(data.turretRotation - tank.turretRotation);
+          const dP = Math.abs(data.barrelPitch - tank.barrelPitch);
+          if (dT > IDLE_AIM_EPSILON || dP > IDLE_AIM_EPSILON) {
+            player.lastInputAt = Date.now() / 1000;
+          }
+        }
         tank.turretRotation = data.turretRotation;
         tank.barrelPitch = data.barrelPitch;
       }
@@ -648,6 +692,7 @@ export class Room {
 
       this.consumeAmmo(player, weapon.id);
       player.lastFireByWeapon.set(weapon.id, now);
+      player.lastInputAt = now;
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
@@ -657,6 +702,7 @@ export class Room {
       if (!player || !tank) return;
       if (tank.alive) return; // already alive
       if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
+      player.lastInputAt = Date.now() / 1000;
       this.respawnTank(socket.id);
     });
 
@@ -669,6 +715,7 @@ export class Room {
       tank.shieldAvailable = false;
       tank.shieldTimeRemaining = SHIELD_DURATION;
       player.shieldExpiresAt = nowSec + SHIELD_DURATION;
+      player.lastInputAt = nowSec;
     });
 
     socket.on('force_reset_match', () => {
@@ -791,6 +838,8 @@ export class Room {
 
     this.players.set(botId, {
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastInputAt: Date.now() / 1000,
+      idleWarned: false,
       lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
@@ -1539,12 +1588,44 @@ export class Room {
       if (this.phase === MatchPhase.Countdown) return;
       this.tickFire(fireDt);
     }, fireDt * 1000);
+
+    this.idleInterval = setInterval(() => {
+      if (this.phase !== MatchPhase.InProgress) return;
+      this.tickIdleKick();
+    }, 1000);
   }
 
   private stopLoop(): void {
     if (this.simInterval) { clearInterval(this.simInterval); this.simInterval = null; }
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
     if (this.fireInterval) { clearInterval(this.fireInterval); this.fireInterval = null; }
+    if (this.idleInterval) { clearInterval(this.idleInterval); this.idleInterval = null; }
+  }
+
+  /** Scan human players for inactivity. Crosses two thresholds: at
+   *  IDLE_WARN_SECONDS we ping the client once with a 15-s countdown,
+   *  at IDLE_KICK_SECONDS we drop the socket. The single-shot
+   *  idleWarned flag prevents the warning from re-firing every tick. */
+  private tickIdleKick(): void {
+    const now = Date.now() / 1000;
+    for (const [pid, player] of this.players) {
+      if (player.isBot) continue;
+      const idleSec = now - player.lastInputAt;
+      if (idleSec >= IDLE_KICK_SECONDS) {
+        // eslint-disable-next-line no-console
+        console.log(`[idle] kicking ${pid}: ${idleSec.toFixed(0)}s no input`);
+        player.socket?.disconnect(true);
+        continue;
+      }
+      if (idleSec >= IDLE_WARN_SECONDS && !player.idleWarned) {
+        player.idleWarned = true;
+        const remain = Math.max(1, Math.ceil(IDLE_KICK_SECONDS - idleSec));
+        player.socket?.emit('idle_warning', { secondsRemaining: remain });
+      } else if (idleSec < IDLE_WARN_SECONDS && player.idleWarned) {
+        player.idleWarned = false;
+        player.socket?.emit('idle_warning', { secondsRemaining: 0 });
+      }
+    }
   }
 
   /** Advance the napalm CA and apply per-tick damage to any tank standing

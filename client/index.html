@@ -718,6 +718,22 @@
       #settings-dialog h2 { font-size: 18px; letter-spacing: 4px; }
       #settings-weapon-guide { max-height: 220px; }
     }
+    /* Idle-kick warning — fixed top banner that appears when the server
+       sends idle_warning > 0 and self-counts down. Any input on the
+       client clears it locally; the server also clears it on the next
+       activity by emitting idle_warning { secondsRemaining: 0 }. */
+    #idle-warning {
+      position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+      padding: 8px 18px; font-family: monospace; font-size: 12px;
+      letter-spacing: 3px; text-transform: uppercase;
+      background: rgba(180, 60, 60, 0.85); color: #fff8e0;
+      border: 1px solid rgba(255, 200, 80, 0.7);
+      border-top: none; z-index: 36;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+      display: none;
+    }
+    #idle-warning.visible { display: block; }
+    #idle-warning .count { color: #ffd860; font-weight: bold; }
     #ios-fs-hint {
       position: fixed; inset: 0; background: rgba(0,0,0,0.8);
       display: flex; align-items: center; justify-content: center; z-index: 40;
@@ -952,6 +968,7 @@
     </div>
   </div>
   <div id="invite-badge"><span class="label">INVITE</span><span id="invite-badge-code">— —</span></div>
+  <div id="idle-warning">Inactive — kick in <span class="count" id="idle-warning-count">15</span>s</div>
   <div id="turbo-vfx"></div>
   <div id="hit-flash"></div>
   <div id="hit-marker">
