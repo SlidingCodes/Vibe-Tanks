@@ -78,6 +78,11 @@ export function setupSettingsDialog(onExit: () => void): void {
   });
 
   // ── Fullscreen toggle ──
+  // When the browser exposes the FS API the row is a normal toggle.
+  // iPhone Safari running in-browser exposes nothing, so we hide the
+  // toggle and surface a collapsible "Add to Home Screen" hint
+  // instead — better than silently dropping the option (the player
+  // still has a path to fullscreen, just a manual one).
   const doc = document as FsDoc;
   const root = document.documentElement as FsEl;
   const requestFs = root.requestFullscreen?.bind(root) ?? root.webkitRequestFullscreen?.bind(root);
@@ -85,7 +90,24 @@ export function setupSettingsDialog(onExit: () => void): void {
   const getFsEl = () => doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
   const fsSupported = !!requestFs && !!exitFs;
   const fsRow = fsToggle.closest('.settings-toggle-row') as HTMLLabelElement | null;
-  if (!fsSupported && fsRow) fsRow.style.display = 'none';
+  const iosLink = document.getElementById('settings-fs-ios') as HTMLButtonElement | null;
+  const iosPanel = document.getElementById('settings-fs-ios-panel') as HTMLDivElement | null;
+  if (!fsSupported) {
+    if (fsRow) fsRow.style.display = 'none';
+    const isIOS = /iphone|ipod|ipad/i.test(navigator.userAgent);
+    const navWithStandalone = navigator as Navigator & { standalone?: boolean };
+    const isStandalone =
+      navWithStandalone.standalone === true ||
+      window.matchMedia?.('(display-mode: standalone)').matches === true;
+    if (isIOS && !isStandalone && iosLink && iosPanel) {
+      iosLink.style.display = '';
+      iosLink.addEventListener('click', () => {
+        const open = iosPanel.style.display === 'none' || iosPanel.style.display === '';
+        iosPanel.style.display = open ? 'block' : 'none';
+        iosLink.classList.toggle('expanded', open);
+      });
+    }
+  }
   const syncFs = (): void => { fsToggle.checked = !!getFsEl(); };
   syncFs();
   document.addEventListener('fullscreenchange', syncFs);

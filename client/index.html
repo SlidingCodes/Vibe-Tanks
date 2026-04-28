@@ -844,25 +844,30 @@
     }
     #idle-warning.visible { display: block; }
     #idle-warning .count { color: #ffd860; font-weight: bold; }
-    #ios-fs-hint {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.8);
-      display: flex; align-items: center; justify-content: center; z-index: 40;
-      font-family: monospace; color: #fff;
+    /* Inline iOS fullscreen hint inside the settings dialog. Shown only
+       when the browser exposes no FS API but the UA looks like iPhone
+       Safari running in-browser (i.e. not Add-to-Home-Screen mode), so
+       we can guide the user to install + relaunch. */
+    #settings-fs-ios {
+      width: 100%; padding: 9px 11px; margin-top: 4px;
+      background: rgba(8, 10, 6, 0.85); color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4); border-radius: 2px;
+      font-family: monospace; font-size: 11px; letter-spacing: 1px;
+      cursor: pointer; text-align: left; text-transform: none;
     }
-    #ios-fs-hint .ios-fs-panel {
-      background: #141418; border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 10px; padding: 24px 26px; max-width: 300px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    #settings-fs-ios:hover { background: rgba(120, 130, 100, 0.3); color: #e8d8a0; }
+    #settings-fs-ios::after { content: ' ▾'; opacity: 0.55; }
+    #settings-fs-ios.expanded::after { content: ' ▴'; }
+    #settings-fs-ios-panel {
+      margin-top: 6px; padding: 10px 12px;
+      background: rgba(8, 10, 6, 0.55);
+      border: 1px solid rgba(120, 130, 100, 0.3);
+      border-radius: 2px; font-size: 11px; line-height: 1.5; color: #c0b890;
     }
-    #ios-fs-hint h2 { font-size: 18px; margin-bottom: 12px; letter-spacing: 1px; }
-    #ios-fs-hint p { font-size: 13px; opacity: 0.85; margin: 6px 0; }
-    #ios-fs-hint ol { font-size: 13px; margin: 10px 0 4px 20px; line-height: 1.6; }
-    #ios-fs-hint .ios-fs-share { color: #4af; font-weight: bold; }
-    #ios-fs-hint button {
-      margin-top: 14px; width: 100%; padding: 8px; font-family: inherit;
-      background: #c0a058; color: #1a1814; border: 1px solid #6a4828; border-radius: 2px; cursor: pointer;
-      font-weight: bold; letter-spacing: 1px;
-    }
+    #settings-fs-ios-panel p { margin: 0 0 6px; }
+    #settings-fs-ios-panel ol { margin: 0; padding-left: 18px; }
+    #settings-fs-ios-panel li { margin: 3px 0; }
+    #settings-fs-ios-panel .ios-share { color: #d8b058; font-weight: bold; }
     #minimap {
       position: fixed; bottom: 0; right: 0;
       width: 180px; height: 180px; border-radius: 0;
@@ -1201,6 +1206,15 @@
           <span>FULLSCREEN</span>
           <input id="settings-fullscreen" type="checkbox" />
         </label>
+        <button id="settings-fs-ios" type="button" style="display:none">iPhone — how to enable fullscreen</button>
+        <div id="settings-fs-ios-panel" style="display:none">
+          <p>Safari doesn't allow button-triggered fullscreen on iPhone.</p>
+          <ol>
+            <li>Tap <span class="ios-share">Share ⬆︎</span> in the bottom bar</li>
+            <li>Choose <b>Add to Home Screen</b></li>
+            <li>Open Vibe Tanks from the Home Screen icon</li>
+          </ol>
+        </div>
         <div style="margin-top:10px">
           <span style="font-size:10px;letter-spacing:2px;color:#c0b890;text-transform:uppercase;">Camera</span>
           <div id="settings-cameras" class="settings-cameras"></div>
