@@ -389,7 +389,8 @@ export type JoinErrorReason =
   | 'room_full'
   | 'cap_reached'
   | 'missing_code'
-  | 'invalid_settings';
+  | 'invalid_settings'
+  | 'too_many_rooms';
 
 /** Per-room tunables passed by the creator of a private room. Public
  *  rooms always use the defaults. */

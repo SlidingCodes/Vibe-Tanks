@@ -285,11 +285,12 @@ socket.on('connect', () => {
 socket.on('join_error', async ({ reason }) => {
   const message: string = (() => {
     switch (reason) {
-      case 'invalid_code': return 'Invite code not found. Check with the host.';
-      case 'room_full':    return 'That room is full. Try Quick Match.';
-      case 'cap_reached':  return 'Server is at capacity. Try again in a moment.';
-      case 'missing_code': return 'Enter a 4-letter invite code.';
-      default:             return 'Could not join. Try again.';
+      case 'invalid_code':   return 'Invite code not found. Check with the host.';
+      case 'room_full':      return 'That room is full. Try Quick Match.';
+      case 'cap_reached':    return 'Server is at capacity. Try again in a moment.';
+      case 'missing_code':   return 'Enter a 4-letter invite code.';
+      case 'too_many_rooms': return 'You already have 2 private rooms running. Close one first.';
+      default:               return 'Could not join. Try again.';
     }
   })();
   login = await showLogin(message);

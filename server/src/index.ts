@@ -3,6 +3,7 @@ import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '@shared/types/index';
 import { MAX_PLAYERS, SERVER_PORT } from '@shared/constants';
 import { initRapier } from '@shared/physics/RapierVoxelWorld';
+import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
 
@@ -39,13 +40,19 @@ async function main(): Promise<void> {
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
       const mode = data.mode ?? 'quick';
-      let room: ReturnType<typeof manager.findOrCreatePublic>;
+      let room: Room | null = null;
       if (mode === 'create_private') {
-        room = manager.createPrivate(data.settings);
-        if (!room) {
-          socket.emit('join_error', { reason: 'cap_reached' });
+        // Use socket.handshake.address as the rate-limit key. It's the
+        // raw remote address — fine for direct connections; behind a
+        // reverse proxy you'd front this with a trust-proxy layer that
+        // rewrites it from X-Forwarded-For.
+        const ip = socket.handshake.address;
+        const result = manager.createPrivate(ip, data.settings);
+        if (!(result instanceof Room)) {
+          socket.emit('join_error', { reason: result });
           return;
         }
+        room = result;
       } else if (mode === 'join_private') {
         if (!data.inviteCode) {
           socket.emit('join_error', { reason: 'missing_code' });

@@ -1,5 +1,5 @@
 import type { Server } from 'socket.io';
-import type { ClientEvents, RoomId, RoomSettings, ServerEvents } from '@shared/types/index';
+import type { ClientEvents, JoinErrorReason, RoomId, RoomSettings, ServerEvents } from '@shared/types/index';
 import { MAX_PLAYERS } from '@shared/constants';
 import { getRandomTerrainPresetId } from '@shared/terrain';
 import { Room } from './Room';
@@ -11,6 +11,12 @@ import { Room } from './Room';
  *  while leaving headroom for a temporary spike during reconnects. */
 const MAX_ROOMS = 16;
 
+/** Per-IP cap on simultaneously-active private rooms. A user popping
+ *  multiple browser tabs and creating a private room in each one would
+ *  otherwise burn one Rapier world + sim loop per tab — the public
+ *  pool absorbs duplicate quick-joins, but private rooms don't share. */
+const PRIVATE_ROOMS_PER_IP = 2;
+
 /** Invite-code alphabet — base32 minus the visually ambiguous 0/O/1/I.
  *  4 chars × 31 = 923 K combos, far more than the 16-room cap so every
  *  fresh code lands cleanly even with a tiny retry loop. */
@@ -19,9 +25,16 @@ const INVITE_CODE_LEN = 4;
 
 export class RoomManager {
   private rooms: Map<RoomId, Room> = new Map();
-  /** Reverse index for invite-code lookup. Only populated for private
-   *  rooms; cleared in removeRoom alongside the main map. */
+  /** Reverse index for invite-code lookup. Populated for every room
+   *  (public + private); cleared in removeRoom alongside the main map. */
   private codes: Map<string, RoomId> = new Map();
+  /** Per-IP set of active private-room IDs. Cleared as rooms shut down
+   *  so a user doesn't get permanently blocked after their previous
+   *  rooms emptied. */
+  private privateByIp: Map<string, Set<RoomId>> = new Map();
+  /** Reverse: room → creator IP, so removeRoom can clean up
+   *  privateByIp without iterating the entire map. */
+  private creatorIp: Map<RoomId, string> = new Map();
   private nextRoomNum = 1;
 
   constructor(private io: Server<ClientEvents, ServerEvents>) {}
@@ -40,12 +53,19 @@ export class RoomManager {
   }
 
   /** Spin up a brand-new private room. The caller is expected to
-   *  immediately addPlayer the creator. `settings` is passed straight
-   *  through to the Room — undefined falls back to DEFAULT_ROOM_SETTINGS.
-   *  Returns null at the cap (same DoS gate as quick-join). */
-  createPrivate(settings?: RoomSettings): Room | null {
-    if (this.rooms.size >= MAX_ROOMS) return null;
-    return this.createRoom({ private: true, settings });
+   *  immediately addPlayer the creator. `settings` rides through to
+   *  the Room — undefined falls back to DEFAULT_ROOM_SETTINGS.
+   *  Returns either the new Room or a join_error reason — global cap,
+   *  per-IP cap, etc. */
+  createPrivate(creatorIp: string, settings?: RoomSettings): Room | JoinErrorReason {
+    if (this.rooms.size >= MAX_ROOMS) return 'cap_reached';
+    const existing = this.privateByIp.get(creatorIp);
+    if (existing && existing.size >= PRIVATE_ROOMS_PER_IP) return 'too_many_rooms';
+    const room = this.createRoom({ private: true, settings });
+    this.creatorIp.set(room.id, creatorIp);
+    if (!this.privateByIp.has(creatorIp)) this.privateByIp.set(creatorIp, new Set());
+    this.privateByIp.get(creatorIp)!.add(room.id);
+    return room;
   }
 
   /** Look up a room by its share code (case-insensitive). Returns the
@@ -102,6 +122,15 @@ export class RoomManager {
     if (!room) return;
     this.rooms.delete(id);
     if (room.inviteCode) this.codes.delete(room.inviteCode);
+    const ip = this.creatorIp.get(id);
+    if (ip) {
+      this.creatorIp.delete(id);
+      const set = this.privateByIp.get(ip);
+      if (set) {
+        set.delete(id);
+        if (set.size === 0) this.privateByIp.delete(ip);
+      }
+    }
     room.shutdown();
     // eslint-disable-next-line no-console
     console.log(`[rooms] disposed ${id}; active=${this.rooms.size}`);
