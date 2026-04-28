@@ -201,6 +201,10 @@ export interface WeaponBehaviorConfig {
 export interface WeaponDefinition {
   id: string;
   name: string;
+  /** One-liner shown in the weapon guide (settings dialog) and as a
+   *  hover tooltip on the allow-list checkboxes. ~50-90 chars. Focused
+   *  on what makes the weapon *feel* distinct in play, not on stats. */
+  description?: string;
   projectileSpeed: number;
   blastRadius: number;
   damage: number;

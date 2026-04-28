@@ -320,6 +320,9 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     consumables.forEach((w) => {
       const lbl = document.createElement('label');
       lbl.className = 'weapon-toggle';
+      // Description rides as a hover tooltip; the settings dialog
+      // (Polish 4) will surface it inline as the dedicated weapon guide.
+      if (w.description) lbl.title = w.description;
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = true;
@@ -329,6 +332,11 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         else checkedIds.delete(w.id);
       });
       lbl.appendChild(cb);
+      const icon = document.createElement('img');
+      icon.className = 'weapon-toggle-icon';
+      icon.src = `/weapons/${w.id}.svg`;
+      icon.alt = '';
+      lbl.appendChild(icon);
       const text = document.createElement('span');
       text.textContent = w.name;
       lbl.appendChild(text);
