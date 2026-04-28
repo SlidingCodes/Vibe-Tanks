@@ -54,8 +54,6 @@ client/src/
   scene/voxelSurfaceNets.ts  Primary terrain renderer — per-chunk Surface Nets
                              meshes with elevation palette + scorch coloring +
                              shoreline sand blending and tread-track paint
-  scene/voxelTerrain.ts      Debug cuberille renderer (greedy meshing). Toggle
-                             with V (mutually exclusive with Surface Nets)
   scene/voxelDebris.ts       Particle debris spawned at each carve
   scene/voxelScorch.ts       Per-voxel burn overlay sampled during SN meshing
   scene/sea.ts               Gerstner-wave ocean surface (6 waves, analytical
@@ -173,7 +171,6 @@ scripts/
 - Tank body yaw comes from A/D; turret yaw is world-space and turret rotation is stored relative to body (`turretRotation - bodyRotation`) on the mesh
 - Remote-tank name labels are `CSS2DObject` divs (class `.tank-name-label`) added to the tank group; the local player has no label. A second `CSS2DRenderer` is rendered after the WebGL renderer each frame
 - Mobile virtual joystick maps the thumb vector to WASD booleans via a 16% deadzone and a 22.5° quadrant split; the aim pad calls `setVirtualAim` so the existing raycast path handles it
-- Press `V` to toggle the debug cuberille renderer (mutually exclusive with Surface Nets) — useful for visualising the raw voxel cell layout
 
 ## Deployment
 

@@ -9,6 +9,8 @@ import {
   buildRoadWheelsGeometry,
 } from '../entities/tankGeometry';
 import { FLAGS, createFlagMesh } from '../entities/flag';
+import { WEAPONS } from '@shared/weapons';
+import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -244,14 +246,23 @@ function pickRandomName(): string {
   return randomNames[Math.floor(Math.random() * randomNames.length)];
 }
 
+export type JoinMode = 'quick' | 'create_private' | 'join_private';
+
 export interface LoginResult {
   name: string;
   color: string;
   flagId: string;
+  mode: JoinMode;
+  /** Set only when mode === 'join_private'. Always 4 uppercase chars. */
+  inviteCode?: string;
+  /** Set only when mode === 'create_private'. */
+  settings?: RoomSettings;
 }
 
-/** Block until the player submits a name + color. */
-export function showLogin(): Promise<LoginResult> {
+/** Block until the player submits a name + color. The promise rejects if
+ *  the caller invokes the returned `reject` hook (e.g. on a server-side
+ *  join_error so we can re-show the login overlay with a message). */
+export function showLogin(initialError?: string): Promise<LoginResult> {
   return new Promise(async (resolve) => {
     const overlay = document.getElementById('login-overlay') as HTMLDivElement;
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
@@ -260,6 +271,129 @@ export function showLogin(): Promise<LoginResult> {
     const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
+    const inviteInput = document.getElementById('invite-code-input') as HTMLInputElement;
+    const errorBox = document.getElementById('login-error') as HTMLDivElement;
+    const openCreateLink = document.getElementById('open-create-link') as HTMLButtonElement;
+    const createBack = document.getElementById('create-back') as HTMLButtonElement;
+    const createSubmit = document.getElementById('create-submit') as HTMLButtonElement;
+    const botsSlider = document.getElementById('settings-bots-slider') as HTMLInputElement;
+    const botsValue = document.getElementById('settings-bots-value') as HTMLSpanElement;
+    const weaponsGrid = document.getElementById('settings-weapons') as HTMLDivElement;
+    const weaponsActions = document.getElementById('settings-weapons-actions') as HTMLDivElement;
+
+    overlay.style.display = '';
+    overlay.classList.remove('creating');
+    if (initialError) {
+      errorBox.textContent = initialError;
+      errorBox.style.display = 'block';
+    } else {
+      errorBox.style.display = 'none';
+    }
+
+    inviteInput.value = '';
+    // Auto-fill the code from a ?code=XXXX query string (e.g. someone
+    // pasted the share link). Validate against the same alphabet the
+    // server uses, then strip the param from the URL so a future reload
+    // doesn't re-bind to a stale code.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const presetCode = params.get('code');
+      if (presetCode && /^[A-Z2-9]{4}$/i.test(presetCode)) {
+        inviteInput.value = presetCode.toUpperCase();
+        history.replaceState(null, '', window.location.pathname + window.location.hash);
+      }
+    } catch { /* malformed URL — ignore */ }
+
+    // JOIN button label tracks the code field: empty = quick-join, 4 chars
+    // = "JOIN K7M2", 1-3 chars = disabled (incomplete code). Removes the
+    // need for an explicit mode toggle — the input itself is the switch.
+    const refreshJoinLabel = (): void => {
+      const code = inviteInput.value;
+      if (code.length === 0) {
+        submit.textContent = 'QUICK JOIN';
+        submit.disabled = false;
+      } else if (code.length === 4) {
+        submit.textContent = `JOIN ${code}`;
+        submit.disabled = false;
+      } else {
+        submit.textContent = `JOIN ${code}…`;
+        submit.disabled = true;
+      }
+    };
+    refreshJoinLabel();
+
+    // Build the weapon allow-list checkboxes once. All non-default
+    // (consumable) weapons are listed; standard is implicit (always
+    // available regardless). All-checked is the same as the empty
+    // allow-list semantically and is the default.
+    const consumables = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
+    const checkedIds = new Set(consumables.map((w) => w.id));
+    weaponsGrid.innerHTML = '';
+    consumables.forEach((w) => {
+      const card = document.createElement('label');
+      card.className = 'weapon-card';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.id = w.id;
+      cb.addEventListener('change', () => {
+        if (cb.checked) checkedIds.add(w.id);
+        else checkedIds.delete(w.id);
+      });
+      const icon = document.createElement('img');
+      icon.className = 'weapon-card-icon';
+      icon.src = `/weapons/${w.id}.svg`;
+      icon.alt = '';
+      const info = document.createElement('div');
+      info.className = 'weapon-card-info';
+      const name = document.createElement('div');
+      name.className = 'weapon-card-name';
+      name.textContent = w.name;
+      info.appendChild(name);
+      if (w.description) {
+        const desc = document.createElement('div');
+        desc.className = 'weapon-card-desc';
+        desc.textContent = w.description;
+        info.appendChild(desc);
+      }
+      card.appendChild(cb);
+      card.appendChild(icon);
+      card.appendChild(info);
+      weaponsGrid.appendChild(card);
+    });
+    const setAllWeapons = (on: boolean): void => {
+      checkedIds.clear();
+      weaponsGrid.querySelectorAll('input[type=checkbox]').forEach((el) => {
+        const cb = el as HTMLInputElement;
+        cb.checked = on;
+        if (on) checkedIds.add(cb.dataset.id!);
+      });
+    };
+    weaponsActions.querySelectorAll('button').forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      el.addEventListener('click', () => setAllWeapons(el.dataset.action === 'all'));
+    });
+    botsSlider.addEventListener('input', () => {
+      botsValue.textContent = botsSlider.value;
+    });
+
+    // The create panel is folded inside the overlay and slides into view
+    // only when the user opts in. Until then there's a single login
+    // panel — quick-join is the default-zero-friction path.
+    const setCreating = (on: boolean): void => {
+      overlay.classList.toggle('creating', on);
+      errorBox.style.display = 'none';
+    };
+    openCreateLink.addEventListener('click', () => setCreating(true));
+    createBack.addEventListener('click', () => setCreating(false));
+
+    // Force uppercase + strip non-alphabet chars as the user types and
+    // refresh the JOIN button label after every keystroke.
+    const onCodeInput = (): void => {
+      inviteInput.value = inviteInput.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+      refreshJoinLabel();
+    };
+    inviteInput.addEventListener('input', onCodeInput);
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
@@ -337,19 +471,60 @@ export function showLogin(): Promise<LoginResult> {
     };
     flagSearch.addEventListener('input', onFilterFlags);
 
-    const done = () => {
+    const done = (creating: boolean): void => {
       const name = (nameInput.value.trim() || pickRandomName()).slice(0, 16);
+      let mode: JoinMode;
+      let inviteCode: string | undefined;
+      let settings: RoomSettings | undefined;
+      if (creating) {
+        mode = 'create_private';
+        // Always send the literal selection. The previous "all checked
+        // collapses to []" optimization conflicted with "none checked",
+        // since both produced [] on the wire — and the server treated
+        // [] as "no restriction", so a host who unchecked every box
+        // ended up with all weapons available anyway.
+        settings = {
+          maxBots: parseInt(botsSlider.value, 10),
+          weaponAllowed: Array.from(checkedIds),
+        };
+      } else if (inviteInput.value.length === 4) {
+        mode = 'join_private';
+        inviteCode = inviteInput.value;
+      } else if (inviteInput.value.length === 0) {
+        mode = 'quick';
+      } else {
+        // Defensive: the JOIN button is disabled for 1-3 chars, but if a
+        // user pressed Enter we still bail with a friendly message.
+        errorBox.textContent = 'Match code must be 4 letters, or leave blank.';
+        errorBox.style.display = 'block';
+        inviteInput.focus();
+        return;
+      }
       overlay.style.display = 'none';
-      submit.removeEventListener('click', done);
+      submit.removeEventListener('click', onSubmitClick);
+      createSubmit.removeEventListener('click', onCreateClick);
       nameInput.removeEventListener('keydown', onKey);
+      inviteInput.removeEventListener('keydown', onKey);
+      inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected, flagId: selectedFlag });
+      resolve({ name, color: selected, flagId: selectedFlag, mode, inviteCode, settings });
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };
+    const onSubmitClick = (): void => done(false);
+    const onCreateClick = (): void => done(true);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Enter') return;
+      if (overlay.classList.contains('creating')) {
+        done(true);
+      } else if (!submit.disabled) {
+        done(false);
+      }
+    };
 
-    submit.addEventListener('click', done);
+    submit.addEventListener('click', onSubmitClick);
+    createSubmit.addEventListener('click', onCreateClick);
     nameInput.addEventListener('keydown', onKey);
+    inviteInput.addEventListener('keydown', onKey);
     nameInput.focus();
     nameInput.select();
   });

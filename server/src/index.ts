@@ -1,10 +1,10 @@
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '@shared/types/index';
-import { SERVER_PORT } from '@shared/constants';
-import { getRandomTerrainPresetId } from '@shared/terrain';
+import { MAX_PLAYERS, SERVER_PORT } from '@shared/constants';
 import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
+import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
@@ -33,14 +33,51 @@ async function main(): Promise<void> {
     perMessageDeflate: { threshold: 1024 },
   });
 
-  const mainRoom = new Room('main', io, getRandomTerrainPresetId());
+  const manager = new RoomManager(io);
 
   io.on('connection', (socket) => {
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
-      mainRoom.addPlayer(socket, data.playerName, data.color, data.flagId);
-      console.log(`Player ${data.playerName} (${socket.id}) joined room`);
+      const mode = data.mode ?? 'quick';
+      let room: Room | null = null;
+      if (mode === 'create_private') {
+        // Use socket.handshake.address as the rate-limit key. It's the
+        // raw remote address — fine for direct connections; behind a
+        // reverse proxy you'd front this with a trust-proxy layer that
+        // rewrites it from X-Forwarded-For.
+        const ip = socket.handshake.address;
+        const result = manager.createPrivate(ip, data.settings);
+        if (!(result instanceof Room)) {
+          socket.emit('join_error', { reason: result });
+          return;
+        }
+        room = result;
+      } else if (mode === 'join_private') {
+        if (!data.inviteCode) {
+          socket.emit('join_error', { reason: 'missing_code' });
+          return;
+        }
+        room = manager.findByInviteCode(data.inviteCode);
+        if (!room) {
+          socket.emit('join_error', { reason: 'invalid_code' });
+          return;
+        }
+        // Re-check humanCount up-front so we send a clean error rather
+        // than letting addPlayer's silent-drop guard kick in.
+        if (room.humanCount() >= MAX_PLAYERS) {
+          socket.emit('join_error', { reason: 'room_full' });
+          return;
+        }
+      } else {
+        room = manager.findOrCreatePublic();
+        if (!room) {
+          socket.emit('join_error', { reason: 'cap_reached' });
+          return;
+        }
+      }
+      room.addPlayer(socket, data.playerName, data.color, data.flagId);
+      console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id} (mode=${mode})`);
     });
 
     socket.on('disconnect', () => {

@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import {
   ActiveProjectileState,
   ClientEvents,
+  DEFAULT_ROOM_SETTINGS,
   HazardState,
   MatchPhase,
   MatchSnapshot,
@@ -10,6 +11,7 @@ import {
   PickupKind,
   PickupState,
   PlayerId,
+  RoomSettings,
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
@@ -110,10 +112,30 @@ const FIRE_HULL_SAMPLE_OFFSETS: Array<[number, number]> = [
   [0.8, -0.8],
   [-0.8, -0.8],
 ];
+/** Seconds of no user input before a player is auto-kicked. The 15 s
+ *  warning ahead of it gives the user time to wiggle the mouse before
+ *  the connection drops. */
+const IDLE_KICK_SECONDS = 90;
+const IDLE_WARN_SECONDS = 75;
+/** Aim-change threshold below which an aim_update is treated as
+ *  "passive" — small mouse jitter or auto-tracking shouldn't reset the
+ *  idle clock or a stationary player camping the cursor would never be
+ *  considered idle. ~0.6° on either axis. */
+const IDLE_AIM_EPSILON = 0.01;
 
 interface PlayerState {
   socket?: Socket;
   input: MovementInput;
+  /** Epoch seconds of the last user-intent event (movement input change,
+   *  significant aim change, fire, respawn, shield). Drives the
+   *  inactivity kick — bots are exempt (they're always "active" via
+   *  the bot AI). Initialised to player join time so freshly-spawned
+   *  players have the full grace window. */
+  lastInputAt: number;
+  /** True while the client has been notified that an idle kick is N s
+   *  away. Reset when the player resumes input. Prevents spamming the
+   *  warning event every tick. */
+  idleWarned: boolean;
   /** Per-weapon last-fire timestamps (epoch seconds). Each weapon has its
    *  own cooldown clock, so sparking off a standard shot doesn't gate a
    *  seeker that's been ready for minutes. Missing entry = never fired. */
@@ -199,6 +221,21 @@ interface ActivePickupRuntime extends PickupState {
   wire: PickupState;
 }
 
+export interface RoomOptions {
+  /** When true, the room is hidden from quick-join and is only reachable
+   *  via its invite code. */
+  private?: boolean;
+  /** 4-char share code for private rooms. Undefined for public rooms. */
+  inviteCode?: string;
+  /** Per-room tunables (bot cap, weapon allow-list). Undefined applies
+   *  DEFAULT_ROOM_SETTINGS, which preserves the original public-room
+   *  feel (3 bots, all weapons). */
+  settings?: RoomSettings;
+  /** Called once when the last human leaves. Lets the RoomManager drop
+   *  the room and call shutdown() to free Rapier wasm + intervals. */
+  onEmpty?: () => void;
+}
+
 export class Room {
   id: string;
   io: Server;
@@ -238,6 +275,11 @@ export class Room {
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
   private fireInterval: ReturnType<typeof setInterval> | null = null;
+  /** 1 Hz idle-kick scan. Cheap (linear in human players) so it
+   *  doesn't need to share the 60 Hz sim tick. Skipped during
+   *  Countdown / Leaderboard so AFK during a non-playable phase
+   *  isn't punished. */
+  private idleInterval: ReturnType<typeof setInterval> | null = null;
   private simTime = 0;
   private nextProjectileId = 1;
   private nextHazardId = 1;
@@ -252,13 +294,32 @@ export class Room {
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
-  /** Dev toggle: when false, bots are removed and never refilled. Flipped
-   *  by the `toggle_bots` client event (default B key on the client). */
-  private botsEnabled: boolean = true;
+  /** True for rooms created via an invite code. Public quick-join skips
+   *  these so a private lobby doesn't accidentally pull in strangers. */
+  readonly private: boolean;
+  /** 4-letter share code shown to private-room creators / joiners. */
+  readonly inviteCode?: string;
+  /** Per-room tunables — bot cap and weapon allow-list. Captured at
+   *  creation; private rooms inherit whatever the creator submitted,
+   *  public rooms always run on DEFAULT_ROOM_SETTINGS. */
+  readonly settings: RoomSettings;
+  /** Manager hook fired the instant the last human leaves so the manager
+   *  can call shutdown() and drop the room. Bots alone never keep a room
+   *  alive — they exist only to give a human someone to shoot at. */
+  private readonly onEmpty?: () => void;
 
-  constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
+  constructor(
+    id: string,
+    io: Server,
+    terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID,
+    options: RoomOptions = {},
+  ) {
     this.id = id;
     this.io = io;
+    this.private = options.private ?? false;
+    this.inviteCode = options.inviteCode;
+    this.settings = options.settings ?? DEFAULT_ROOM_SETTINGS;
+    this.onEmpty = options.onEmpty;
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.terrainSeed = createRandomTerrainSeed();
@@ -351,7 +412,7 @@ export class Room {
         player.burningOwner = null;
         // Fresh random loadout every match. Reassign the reference on both
         // PlayerState and TankState so broadcasts reflect the new slots.
-        player.inventory = createRandomLoadout();
+        player.inventory = createRandomLoadout(this.settings.weaponAllowed);
         tank.inventory = player.inventory;
       }
       this.physics.resetTank(pid, tank.position, 0);
@@ -376,13 +437,19 @@ export class Room {
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
-    if (this.players.size >= MAX_PLAYERS) return;
+    // Count humans only — a room with 4 humans + 4 bots was hitting this
+    // gate and refusing the 5th human even though ensureFourTanks would
+    // immediately scrub the bots to free seats. The manager already
+    // routes humans to non-full public rooms; this is a defensive cap.
+    if (this.humanCount() >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
 
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastInputAt: Date.now() / 1000,
+      idleWarned: false,
       lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
@@ -393,7 +460,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(),
+      inventory: createRandomLoadout(this.settings.weaponAllowed),
     });
 
     this.spawnTank(playerId, playerName, color, flagId);
@@ -450,9 +517,16 @@ export class Room {
       });
     }
 
-    this.ensureFourTanks();
-
-    if (this.players.size === 0) {
+    // Last human gone: tell the manager to drop the room. Bots alone are
+    // not worth keeping the sim/broadcast loops, the Rapier world, and
+    // ~2 MB of voxel grid alive — the manager calls shutdown() to free
+    // everything. If no manager is wired (legacy single-room boot), fall
+    // back to the old behaviour of refilling bots and idling.
+    if (this.humanCount() === 0) {
+      if (this.onEmpty) {
+        this.onEmpty();
+        return;
+      }
       this.stopLoop();
       if (this.countdownTimeout) {
         clearTimeout(this.countdownTimeout);
@@ -466,7 +540,42 @@ export class Room {
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
       this.pendingShotTimeouts.clear();
+      // Drop the bots that were keeping the empty room "populated"; with
+      // no humans they're just burning CPU.
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      for (const [botId] of bots) this.removeBot(botId);
+      return;
     }
+
+    this.ensureFourTanks();
+  }
+
+  /** Number of human players currently in the room. Bots are excluded so
+   *  the manager can treat "empty" as "no humans" rather than "no
+   *  entities at all" (a room with only bots is a CPU leak). */
+  humanCount(): number {
+    let n = 0;
+    for (const p of this.players.values()) if (!p.isBot) n++;
+    return n;
+  }
+
+  /** Tear down all timers, intervals, and the Rapier wasm world. After
+   *  this returns the Room object is dead — it must not be reused. The
+   *  manager removes it from its map so it gets GC'd. */
+  shutdown(): void {
+    this.stopLoop();
+    if (this.countdownTimeout) { clearTimeout(this.countdownTimeout); this.countdownTimeout = null; }
+    if (this.resetTimeout) { clearTimeout(this.resetTimeout); this.resetTimeout = null; }
+    for (const t of this.pendingShotTimeouts) clearTimeout(t);
+    this.pendingShotTimeouts.clear();
+    this.scheduledStrikes = [];
+    this.activeProjectiles.clear();
+    this.activeHazards.clear();
+    this.activePickups.clear();
+    this.tanks.clear();
+    this.players.clear();
+    this.refreshTankList();
+    this.physics.dispose();
   }
 
   private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
@@ -509,7 +618,7 @@ export class Room {
       flagId,
       burning: false,
       // Shared reference with PlayerState — one mutation, both sides see it.
-      inventory: player?.inventory ?? createRandomLoadout(),
+      inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
     };
     this.tanks.set(playerId, tank);
     this.refreshTankList();
@@ -528,12 +637,29 @@ export class Room {
       // tanks can still yaw on the spot. We still accept the raw input here
       // so left/right (rotation) reaches the physics tick.
       const player = this.players.get(socket.id);
-      if (player) player.input = data;
+      if (player) {
+        player.input = data;
+        // movement_input is sent only on key state change, so every
+        // arrival is a genuine activity signal.
+        player.lastInputAt = Date.now() / 1000;
+      }
     });
 
     onValidated(socket, 'aim_update', AimUpdateSchema, (data) => {
       const tank = this.tanks.get(socket.id);
+      const player = this.players.get(socket.id);
       if (tank && tank.alive) {
+        // Stamp activity only when the aim actually moves — aim_update
+        // fires every frame regardless of mouse motion, so a treating
+        // it as a heartbeat would let an AFK player camp the cursor
+        // forever and never trigger the idle kick.
+        if (player) {
+          const dT = Math.abs(data.turretRotation - tank.turretRotation);
+          const dP = Math.abs(data.barrelPitch - tank.barrelPitch);
+          if (dT > IDLE_AIM_EPSILON || dP > IDLE_AIM_EPSILON) {
+            player.lastInputAt = Date.now() / 1000;
+          }
+        }
         tank.turretRotation = data.turretRotation;
         tank.barrelPitch = data.barrelPitch;
       }
@@ -563,6 +689,7 @@ export class Room {
 
       this.consumeAmmo(player, weapon.id);
       player.lastFireByWeapon.set(weapon.id, now);
+      player.lastInputAt = now;
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
 
@@ -572,6 +699,7 @@ export class Room {
       if (!player || !tank) return;
       if (tank.alive) return; // already alive
       if (Date.now() / 1000 < player.respawnAllowedAt) return; // cooldown not elapsed
+      player.lastInputAt = Date.now() / 1000;
       this.respawnTank(socket.id);
     });
 
@@ -584,17 +712,7 @@ export class Room {
       tank.shieldAvailable = false;
       tank.shieldTimeRemaining = SHIELD_DURATION;
       player.shieldExpiresAt = nowSec + SHIELD_DURATION;
-    });
-
-    socket.on('force_reset_match', () => {
-      this.resetMatch();
-    });
-
-    socket.on('toggle_bots', () => {
-      this.botsEnabled = !this.botsEnabled;
-      // eslint-disable-next-line no-console
-      console.log(`[bots] ${this.botsEnabled ? 'enabled' : 'disabled'} by ${socket.id}`);
-      this.ensureFourTanks();
+      player.lastInputAt = nowSec;
     });
 
     socket.on('ping', (t: number) => {
@@ -666,28 +784,23 @@ export class Room {
   }
 
   private ensureFourTanks(): void {
-    const TARGET_TANKS = 4;
-
-    // With bots disabled, drop every existing bot and stop filling. Human
-    // players keep their slots.
-    if (!this.botsEnabled) {
-      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
-      for (const [botId] of bots) this.removeBot(botId);
+    // Per-room tunable: max bots filling the room. Also clamped against
+    // MAX_PLAYERS so a 7-bot setting silently sheds bots when humans
+    // start arriving instead of refusing the join.
+    const desiredBots = Math.max(
+      0,
+      Math.min(this.settings.maxBots, MAX_PLAYERS - this.humanCount()),
+    );
+    const botEntries = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+    if (botEntries.length > desiredBots) {
+      const toRemove = botEntries.length - desiredBots;
+      for (let i = 0; i < toRemove; i++) this.removeBot(botEntries[i][0]);
       return;
     }
-
-    // Remove bots if we have too many tanks
-    if (this.players.size > TARGET_TANKS) {
-      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
-      const toRemove = this.players.size - TARGET_TANKS;
-      for (let i = 0; i < Math.min(toRemove, bots.length); i++) {
-        this.removeBot(bots[i][0]);
-      }
-    }
-
-    // Add bots if we have too few tanks
-    while (this.players.size < TARGET_TANKS) {
+    let botCount = botEntries.length;
+    while (botCount < desiredBots) {
       this.addBot();
+      botCount++;
     }
   }
 
@@ -703,6 +816,8 @@ export class Room {
 
     this.players.set(botId, {
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
+      lastInputAt: Date.now() / 1000,
+      idleWarned: false,
       lastFireByWeapon: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
@@ -713,7 +828,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(),
+      inventory: createRandomLoadout(this.settings.weaponAllowed),
     });
 
     // Pick a unique flag for the bot from the full countries list
@@ -1258,9 +1373,22 @@ export class Room {
     let kind: PickupKind;
     let weaponId: string | undefined;
     if (isWeaponCrate) {
-      const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
-      kind = 'weapon';
-      weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+      // `undefined` = no restriction; `[]` = explicit "no consumables"
+      // (private room locked to the standard cannon). The two are NOT
+      // collapsed — empty array means an empty pool and we drop down
+      // to an ammo crate so we don't crash on pool[0].
+      const allowed = this.settings.weaponAllowed
+        ? new Set(this.settings.weaponAllowed)
+        : null;
+      const pool = WEAPONS.filter(
+        (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
+      );
+      if (pool.length === 0) {
+        kind = 'ammo';
+      } else {
+        kind = 'weapon';
+        weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+      }
     } else {
       kind = 'ammo';
     }
@@ -1369,7 +1497,7 @@ export class Room {
     player.burningOwner = null;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
-    player.inventory = createRandomLoadout();
+    player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
     this.physics.resetTank(playerId, tank.position, 0);
   }
@@ -1440,12 +1568,48 @@ export class Room {
       if (this.phase === MatchPhase.Countdown) return;
       this.tickFire(fireDt);
     }, fireDt * 1000);
+
+    this.idleInterval = setInterval(() => {
+      if (this.phase !== MatchPhase.InProgress) return;
+      this.tickIdleKick();
+    }, 1000);
   }
 
   private stopLoop(): void {
     if (this.simInterval) { clearInterval(this.simInterval); this.simInterval = null; }
     if (this.broadcastInterval) { clearInterval(this.broadcastInterval); this.broadcastInterval = null; }
     if (this.fireInterval) { clearInterval(this.fireInterval); this.fireInterval = null; }
+    if (this.idleInterval) { clearInterval(this.idleInterval); this.idleInterval = null; }
+  }
+
+  /** Scan human players for inactivity. Crosses two thresholds: at
+   *  IDLE_WARN_SECONDS we ping the client once with a 15-s countdown,
+   *  at IDLE_KICK_SECONDS we drop the socket. The single-shot
+   *  idleWarned flag prevents the warning from re-firing every tick. */
+  private tickIdleKick(): void {
+    const now = Date.now() / 1000;
+    for (const [pid, player] of this.players) {
+      if (player.isBot) continue;
+      const idleSec = now - player.lastInputAt;
+      if (idleSec >= IDLE_KICK_SECONDS) {
+        // eslint-disable-next-line no-console
+        console.log(`[idle] kicking ${pid}: ${idleSec.toFixed(0)}s no input`);
+        // Tell the client why before dropping the socket so the
+        // browser tab reloads back to login instead of just freezing
+        // on the in-game frame.
+        player.socket?.emit('kicked', { reason: 'idle' });
+        player.socket?.disconnect(true);
+        continue;
+      }
+      if (idleSec >= IDLE_WARN_SECONDS && !player.idleWarned) {
+        player.idleWarned = true;
+        const remain = Math.max(1, Math.ceil(IDLE_KICK_SECONDS - idleSec));
+        player.socket?.emit('idle_warning', { secondsRemaining: remain });
+      } else if (idleSec < IDLE_WARN_SECONDS && player.idleWarned) {
+        player.idleWarned = false;
+        player.socket?.emit('idle_warning', { secondsRemaining: 0 });
+      }
+    }
   }
 
   /** Advance the napalm CA and apply per-tick damage to any tank standing
@@ -2113,6 +2277,7 @@ export class Room {
       countdownEndsInMs: this.phase === MatchPhase.Countdown
         ? Math.max(0, this.countdownEndsAt - Date.now())
         : 0,
+      inviteCode: this.inviteCode,
     };
   }
 }
