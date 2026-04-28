@@ -3,7 +3,6 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
-import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
@@ -42,11 +41,11 @@ import {
   isShiftHeld, consumeRightClick, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
-import { setupFullscreenButton } from './ui/fullscreen';
-import { setupSettingsMenu } from './ui/settings';
-import { setupAudioToggle } from './ui/audioToggle';
+import { setupSettingsDialog } from './ui/settingsDialog';
+import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
+import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
@@ -239,12 +238,18 @@ const onWeaponChipTap = (slot: number) => setVirtualWeaponSlot(slot);
 hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
 setWeaponCount(1);
 
-// Fullscreen button is always available (desktop + mobile).
-setupFullscreenButton();
-setupSettingsMenu();
-setupAudioToggle();
+// Single ESC-bound settings dialog hosts audio, fullscreen, camera
+// presets, the weapon guide, and exit-match. Replaces the old scattered
+// audio/settings/fullscreen cluster.
+setupSettingsDialog(() => {
+  // Exit confirmed: page reload drops the socket, clears all in-memory
+  // state, and re-shows the login. Persisted prefs (volumes, camera
+  // preset) survive in localStorage.
+  window.location.reload();
+});
 setupFeed();
 setupMatchTimer();
+setupMatchCountdown();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
@@ -253,17 +258,114 @@ if (isMobileDevice()) {
 }
 
 // ── Networking ──
+// If the previous page-load was kicked off by the server (idle, …),
+// surface that as the login overlay's initial error so the player
+// understands why they're back at the form.
+const initialLoginError = (() => {
+  try {
+    const reason = sessionStorage.getItem('vt.kickReason');
+    if (!reason) return undefined;
+    sessionStorage.removeItem('vt.kickReason');
+    if (reason === 'idle') return 'You were kicked for inactivity.';
+    return undefined;
+  } catch { return undefined; }
+})();
 // Block until the player has picked a name + color from the login overlay.
-const login = await showLogin();
+let login = await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
 const socket = connect();
 
+const sendJoin = (): void => {
+  socket.emit('join_room', {
+    playerName: login.name,
+    color: login.color,
+    flagId: login.flagId,
+    mode: login.mode,
+    inviteCode: login.inviteCode,
+    settings: login.settings,
+  });
+  hud.showWaiting(true);
+};
+
 socket.on('connect', () => {
   myId = socket.id!;
-  socket.emit('join_room', { playerName: login.name, color: login.color, flagId: login.flagId });
-  hud.showWaiting(true);
+  sendJoin();
+});
+
+socket.on('join_error', async ({ reason }) => {
+  const message: string = (() => {
+    switch (reason) {
+      case 'invalid_code':   return 'Invite code not found. Check with the host.';
+      case 'room_full':      return 'That room is full. Try Quick Match.';
+      case 'cap_reached':    return 'Server is at capacity. Try again in a moment.';
+      case 'missing_code':   return 'Enter a 4-letter invite code.';
+      case 'too_many_rooms': return 'You already have 2 private rooms running. Close one first.';
+      default:               return 'Could not join. Try again.';
+    }
+  })();
+  login = await showLogin(message);
+  sendJoin();
+});
+
+// In-game invite-code badge — every room (public and private) carries a
+// code, so the badge is shown for every match. Clicking it opens the
+// invite dialog (code + share-link with click-to-copy on each).
+const inviteBadge = document.getElementById('invite-badge') as HTMLDivElement | null;
+const inviteBadgeCode = document.getElementById('invite-badge-code') as HTMLSpanElement | null;
+const inviteDialog = setupInviteDialog();
+let lastInviteCode: string | undefined;
+function updateInviteBadge(code: string | undefined): void {
+  if (!inviteBadge || !inviteBadgeCode) return;
+  if (code === lastInviteCode) return;
+  lastInviteCode = code;
+  inviteDialog.setCode(code);
+  if (!code) {
+    inviteBadge.classList.remove('visible');
+    return;
+  }
+  inviteBadgeCode.textContent = code;
+  inviteBadge.classList.add('visible');
+}
+
+// Idle-kick warning: server fires once when crossing the 75 s no-input
+// threshold; the banner counts down locally so we don't depend on
+// further server messages. The next genuine input on this end will
+// reset the server clock and trigger a clearing event.
+const idleBanner = document.getElementById('idle-warning') as HTMLDivElement | null;
+const idleCount = document.getElementById('idle-warning-count') as HTMLSpanElement | null;
+let idleCountdown: ReturnType<typeof setInterval> | null = null;
+let idleSecondsLeft = 0;
+function clearIdleBanner(): void {
+  if (idleCountdown) { clearInterval(idleCountdown); idleCountdown = null; }
+  if (idleBanner) idleBanner.classList.remove('visible');
+}
+socket.on('kicked', ({ reason }) => {
+  // Reload back to the login overlay. Stash the reason so the new
+  // page-load can surface it inline instead of starting silently.
+  try { sessionStorage.setItem('vt.kickReason', reason); } catch { /* private mode */ }
+  window.location.reload();
+});
+
+socket.on('idle_warning', ({ secondsRemaining }) => {
+  if (!idleBanner || !idleCount) return;
+  if (secondsRemaining <= 0) {
+    clearIdleBanner();
+    return;
+  }
+  idleSecondsLeft = secondsRemaining;
+  idleCount.textContent = String(idleSecondsLeft);
+  idleBanner.classList.add('visible');
+  if (idleCountdown) clearInterval(idleCountdown);
+  idleCountdown = setInterval(() => {
+    idleSecondsLeft -= 1;
+    if (idleSecondsLeft <= 0) {
+      clearIdleBanner();
+      return;
+    }
+    idleCount.textContent = String(idleSecondsLeft);
+  }, 1000);
 });
 
 // RTT probe: emit a ping every 2 s stamped with performance.now(). The server
@@ -280,6 +382,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
   pickupScene.sync(snap.pickups ?? []);
+  updateInviteBadge(snap.inviteCode);
 
   if (!hasPlayedWelcomeAnnounce) {
     playAnnouncer('VIBE TANKS!');
@@ -288,6 +391,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
+  setMatchCountdown(snap.phase === MatchPhase.Countdown ? (snap.countdownEndsInMs ?? 0) : 0);
 
   if (snap.phase === MatchPhase.Leaderboard) {
     hud.showLeaderboard(snap.tanks, snap.resetsInSeconds);
@@ -364,7 +468,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 });
 
 let voxelGrid: VoxelGrid | null = null;
-let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 /** Client-side Rapier mirror. Only the LOCAL player is registered here;
@@ -430,8 +533,6 @@ let trackDecal: TrackDecalHandle | null = null;
  *  trail is continuous even at high speed. Entries are cleared on
  *  voxel_snapshot (match reset / rejoin) and when a tank goes dead → alive. */
 const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
-let cuberilleVisible = false;
-let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
@@ -454,13 +555,6 @@ const _scratchLocalPos = new THREE.Vector3();
 socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
   setTerrainSource(voxelGrid);
-  if (!voxelTerrain) {
-    voxelTerrain = createVoxelTerrain(voxelGrid, scene);
-    voxelTerrain.setVisible(cuberilleVisible);
-  } else {
-    voxelTerrain.rebuild(voxelGrid);
-    voxelTerrain.setVisible(cuberilleVisible);
-  }
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
@@ -477,10 +571,8 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   lastTreadPosByPlayer.clear();
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
-    surfaceNets.setVisible(surfaceNetsVisible);
   } else {
     surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
-    surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
     voxelDebris = createVoxelDebris(scene, voxelGrid.cellSize);
@@ -572,27 +664,6 @@ socket.on('damage_applied', (data) => {
     // At least one non-self hit — play hit marker for the local shooter
     // if they own the napalm patch. (We can't easily attribute the
     // shooter here, so play conservatively only when damage hit others.)
-  }
-});
-
-window.addEventListener('keydown', (ev) => {
-  const k = ev.key.toLowerCase();
-  if (k === 'v' && !ev.repeat) {
-    // Toggles the debug cuberille renderer. Mutually exclusive with surface
-    // nets to avoid overlapping meshes.
-    cuberilleVisible = !cuberilleVisible;
-    if (cuberilleVisible) surfaceNetsVisible = false;
-    else surfaceNetsVisible = true;
-    voxelTerrain?.setVisible(cuberilleVisible);
-    surfaceNets?.setVisible(surfaceNetsVisible);
-    // eslint-disable-next-line no-console
-    console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
-  } else if (k === 'r' && !ev.repeat) {
-    socket.emit('force_reset_match');
-  } else if (k === 'b' && !ev.repeat) {
-    // Dev: flip server-side bot auto-fill. Server removes existing bots
-    // on disable and refills empty slots on re-enable.
-    socket.emit('toggle_bots');
   }
 });
 
@@ -843,7 +914,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
     if (step.carveTerrain && voxelGrid) {
       const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
       const grid = voxelGrid;
-      const cuberille = voxelTerrain;
       const sn = surfaceNets;
       const debris = voxelDebris;
       const scorch = voxelScorch;
@@ -859,7 +929,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             grid.carveSphere(center, radius);
             clientPhysics?.invalidateSphere(center, radius);
             scorch?.addSphere(center, radius * 1.9, 1.0);
-            if (cuberilleVisible) cuberille?.invalidateSphere(center, radius);
             sn?.invalidateSphere(center, radius * 1.9);
             onMinimapCarve(grid, center, radius);
             break;
@@ -876,7 +945,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             const invR = op.length * 0.5 + op.baseRadius + 1;
             clientPhysics?.invalidateSphere(midPoint, invR);
             scorch?.addSphere(midPoint, invR * 1.2, 0.7);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.4);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -899,7 +967,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             // Scorch the tunnel interior so it reads as a burnt dig-out,
             // but weaker than a blast — the digger is mechanical, not HE.
             scorch?.addSphere(midPoint, invR * 1.1, 0.55);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.4);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -917,7 +984,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             };
             const invR = Math.max(halfW, halfH, halfT) + 1;
             clientPhysics?.invalidateSphere(invCenter, invR);
-            if (cuberilleVisible) cuberille?.invalidateSphere(invCenter, invR);
             sn?.invalidateSphere(invCenter, invR * 1.2);
             onMinimapCarve(grid, invCenter, invR);
             break;
@@ -932,7 +998,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             };
             const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
             clientPhysics?.invalidateSphere(midPoint, invR);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.2);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -1202,7 +1267,18 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const rawInput = { ...getMovementInput(), turbo: turboActive };
+    const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    const baseInput = getMovementInput();
+    // Match the server-side mask in tickMovement: during Countdown the tank
+    // can still yaw on the spot (left/right) and aim, but forward/backward
+    // and turbo are nullified so prediction stays aligned with the frozen
+    // server state — no ghost movement, no leftover treads.
+    const rawInput = {
+      ...baseInput,
+      forward: inCountdown ? false : baseInput.forward,
+      backward: inCountdown ? false : baseInput.backward,
+      turbo: inCountdown ? false : turboActive,
+    };
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1449,8 +1525,12 @@ function animate(): void {
 
     const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
     if (consumeClick()) {
-      const timeSinceFire = now - selLastFire;
-      if (timeSinceFire >= selectedWeapon.cooldown) {
+      // Suppress fire entirely during the start-of-match countdown so the
+      // input is consumed (no queued click leaking into the match start)
+      // but no animation, sound, or fire_request is produced.
+      if (inCountdown) {
+        // intentionally no-op
+      } else if (now - selLastFire >= selectedWeapon.cooldown) {
         // Ammo guard — the server re-checks, but rejecting client-side
         // keeps the player's "oh I'm out" feedback snappy (no dry-click
         // noise, no fake fire animation).
@@ -1550,8 +1630,7 @@ function animate(): void {
 
   // Update name labels visibility (occlusion and distance)
   const occlusionObjects: THREE.Object3D[] = [];
-  if (surfaceNetsVisible && surfaceNets) occlusionObjects.push(surfaceNets.group);
-  if (cuberilleVisible && voxelTerrain) occlusionObjects.push(voxelTerrain.group);
+  if (surfaceNets) occlusionObjects.push(surfaceNets.group);
   if (predictedState) {
     _scratchLocalPos.set(predictedState.position.x, predictedState.position.y, predictedState.position.z);
   } else {

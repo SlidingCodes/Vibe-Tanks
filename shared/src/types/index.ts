@@ -5,6 +5,7 @@ export type RoomId = string;
 // ── Match phase ──
 export enum MatchPhase {
   WaitingForPlayers = 'waiting',
+  Countdown = 'countdown',
   InProgress = 'in_progress',
   GameOver = 'game_over',
   Leaderboard = 'leaderboard',
@@ -200,6 +201,10 @@ export interface WeaponBehaviorConfig {
 export interface WeaponDefinition {
   id: string;
   name: string;
+  /** One-liner shown in the weapon guide (settings dialog) and as a
+   *  hover tooltip on the allow-list checkboxes. ~50-90 chars. Focused
+   *  on what makes the weapon *feel* distinct in play, not on stats. */
+  description?: string;
   projectileSpeed: number;
   blastRadius: number;
   damage: number;
@@ -363,7 +368,52 @@ export interface MatchSnapshot {
   pickups: PickupState[];
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
+  /** Milliseconds remaining in the start-of-match Countdown phase. 0 outside Countdown. */
+  countdownEndsInMs: number;
+  /** 4-letter share code for private rooms (omitted for public quick-join
+   *  rooms). Lets the room creator paste it into chat for friends to join. */
+  inviteCode?: string;
 }
+
+/** How a client wants to be routed by the RoomManager. Default is 'quick'
+ *  (find or create a public room). 'create_private' spins up a fresh
+ *  invite-only room and returns its code via MatchSnapshot.inviteCode.
+ *  'join_private' targets the room with the supplied inviteCode. */
+export type JoinMode = 'quick' | 'create_private' | 'join_private';
+
+/** Reason the server rejected a join_room request. The client surfaces
+ *  these to the user so they know whether to retry, change mode, or
+ *  fix the code. */
+export type JoinErrorReason =
+  | 'invalid_code'
+  | 'room_full'
+  | 'cap_reached'
+  | 'missing_code'
+  | 'invalid_settings'
+  | 'too_many_rooms';
+
+/** Per-room tunables passed by the creator of a private room. Public
+ *  rooms always use the defaults. */
+export interface RoomSettings {
+  /** Hard cap on the number of bots filling the room. 0 = pure PvP. The
+   *  default of 3 preserves the old "1 human + 3 bots = 4 tanks" feel
+   *  for solo public rooms. The room never exceeds MAX_PLAYERS total
+   *  (humans + bots), so a high maxBots is silently scaled down as
+   *  more humans join. */
+  maxBots: number;
+  /** Whitelist of consumable weapon IDs that may appear in random
+   *  loadouts and pickup crates. Three states:
+   *    undefined → no restriction (all weapons available — public default).
+   *    []        → explicit "no consumables" (only the infinite `standard`).
+   *    [ids]     → only the listed consumables.
+   *  The infinite default `standard` is always available regardless. */
+  weaponAllowed?: string[];
+}
+
+export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
+  maxBots: 3,
+  // weaponAllowed left undefined → no restriction for public rooms.
+};
 
 // ── Fire (napalm cellular automaton) ──
 export interface FireCell {
@@ -437,17 +487,24 @@ export interface ShotResult {
 
 // ── Network events: client → server ──
 export interface ClientEvents {
-  join_room: (data: { playerName: string; color?: string; flagId?: string }) => void;
+  join_room: (data: {
+    playerName: string;
+    color?: string;
+    flagId?: string;
+    /** Routing mode. Omitted = 'quick'. */
+    mode?: JoinMode;
+    /** Required when mode === 'join_private'. 4 letters from a no-confusables
+     *  alphabet — the server lookup is case-insensitive. */
+    inviteCode?: string;
+    /** Only honoured when mode === 'create_private'. Falls back to
+     *  DEFAULT_ROOM_SETTINGS when omitted. */
+    settings?: RoomSettings;
+  }) => void;
   respawn_request: () => void;
   movement_input: (data: MovementInput) => void;
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
-  force_reset_match: () => void;
   shield_activate: () => void;
-  /** Dev: toggle the server's bot auto-fill. When disabled the server
-   *  removes every active bot and skips ensureFourTanks; when re-enabled
-   *  the bot slots refill on the next tick. */
-  toggle_bots: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
@@ -497,4 +554,16 @@ export interface ServerEvents {
     playerId?: PlayerId;
     outcome?: PickupCollectOutcome;
   }) => void;
+  /** Server refused the join_room. Client surfaces the reason and
+   *  re-shows the login overlay so the player can retry / fix the code. */
+  join_error: (data: { reason: JoinErrorReason }) => void;
+  /** Sent on the transition into / out of the idle-kick warning window
+   *  (75 s of no input). secondsRemaining is the seconds-until-kick when
+   *  entering the window and 0 when activity has been detected and the
+   *  warning is cleared. */
+  idle_warning: (data: { secondsRemaining: number }) => void;
+  /** Server is about to disconnect this socket and wants the client to
+   *  surface a reason instead of a silent dropout. The client should
+   *  reload the page so the player lands back on the login overlay. */
+  kicked: (data: { reason: 'idle' }) => void;
 }

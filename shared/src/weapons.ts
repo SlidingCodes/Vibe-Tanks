@@ -4,6 +4,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'standard',
     name: 'Standard Shell',
+    description: 'Reliable cannon shell with infinite ammo and modest splash.',
     projectileSpeed: 24,
     blastRadius: 2.8,
     damage: 24,
@@ -15,6 +16,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'big_blast',
     name: 'Big Blast',
+    description: 'Airburst HE with a massive blast radius — clears clusters from above.',
     projectileSpeed: 16,
     // Big numbers by design: airburst + quadratic falloff + the blast
     // being 1.8 m off the ground shrink the *effective* horizontal
@@ -36,6 +38,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'splitter',
     name: 'Splitter',
+    description: 'Splits mid-flight into 3 fragments for area denial.',
     projectileSpeed: 21,
     blastRadius: 2,
     damage: 12,
@@ -57,6 +60,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'bouncer',
     name: 'Bouncer',
+    description: 'Ricochets once off terrain — peek shots behind cover.',
     projectileSpeed: 22,
     blastRadius: 3.2,
     damage: 22,
@@ -73,6 +77,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'drill',
     name: 'Drill',
+    description: 'Burrows into the ground before detonating — heavy underground crater.',
     projectileSpeed: 20,
     blastRadius: 2.4,
     damage: 10,
@@ -92,6 +97,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'napalm',
     name: 'Napalm',
+    description: 'Sticky burning patch — ticks damage on anyone standing in it.',
     projectileSpeed: 18,
     blastRadius: 2.2,
     damage: 10,
@@ -111,6 +117,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'seeker',
     name: 'Seeker',
+    description: 'Slow homing missile — locks onto the nearest enemy in range.',
     projectileSpeed: 13,
     blastRadius: 3,
     damage: 30,
@@ -128,6 +135,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'rail',
     name: 'Rail',
+    description: 'Hitscan beam — instant 50 m straight line, hits anything in the path.',
     projectileSpeed: 60,
     blastRadius: 1.4,
     damage: 42,
@@ -145,6 +153,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'mortar_rain',
     name: 'Mortar Rain',
+    description: 'Calls down 5 lobbed shells around the aim point.',
     projectileSpeed: 14,
     blastRadius: 3.6,
     damage: 18,
@@ -166,6 +175,7 @@ export const WEAPONS: WeaponDefinition[] = [
   {
     id: 'mine',
     name: 'Mine Layer',
+    description: 'Drops an arming mine — triggers on enemy proximity.',
     projectileSpeed: 14,
     blastRadius: 3.2,
     damage: 12,
@@ -190,6 +200,7 @@ export const WEAPONS: WeaponDefinition[] = [
     // tank shoot itself out.
     id: 'digger',
     name: 'Digger',
+    description: 'Carves a forward tunnel through terrain — drive-through cover.',
     projectileSpeed: 22,
     blastRadius: 2.6,
     damage: 18,
@@ -215,6 +226,7 @@ export const WEAPONS: WeaponDefinition[] = [
     // perpendicular to the shot direction. No damage — pure utility.
     id: 'wall',
     name: 'Wall',
+    description: 'Deposits a defensive barricade perpendicular to your shot.',
     projectileSpeed: 18,
     blastRadius: 0,
     damage: 0,
@@ -239,6 +251,7 @@ export const WEAPONS: WeaponDefinition[] = [
     // elevated ground.
     id: 'ramp',
     name: 'Ramp',
+    description: 'Builds a driveable ramp — climb out of craters or onto ridges.',
     projectileSpeed: 18,
     blastRadius: 0,
     damage: 0,
@@ -266,6 +279,7 @@ export const WEAPONS: WeaponDefinition[] = [
     // mobility utility like wall / ramp / digger.
     id: 'jump',
     name: 'Rocket Jump',
+    description: 'Launches the tank itself instead of a shell — pure mobility.',
     // projectileSpeed must match the ballistic-solver assumption used by
     // the aim code (getAimTarget → atan2 / quadratic solver). 22 sits in
     // the middle of the existing shell class so the reticle arc reads
@@ -292,10 +306,23 @@ export const LOADOUT_RANDOM_COUNT = 3;
 
 /** Roll a random loadout for a freshly-spawned tank. Slot 0 is always the
  *  infinite `standard` weapon; the remaining slots are a sample without
- *  replacement from the consumable pool. */
-export function createRandomLoadout(): { weaponId: string; ammo: number | 'infinite' }[] {
-  const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
-  // Fisher-Yates shuffle, then take the first LOADOUT_RANDOM_COUNT.
+ *  replacement from the consumable pool, optionally restricted to a
+ *  per-room allow-list. Three states:
+ *    `undefined` → no restriction (full pool — public-room default).
+ *    `[]`        → explicit "no consumables"; loadout is just `standard`.
+ *    `[ids]`     → only those IDs are eligible.
+ *  `standard` is always included regardless — without it, players who
+ *  exhaust their consumables would have no way to fight back. */
+export function createRandomLoadout(
+  allowedIds?: ReadonlyArray<string>,
+): { weaponId: string; ammo: number | 'infinite' }[] {
+  // `undefined` = unrestricted, but `[]` is an *explicit* empty set:
+  // the previous `length > 0` guard collapsed those two into one and
+  // turned "no weapons" private rooms into "all weapons" by accident.
+  const allowed = allowedIds ? new Set(allowedIds) : null;
+  const pool = WEAPONS.filter(
+    (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
+  );
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
