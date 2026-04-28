@@ -679,6 +679,20 @@ socket.on('state_update', (state: RoomStateUpdate) => {
     } else if (existing.state.alive && !tankState.alive) {
       spawnTankExplosion(existing.group.position, tankState.color, scene);
       playTankExplosion();
+      // Permanent dark "deformed star" scorch where the tank died —
+      // sampled by the surface-nets shader on the next chunk rebuild.
+      // Drives a one-shot mesh refresh in a slightly larger radius so
+      // the arm tips still fall inside an invalidated chunk.
+      if (voxelScorch && surfaceNets) {
+        const deathPos = {
+          x: tankState.position.x,
+          y: tankState.position.y,
+          z: tankState.position.z,
+        };
+        const starBaseRadius = 3.4;
+        voxelScorch.addScorchStar(deathPos, starBaseRadius);
+        surfaceNets.invalidateSphere(deathPos, starBaseRadius * 2.4);
+      }
       // Prevent re-triggering on subsequent state_updates while dead.
       // (For the local tank, updateLocalTankMesh is skipped once dead, so
       // existing.state would otherwise keep reporting alive=true.)

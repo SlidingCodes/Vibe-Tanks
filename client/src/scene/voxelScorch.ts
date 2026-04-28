@@ -42,6 +42,54 @@ export class VoxelScorch {
     return this.data[this.index(ix, iy, iz)];
   }
 
+  /** Paint a deformed N-arm star scorch — tank death decal. A strong
+   *  central blob plus 5–7 arms of overlapping spheres of decreasing
+   *  strength toward each tip, jittered so two consecutive deaths never
+   *  produce the same shape. Pass a `seed` to make the result reproducible
+   *  across re-broadcasts; default uses Math.random so each call is unique. */
+  addScorchStar(center: Vec3, baseRadius: number, seed?: number): void {
+    let s = (seed ?? (Math.random() * 0xffffffff)) | 0;
+    if (s === 0) s = 1;
+    const rnd = () => {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+      return ((s >>> 0) / 0xffffffff);
+    };
+
+    // Central scorch core — full strength, dominates the centre voxels.
+    this.addSphere(center, baseRadius * 0.95, 1.0);
+
+    // Asymmetric arms: even angular spacing with ±0.45 rad jitter so the
+    // arms read as a deformed star rather than a regular polygon. Length
+    // varies per-arm; segments drop in radius and strength toward the tip.
+    const armCount = 5 + Math.floor(rnd() * 3); // 5..7
+    for (let i = 0; i < armCount; i++) {
+      const angle = (i / armCount) * Math.PI * 2 + (rnd() - 0.5) * 0.9;
+      const armLength = baseRadius * (1.1 + rnd() * 0.8);
+      const segments = 3;
+      for (let j = 1; j <= segments; j++) {
+        const t = j / segments;
+        const off = armLength * t;
+        const px = center.x + Math.cos(angle) * off;
+        const pz = center.z + Math.sin(angle) * off;
+        const r = baseRadius * (0.7 - 0.22 * t);
+        const strength = 0.85 - 0.28 * t;
+        this.addSphere({ x: px, y: center.y, z: pz }, r, strength);
+      }
+    }
+
+    // Outlier blobs: a handful of off-centre splatters so the silhouette
+    // breaks the arm-and-core symmetry. Smaller and weaker than the arms,
+    // just enough to dirty up the rim.
+    const outliers = 3 + Math.floor(rnd() * 3);
+    for (let k = 0; k < outliers; k++) {
+      const a = rnd() * Math.PI * 2;
+      const d = baseRadius * (0.45 + rnd() * 0.9);
+      const px = center.x + Math.cos(a) * d;
+      const pz = center.z + Math.sin(a) * d;
+      this.addSphere({ x: px, y: center.y, z: pz }, baseRadius * 0.32, 0.55);
+    }
+  }
+
   /** Additive sphere of scorch. Strength 0..1 at the center, smoothstep to 0 at rim.
    *  Stacks saturating at 255 so repeated hits darken progressively. */
   addSphere(center: Vec3, radius: number, strength = 0.85): void {
