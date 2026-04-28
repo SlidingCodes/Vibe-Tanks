@@ -3,7 +3,6 @@ import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
-import { createVoxelTerrain, VoxelTerrainHandle } from './scene/voxelTerrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
 import { createVoxelDebris, VoxelDebrisHandle } from './scene/voxelDebris';
 import { VoxelScorch } from './scene/voxelScorch';
@@ -469,7 +468,6 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 });
 
 let voxelGrid: VoxelGrid | null = null;
-let voxelTerrain: VoxelTerrainHandle | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
 let voxelDebris: VoxelDebrisHandle | null = null;
 /** Client-side Rapier mirror. Only the LOCAL player is registered here;
@@ -535,8 +533,6 @@ let trackDecal: TrackDecalHandle | null = null;
  *  trail is continuous even at high speed. Entries are cleared on
  *  voxel_snapshot (match reset / rejoin) and when a tank goes dead → alive. */
 const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
-let cuberilleVisible = false;
-let surfaceNetsVisible = true;
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
@@ -559,13 +555,6 @@ const _scratchLocalPos = new THREE.Vector3();
 socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   voxelGrid = VoxelGrid.fromSnapshot(snap);
   setTerrainSource(voxelGrid);
-  if (!voxelTerrain) {
-    voxelTerrain = createVoxelTerrain(voxelGrid, scene);
-    voxelTerrain.setVisible(cuberilleVisible);
-  } else {
-    voxelTerrain.rebuild(voxelGrid);
-    voxelTerrain.setVisible(cuberilleVisible);
-  }
   // Scorch lives alongside the voxel grid, client-only. Reset on every
   // snapshot so reconnects/match-resets don't inherit stale burn marks.
   voxelScorch = new VoxelScorch(voxelGrid);
@@ -582,10 +571,8 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   lastTreadPosByPlayer.clear();
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
-    surfaceNets.setVisible(surfaceNetsVisible);
   } else {
     surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
-    surfaceNets.setVisible(surfaceNetsVisible);
   }
   if (!voxelDebris) {
     voxelDebris = createVoxelDebris(scene, voxelGrid.cellSize);
@@ -677,27 +664,6 @@ socket.on('damage_applied', (data) => {
     // At least one non-self hit — play hit marker for the local shooter
     // if they own the napalm patch. (We can't easily attribute the
     // shooter here, so play conservatively only when damage hit others.)
-  }
-});
-
-window.addEventListener('keydown', (ev) => {
-  const k = ev.key.toLowerCase();
-  if (k === 'v' && !ev.repeat) {
-    // Toggles the debug cuberille renderer. Mutually exclusive with surface
-    // nets to avoid overlapping meshes.
-    cuberilleVisible = !cuberilleVisible;
-    if (cuberilleVisible) surfaceNetsVisible = false;
-    else surfaceNetsVisible = true;
-    voxelTerrain?.setVisible(cuberilleVisible);
-    surfaceNets?.setVisible(surfaceNetsVisible);
-    // eslint-disable-next-line no-console
-    console.log(`[voxel] cuberille ${cuberilleVisible ? 'shown' : 'hidden'}`);
-  } else if (k === 'r' && !ev.repeat) {
-    socket.emit('force_reset_match');
-  } else if (k === 'b' && !ev.repeat) {
-    // Dev: flip server-side bot auto-fill. Server removes existing bots
-    // on disable and refills empty slots on re-enable.
-    socket.emit('toggle_bots');
   }
 });
 
@@ -948,7 +914,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
     if (step.carveTerrain && voxelGrid) {
       const carveDelay = step.startDelay + Math.max(0, step.trajectory.length - 1) * SECS_PER_SAMPLE;
       const grid = voxelGrid;
-      const cuberille = voxelTerrain;
       const sn = surfaceNets;
       const debris = voxelDebris;
       const scorch = voxelScorch;
@@ -964,7 +929,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             grid.carveSphere(center, radius);
             clientPhysics?.invalidateSphere(center, radius);
             scorch?.addSphere(center, radius * 1.9, 1.0);
-            if (cuberilleVisible) cuberille?.invalidateSphere(center, radius);
             sn?.invalidateSphere(center, radius * 1.9);
             onMinimapCarve(grid, center, radius);
             break;
@@ -981,7 +945,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             const invR = op.length * 0.5 + op.baseRadius + 1;
             clientPhysics?.invalidateSphere(midPoint, invR);
             scorch?.addSphere(midPoint, invR * 1.2, 0.7);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.4);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -1004,7 +967,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             // Scorch the tunnel interior so it reads as a burnt dig-out,
             // but weaker than a blast — the digger is mechanical, not HE.
             scorch?.addSphere(midPoint, invR * 1.1, 0.55);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.4);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -1022,7 +984,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             };
             const invR = Math.max(halfW, halfH, halfT) + 1;
             clientPhysics?.invalidateSphere(invCenter, invR);
-            if (cuberilleVisible) cuberille?.invalidateSphere(invCenter, invR);
             sn?.invalidateSphere(invCenter, invR * 1.2);
             onMinimapCarve(grid, invCenter, invR);
             break;
@@ -1037,7 +998,6 @@ socket.on('shot_resolved', (result: ShotResult) => {
             };
             const invR = Math.max(op.length, op.width, op.height) * 0.6 + 1;
             clientPhysics?.invalidateSphere(midPoint, invR);
-            if (cuberilleVisible) cuberille?.invalidateSphere(midPoint, invR);
             sn?.invalidateSphere(midPoint, invR * 1.2);
             onMinimapCarve(grid, midPoint, invR);
             break;
@@ -1670,8 +1630,7 @@ function animate(): void {
 
   // Update name labels visibility (occlusion and distance)
   const occlusionObjects: THREE.Object3D[] = [];
-  if (surfaceNetsVisible && surfaceNets) occlusionObjects.push(surfaceNets.group);
-  if (cuberilleVisible && voxelTerrain) occlusionObjects.push(voxelTerrain.group);
+  if (surfaceNets) occlusionObjects.push(surfaceNets.group);
   if (predictedState) {
     _scratchLocalPos.set(predictedState.position.x, predictedState.position.y, predictedState.position.z);
   } else {

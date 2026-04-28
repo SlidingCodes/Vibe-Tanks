@@ -294,9 +294,6 @@ export class Room {
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
-  /** Dev toggle: when false, bots are removed and never refilled. Flipped
-   *  by the `toggle_bots` client event (default B key on the client). */
-  private botsEnabled: boolean = true;
   /** True for rooms created via an invite code. Public quick-join skips
    *  these so a private lobby doesn't accidentally pull in strangers. */
   readonly private: boolean;
@@ -718,17 +715,6 @@ export class Room {
       player.lastInputAt = nowSec;
     });
 
-    socket.on('force_reset_match', () => {
-      this.resetMatch();
-    });
-
-    socket.on('toggle_bots', () => {
-      this.botsEnabled = !this.botsEnabled;
-      // eslint-disable-next-line no-console
-      console.log(`[bots] ${this.botsEnabled ? 'enabled' : 'disabled'} by ${socket.id}`);
-      this.ensureFourTanks();
-    });
-
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -798,14 +784,6 @@ export class Room {
   }
 
   private ensureFourTanks(): void {
-    // With bots disabled (dev toggle), drop every existing bot and stop
-    // filling. Human players keep their slots.
-    if (!this.botsEnabled) {
-      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
-      for (const [botId] of bots) this.removeBot(botId);
-      return;
-    }
-
     // Per-room tunable: max bots filling the room. Also clamped against
     // MAX_PLAYERS so a 7-bot setting silently sheds bots when humans
     // start arriving instead of refusing the join.
