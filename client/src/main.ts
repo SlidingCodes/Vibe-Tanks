@@ -47,6 +47,7 @@ import { setupSettingsMenu } from './ui/settings';
 import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
+import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
@@ -245,6 +246,7 @@ setupSettingsMenu();
 setupAudioToggle();
 setupFeed();
 setupMatchTimer();
+setupMatchCountdown();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
@@ -288,6 +290,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
+  setMatchCountdown(snap.phase === MatchPhase.Countdown ? (snap.countdownEndsInMs ?? 0) : 0);
 
   if (snap.phase === MatchPhase.Leaderboard) {
     hud.showLeaderboard(snap.tanks, snap.resetsInSeconds);

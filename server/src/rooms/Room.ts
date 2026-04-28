@@ -88,6 +88,7 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
+const MATCH_COUNTDOWN_MS = 3000; // freeze tanks for this long at the start of every match
 const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 /** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
@@ -246,6 +247,8 @@ export class Room {
   private nextPickupSpawnAt = 0;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
   private matchResetAt: number = 0; // epoch seconds
+  private countdownTimeout: ReturnType<typeof setTimeout> | null = null;
+  private countdownEndsAt: number = 0; // epoch ms (only meaningful while phase === Countdown)
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
@@ -299,7 +302,6 @@ export class Room {
   }
 
   private resetMatch(): void {
-    this.phase = MatchPhase.InProgress;
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     // simTime MUST be reset before clearCombatState: the latter stamps
@@ -366,9 +368,11 @@ export class Room {
     // reset regardless of the prior phase.
     this.startLoop();
     this.io.to(this.id).emit('match_event', { kind: 'reset' });
-    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
+    // Hold tanks frozen for the start-of-match countdown; this also emits
+    // the room_snapshot (with phase=Countdown) so clients show the overlay.
+    this.beginCountdown();
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
@@ -450,6 +454,11 @@ export class Room {
 
     if (this.players.size === 0) {
       this.stopLoop();
+      if (this.countdownTimeout) {
+        clearTimeout(this.countdownTimeout);
+        this.countdownTimeout = null;
+      }
+      this.countdownEndsAt = 0;
       this.phase = MatchPhase.WaitingForPlayers;
       this.simTime = 0;
       this.clearCombatState();
@@ -515,11 +524,14 @@ export class Room {
     socket.join(this.id);
 
     onValidated(socket, 'movement_input', MovementInputSchema, (data) => {
+      // Freeze all player movement during the start-of-match countdown.
+      if (this.phase === MatchPhase.Countdown) return;
       const player = this.players.get(socket.id);
       if (player) player.input = data;
     });
 
     onValidated(socket, 'aim_update', AimUpdateSchema, (data) => {
+      if (this.phase === MatchPhase.Countdown) return;
       const tank = this.tanks.get(socket.id);
       if (tank && tank.alive) {
         tank.turretRotation = data.turretRotation;
@@ -528,6 +540,8 @@ export class Room {
     });
 
     onValidated(socket, 'fire_request', FireRequestSchema, (data) => {
+      // Already covered by InProgress check, but make it explicit: no shots
+      // during the start-of-match countdown.
       if (this.phase !== MatchPhase.InProgress) return;
       const tank = this.tanks.get(socket.id);
       const player = this.players.get(socket.id);
@@ -1361,11 +1375,31 @@ export class Room {
   }
 
   private startMatch(): void {
-    this.phase = MatchPhase.InProgress;
-    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.startLoop();
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
-    this.startLoop();
+    this.beginCountdown();
+  }
+
+  /** Freeze tanks for MATCH_COUNTDOWN_MS, then flip to InProgress.
+   *  Called at the start of every match (first join + every reset). */
+  private beginCountdown(): void {
+    if (this.countdownTimeout) {
+      clearTimeout(this.countdownTimeout);
+      this.countdownTimeout = null;
+    }
+    this.phase = MatchPhase.Countdown;
+    this.countdownEndsAt = Date.now() + MATCH_COUNTDOWN_MS;
+    this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    this.countdownTimeout = setTimeout(() => {
+      this.countdownTimeout = null;
+      // Guard: another transition (e.g. all-players-left → WaitingForPlayers,
+      // or a manual force_reset) may have advanced phase before we fired.
+      if (this.phase !== MatchPhase.Countdown) return;
+      this.phase = MatchPhase.InProgress;
+      this.countdownEndsAt = 0;
+      this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
+    }, MATCH_COUNTDOWN_MS);
   }
 
   private startLoop(): void {
@@ -1375,8 +1409,10 @@ export class Room {
     const targetTickMs = simDt * 1000;
 
     this.simInterval = setInterval(() => {
-      // Pause simulation during leaderboard to let players admire the results
+      // Pause simulation during leaderboard to let players admire the results,
+      // and during the start-of-match countdown so tanks stay frozen.
       if (this.phase === MatchPhase.Leaderboard) return;
+      if (this.phase === MatchPhase.Countdown) return;
 
       this.simTime += simDt;
       this.tickBots(simDt);
@@ -1394,6 +1430,7 @@ export class Room {
     const fireDt = 1 / FIRE_TICK_RATE;
     this.fireInterval = setInterval(() => {
       if (this.phase === MatchPhase.Leaderboard) return;
+      if (this.phase === MatchPhase.Countdown) return;
       this.tickFire(fireDt);
     }, fireDt * 1000);
   }
@@ -2059,6 +2096,9 @@ export class Room {
       hazards: state.hazards,
       pickups: state.pickups,
       resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
+      countdownEndsInMs: this.phase === MatchPhase.Countdown
+        ? Math.max(0, this.countdownEndsAt - Date.now())
+        : 0,
     };
   }
 }

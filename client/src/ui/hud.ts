@@ -115,9 +115,22 @@ export function showKillIndicator(victimName: string, color: string): void {
   }, KILL_INDICATOR_DURATION_MS);
 }
 
+let leaderboardEndsAtMs = 0;
+let leaderboardTickRaf = 0;
+
+function tickLeaderboardCountdown(): void {
+  if (leaderboardOverlay.style.display === 'none') {
+    leaderboardTickRaf = 0;
+    return;
+  }
+  const remaining = Math.max(0, Math.ceil((leaderboardEndsAtMs - performance.now()) / 1000));
+  leaderboardCountdown.textContent = remaining.toString();
+  leaderboardTickRaf = requestAnimationFrame(tickLeaderboardCountdown);
+}
+
 export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): void {
   leaderboardOverlay.style.display = 'flex';
-  
+
   const sorted = [...tanks].sort((a, b) => b.score - a.score);
   leaderboardBody.innerHTML = sorted
     .map((t, i) => {
@@ -135,11 +148,17 @@ export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): vo
     })
     .join('');
 
+  leaderboardEndsAtMs = performance.now() + Math.max(0, resetsInSeconds) * 1000;
   leaderboardCountdown.textContent = Math.ceil(resetsInSeconds).toString();
+  if (!leaderboardTickRaf) leaderboardTickRaf = requestAnimationFrame(tickLeaderboardCountdown);
 }
 
 export function hideLeaderboard(): void {
   leaderboardOverlay.style.display = 'none';
+  if (leaderboardTickRaf) {
+    cancelAnimationFrame(leaderboardTickRaf);
+    leaderboardTickRaf = 0;
+  }
 }
 
 export function setHealth(tank: TankState | undefined): void {

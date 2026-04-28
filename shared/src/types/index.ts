@@ -5,6 +5,7 @@ export type RoomId = string;
 // ── Match phase ──
 export enum MatchPhase {
   WaitingForPlayers = 'waiting',
+  Countdown = 'countdown',
   InProgress = 'in_progress',
   GameOver = 'game_over',
   Leaderboard = 'leaderboard',
@@ -363,6 +364,8 @@ export interface MatchSnapshot {
   pickups: PickupState[];
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
+  /** Milliseconds remaining in the start-of-match Countdown phase. 0 outside Countdown. */
+  countdownEndsInMs: number;
 }
 
 // ── Fire (napalm cellular automaton) ──
