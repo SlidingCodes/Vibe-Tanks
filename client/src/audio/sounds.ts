@@ -557,6 +557,71 @@ export function playHitMarker(): void {
 // variant (the very last tick before reset) is a touch higher and louder so
 // the run-out moment is unmistakable.
 
+/** MOAB-style nuclear warning klaxon: a sustained low rumble over the
+ *  whole descent + a sequence of evenly-spaced sine beeps that climb in
+ *  pitch and intensity as impact approaches. Caller passes the descent
+ *  duration so the beeps space themselves out and the rumble fades to
+ *  nothing exactly at zero. Returns nothing — fire and forget. */
+export function playNukeWarning(durationSec: number): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Layer 1 — low rumble: 70 Hz sine with detuned 100 Hz harmonic, fades
+  // in over the first second and tapers off over the last.
+  for (const [freq, gain] of [[70, 0.18], [102, 0.08]] as const) {
+    const osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(gain, now + 0.6);
+    g.gain.linearRampToValueAtTime(gain * 1.4, now + durationSec - 0.3);
+    g.gain.linearRampToValueAtTime(0, now + durationSec);
+    osc.connect(g).connect(out);
+    osc.start(now);
+    osc.stop(now + durationSec + 0.05);
+  }
+
+  // Layer 2 — evenly-spaced warning beeps. Pitch climbs from 700 Hz at
+  // the start to 1400 Hz on the final beep; spacing tightens slightly
+  // toward impact so the rhythm reads as "accelerating countdown".
+  const beepCount = Math.max(4, Math.round(durationSec * 2.2));
+  for (let i = 0; i < beepCount; i++) {
+    // Easing: quadratic — early beeps spaced widely, last few crowd up.
+    const t = i / Math.max(1, beepCount - 1);
+    const beepAt = now + t * t * durationSec;
+    if (beepAt > now + durationSec) break;
+    const freq = 700 + (1400 - 700) * t;
+    const peak = 0.16 + 0.12 * t;
+    const osc = ac.createOscillator();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, beepAt);
+    g.gain.linearRampToValueAtTime(peak, beepAt + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0005, beepAt + 0.16);
+    osc.connect(g).connect(out);
+    osc.start(beepAt);
+    osc.stop(beepAt + 0.18);
+  }
+
+  // Layer 3 — a final long siren tone that overlaps the last 0.4 s,
+  // fading into the explosion sound for that "klaxon → boom" moment.
+  const sirenAt = now + durationSec - 0.45;
+  const siren = ac.createOscillator();
+  siren.type = 'sawtooth';
+  siren.frequency.setValueAtTime(900, sirenAt);
+  siren.frequency.linearRampToValueAtTime(1600, sirenAt + 0.4);
+  const sirenG = ac.createGain();
+  sirenG.gain.setValueAtTime(0, sirenAt);
+  sirenG.gain.linearRampToValueAtTime(0.22, sirenAt + 0.05);
+  sirenG.gain.linearRampToValueAtTime(0, sirenAt + 0.45);
+  siren.connect(sirenG).connect(out);
+  siren.start(sirenAt);
+  siren.stop(sirenAt + 0.5);
+}
+
 export function playMatchTickBeep(final: boolean = false): void {
   const ac = getCtx();
   const now = ac.currentTime;

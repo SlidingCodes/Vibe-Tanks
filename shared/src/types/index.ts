@@ -134,7 +134,8 @@ export type ShotVisualStyle =
   | 'wall_shell'
   | 'ramp_shell'
   | 'jump_launch'
-  | 'nuke';
+  | 'nuke'
+  | 'nuke_falling';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -198,6 +199,11 @@ export interface WeaponBehaviorConfig {
    *  aim-solver assumes, <1 reads as a lobby hop, >1 overshoots the
    *  reticle. */
   jumpSpeedScale?: number;
+  /** Nuke: altitude (m) above the aim point at which the bomb spawns. */
+  nukeFallHeight?: number;
+  /** Nuke: descent duration in seconds. The MOAB warning klaxon plays
+   *  for the full window. */
+  nukeFallDuration?: number;
 }
 
 export interface WeaponDefinition {
@@ -220,6 +226,10 @@ export interface WeaponDefinition {
   /** Cap applied when refilling ammo via pickups. Undefined when
    *  startAmmo === 'infinite'. */
   maxAmmo?: number;
+  /** Relative weight for weapon-pickup spawns. 1.0 = normal frequency,
+   *  values <1 make the weapon rarer (e.g. nuke at 0.05 ≈ 1 in 20 rolls
+   *  among 5 normal weapons). Undefined defaults to 1. */
+  pickupWeight?: number;
   behaviorConfig?: WeaponBehaviorConfig;
 }
 

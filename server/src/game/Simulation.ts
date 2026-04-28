@@ -78,6 +78,11 @@ interface ImpactSpec {
    *  here. That tank receives bonus damage and a guaranteed-airborne
    *  impulse regardless of distance. */
   directHitTankId?: PlayerId | null;
+  /** When true, every alive tank inside `blastRadius` takes the full
+   *  `damage` value with no quadratic falloff. Reserved for guaranteed-
+   *  kill weapons (e.g. the Little Boy nuke) — every other weapon
+   *  expects the radial taper. */
+  flatDamage?: boolean;
 }
 
 export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3 }>;
@@ -362,7 +367,7 @@ export function applyImpact(
         const entry = damageTotals.get(tank.playerId) ?? makeDamageEntry();
 
         const t = dist / Math.max(impact.blastRadius, 0.001);
-        const falloff = isDirect ? 1 : 1 - t * t;
+        const falloff = isDirect ? 1 : impact.flatDamage ? 1 : 1 - t * t;
         const dmgScalar = isDirect ? DIRECT_HIT_DAMAGE_MULTIPLIER : 1;
         const dmg = Math.round(impact.damage * falloff * dmgScalar);
         if (dmg > 0) entry.damage += dmg;
@@ -486,45 +491,6 @@ function simulateStandardShot(
 
   return createPredictedShotResult(shooter.playerId, weapon.id, [
     makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'standard'),
-  ], damageTotals, allTanks);
-}
-
-/** Nuke shot: identical solver to airburst (lobs a shell that detonates a
- *  configurable distance above ground), but the step ships visualStyle
- *  'nuke' so the client renders a mushroom cloud + blinding flash instead
- *  of the standard HE puff. Big blastRadius / damage live on the weapon
- *  config — the simulator just routes them through the airburst plumbing. */
-function simulateNukeShot(
-  shooter: TankState,
-  weapon: WeaponDefinition,
-  terrain: SimulationTerrain,
-  allTanks: TankState[],
-): ShotResult {
-  const startPos = createMuzzlePosition(shooter);
-  const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, terrain, {
-    airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 3,
-    hitCandidates: hitCandidatesFor(shooter, allTanks),
-  });
-
-  const terrainDamage = segment.reason === 'impact' ? weapon.terrainDamage : weapon.terrainDamage * 0.6;
-  let carveTerrain: boolean;
-  if (segment.reason === 'direct_hit' || segment.reason === 'impact') {
-    carveTerrain = applySegmentImpact(
-      segment, weapon.blastRadius, weapon.damage, terrainDamage, allTanks, damageTotals,
-    );
-  } else {
-    carveTerrain = applyImpact({
-      point: segment.endPoint,
-      blastRadius: weapon.blastRadius,
-      damage: weapon.damage,
-      terrainDamage,
-    }, allTanks, damageTotals);
-  }
-
-  return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'nuke'),
   ], damageTotals, allTanks);
 }
 
@@ -992,8 +958,6 @@ export function simulateShot(
   switch (weapon.behavior) {
     case 'airburst':
       return simulateAirburstShot(shooter, weapon, terrain, allTanks);
-    case 'nuke':
-      return simulateNukeShot(shooter, weapon, terrain, allTanks);
     case 'split':
       return simulateSplitShot(shooter, weapon, terrain, allTanks);
     case 'bounce':

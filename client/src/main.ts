@@ -48,7 +48,7 @@ import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from '
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
+import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -904,6 +904,15 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
 socket.on('shot_resolved', (result: ShotResult) => {
   triggerRecoil(result.shooterId);
+  // Nuke descent: the strike emits a single step with visualStyle
+  // 'nuke_falling' and a long trajectory; play the MOAB-style klaxon
+  // for exactly the descent duration so it lands with the explosion.
+  for (const step of result.steps) {
+    if (step.visualStyle !== 'nuke_falling') continue;
+    const flightSecs = step.startDelay + Math.max(0, step.trajectory.length - 1) * (4 / 60);
+    if (flightSecs > 0.2) playNukeWarning(flightSecs);
+    break;
+  }
   // Remote shooters: seed their last-shot entry so their barrel glows
   // during the cooldown window. Local player is set optimistically at
   // emit time — overwriting here with a slightly-later timestamp would
@@ -1557,7 +1566,10 @@ function animate(): void {
           });
           lastFireByWeapon.set(selectedWeapon.id, now);
           lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
-          playShoot();
+          // Cannon-shot SFX is wrong for the nuke (it falls from a bomber,
+          // not the barrel) — its MOAB warning klaxon is triggered by the
+          // shot_resolved handler instead.
+          if (selectedWeapon.behavior !== 'nuke') playShoot();
           // Client-side jump prediction: mirror the server's launchTank
           // on the predicted Rapier body so the local tank lifts off
           // immediately, no rubberband while waiting for the next

@@ -203,7 +203,7 @@ interface ActiveHazardRuntime extends HazardState {
 
 interface ScheduledStrike {
   strikeId: string;
-  kind: 'drill' | 'mortar';
+  kind: 'drill' | 'mortar' | 'nuke';
   ownerId: PlayerId;
   weaponId: string;
   triggerAt: number;
@@ -211,8 +211,10 @@ interface ScheduledStrike {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
-  visualStyle: 'drill_burst' | 'mortar_shell';
+  visualStyle: 'drill_burst' | 'mortar_shell' | 'nuke';
   spawnHeight: number;
+  /** Nuke-only: descent duration (s). Mortar uses a hardcoded 0.8s. */
+  fallDuration?: number;
 }
 
 interface ActivePickupRuntime extends PickupState {
@@ -752,6 +754,9 @@ export class Room {
       case 'jump':
         this.fireJump(tank, weapon);
         break;
+      case 'nuke':
+        this.fireNuke(tank, weapon, aimPoint);
+        break;
       default: {
         const result = precomputedResult || simulateShot(
           tank,
@@ -1240,6 +1245,44 @@ export class Room {
     }
   }
 
+  /** Little Boy: drops a nuclear bomb vertically from very high altitude
+   *  onto the aim point. Routed through a single ScheduledStrike of kind
+   *  'nuke' so the descent + impact reuse the strike scheduler — fires
+   *  immediately to give the client time to play the MOAB warning klaxon
+   *  during the fall window. Damage is flat 99 in the entire blastRadius
+   *  (no falloff) per applyImpact's `flatDamage` flag. */
+  private fireNuke(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
+    const fallback = simulateSegment(
+      createMuzzlePosition(tank),
+      createInitialVelocity(tank, Math.max(weapon.projectileSpeed, 18)),
+      this.voxels,
+    ).endPoint;
+    const center = aimPoint
+      ? { x: aimPoint.x, y: this.voxels.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      : fallback;
+
+    const fallHeight = weapon.behaviorConfig?.nukeFallHeight ?? 80;
+    const fallDuration = weapon.behaviorConfig?.nukeFallDuration ?? 3.5;
+
+    this.scheduledStrikes.push({
+      strikeId: `strike_${this.nextStrikeId++}`,
+      kind: 'nuke',
+      ownerId: tank.playerId,
+      weaponId: weapon.id,
+      // Trigger immediately so the client receives the descent shot now —
+      // the actual carve + damage land flightSeconds later via
+      // scheduleShotResult, matched to the visual fall.
+      triggerAt: this.simTime,
+      position: center,
+      blastRadius: weapon.blastRadius,
+      damage: weapon.damage,
+      terrainDamage: weapon.terrainDamage,
+      visualStyle: 'nuke',
+      spawnHeight: fallHeight,
+      fallDuration,
+    });
+  }
+
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const startPos = createMuzzlePosition(tank);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
@@ -1411,7 +1454,17 @@ export class Room {
         kind = 'ammo';
       } else {
         kind = 'weapon';
-        weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+        // Weighted sample: weapons with `pickupWeight` < 1 (rare) are
+        // proportionally less likely than the default-1 majority. Sum
+        // the weights, roll, walk until the bucket is hit.
+        let total = 0;
+        for (const w of pool) total += w.pickupWeight ?? 1;
+        let roll = Math.random() * total;
+        weaponId = pool[0].id;
+        for (const w of pool) {
+          roll -= w.pickupWeight ?? 1;
+          if (roll <= 0) { weaponId = w.id; break; }
+        }
       }
     } else {
       kind = 'ammo';
@@ -2115,17 +2168,23 @@ export class Room {
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
+        // The nuke lands a flat 99 in the whole radius — no falloff.
+        // Other strikes keep the standard radial taper.
+        flatDamage: strike.kind === 'nuke',
       }, this.getTankList(), damageTotals);
 
-      if (strike.kind === 'mortar') {
+      if (strike.kind === 'mortar' || strike.kind === 'nuke') {
+        const fallDuration = strike.fallDuration ?? 0.8;
+        const visualStyle: 'mortar_shell' | 'nuke_falling' =
+          strike.kind === 'nuke' ? 'nuke_falling' : 'mortar_shell';
         const start = {
           x: strike.position.x,
           y: strike.position.y + strike.spawnHeight,
           z: strike.position.z,
         };
-        const trajectory = createLinearTrajectory(start, strike.position, 0.8);
+        const trajectory = createLinearTrajectory(start, strike.position, fallDuration);
         const result = createShotResult(strike.ownerId, strike.weaponId, [
-          makeStep(0, trajectory, strike.position, 'impact', carveTerrain, strike.blastRadius, 'mortar_shell'),
+          makeStep(0, trajectory, strike.position, 'impact', carveTerrain, strike.blastRadius, visualStyle),
         ], damageTotals);
         this.scheduleShotResult(result, strike.ownerId, strike.weaponId);
         continue;

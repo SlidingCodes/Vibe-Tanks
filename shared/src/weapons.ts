@@ -274,24 +274,31 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
-    // Little Boy: single-use nuclear airburst. One round per loadout, a
-    // blast that levels the neighbourhood, and a visible mushroom cloud
-    // afterwards. Tuned hot on damage and radius — having one in your
-    // inventory should change how a fight ends, not just chip extra HP.
+    // Little Boy: paint a target with the reticle, an actual nuclear
+    // bomb falls vertically from very high altitude over ~3.5 s, the
+    // MOAB warning klaxon plays during descent, and on impact every
+    // alive tank inside the radius eats a flat 99 — no falloff. One
+    // round per loadout and `pickupWeight` 0.05 keeps the weapon
+    // genuinely rare in the crate pool.
     id: 'little_boy',
     name: 'Little Boy',
-    description: 'One-shot nuke — fungo nucleare, raggio enorme. Una sola munizione.',
-    projectileSpeed: 14,
-    blastRadius: 22,
-    damage: 90,
+    description: 'Bomba nucleare dall\'alto — danno 99 fisso in tutto il raggio. Estremamente rara.',
+    // Speed / blastRadius are routed through the strike scheduler in
+    // Room.fireNuke, not the ballistic solver. Blast 18 lands a 36-m
+    // diameter kill circle.
+    projectileSpeed: 0,
+    blastRadius: 18,
+    damage: 99,
     // Big crater on impact — a nuke leaves a mark.
     terrainDamage: 6,
     behavior: 'nuke',
-    cooldown: 6,
+    cooldown: 8,
     startAmmo: 1,
     maxAmmo: 1,
+    pickupWeight: 0.05,
     behaviorConfig: {
-      airburstHeight: 3,
+      nukeFallHeight: 80,
+      nukeFallDuration: 3.5,
     },
   },
   {
@@ -347,11 +354,23 @@ export function createRandomLoadout(
   const pool = WEAPONS.filter(
     (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
   );
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+  // Weighted sample without replacement, biased by pickupWeight (default
+  // 1). Each step picks one weapon proportional to its remaining weight,
+  // then removes it from the pool. Keeps the rare-weapon ban from a
+  // shuffle giving a Little Boy on every spawn.
+  const rolled: typeof pool = [];
+  while (rolled.length < LOADOUT_RANDOM_COUNT && pool.length > 0) {
+    let total = 0;
+    for (const w of pool) total += w.pickupWeight ?? 1;
+    let roll = Math.random() * total;
+    let pickedIdx = 0;
+    for (let i = 0; i < pool.length; i++) {
+      roll -= pool[i].pickupWeight ?? 1;
+      if (roll <= 0) { pickedIdx = i; break; }
+    }
+    rolled.push(pool[pickedIdx]);
+    pool.splice(pickedIdx, 1);
   }
-  const rolled = pool.slice(0, LOADOUT_RANDOM_COUNT);
   return [
     { weaponId: 'standard', ammo: 'infinite' as const },
     ...rolled.map((w) => ({ weaponId: w.id, ammo: w.startAmmo as number })),

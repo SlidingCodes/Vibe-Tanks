@@ -11,6 +11,51 @@ import {
 import { AtmosphereHandle } from '../scene/atmosphere';
 import { getParticleTextures } from '../scene/particles';
 
+/** Build a slow-fall nuclear-bomb silhouette: long cylindrical body with
+ *  a rounded nose cap, a hemispherical tail cap, and 4 cross-shaped tail
+ *  fins. Same +Z-forward convention as buildShellGeometry so the lookAt
+ *  pipeline orients the bomb along its descent vector. Returns a single
+ *  merged BufferGeometry — one material, one mesh, so the existing
+ *  projectile render path handles it without changes. */
+function buildNukeBombGeometry(): THREE.BufferGeometry {
+  const bodyLen = 2.4;
+  const bodyR = 0.42;
+
+  const body = new THREE.CylinderGeometry(bodyR, bodyR, bodyLen, 18);
+  body.rotateX(Math.PI / 2);
+
+  // Nose: half-sphere cap on the +Z end
+  const nose = new THREE.SphereGeometry(bodyR, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  nose.rotateX(-Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2);
+
+  // Tail cap: half-sphere on the -Z end, slightly smaller for the tapered look
+  const tail = new THREE.SphereGeometry(bodyR * 0.95, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  tail.rotateX(Math.PI / 2);
+  tail.translate(0, 0, -bodyLen / 2);
+
+  // Cross fins: 4 thin radial plates at the tail
+  const finExt = 0.42;   // extension beyond body radius
+  const finLen = 0.62;   // along bomb axis
+  const finT = 0.05;     // thickness
+  const finCenterZ = -bodyLen / 2 - finLen / 2 + 0.18;
+  const fins: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 4; i++) {
+    const fin = new THREE.BoxGeometry(finExt, finT, finLen);
+    fin.translate(bodyR + finExt / 2, 0, finCenterZ);
+    fin.rotateZ((i * Math.PI) / 2);
+    fins.push(fin);
+  }
+
+  const merged = mergeGeometries([body, nose, tail, ...fins]);
+  body.dispose();
+  nose.dispose();
+  tail.dispose();
+  for (const f of fins) f.dispose();
+  if (!merged) throw new Error('buildNukeBombGeometry: mergeGeometries returned null');
+  return merged;
+}
+
 /** Build a true tank-shell geometry: cylindrical body + conical nose,
  *  merged into a single BufferGeometry oriented with the nose along +Z so
  *  Object3D.lookAt(behind) aims it down-trajectory. The radius parameter
@@ -305,17 +350,19 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionScale: 0.18,
       };
     case 'nuke':
-      // Heavy bomb silhouette — bigger shell, dim warm emissive (no neon),
-      // greyed-out trail. The real money shot is showNukeExplosion; the
-      // shell itself reads as a fat "Fat Man / Little Boy" projectile.
+    case 'nuke_falling':
+      // Slow-falling nuclear bomb: fat olive-drab silhouette, no fiery
+      // emissive (it's an unguided dumb bomb until impact), greyed trail.
+      // The real money shot is showNukeExplosion; the body itself reads
+      // as a Little Boy / Fat Man military bomb falling from the sky.
       return {
         projectileRadius: 0.42,
-        projectileColor: 0x6a625a,   // dull steel
-        emissiveColor: 0xb8842c,     // warm caution-amber
+        projectileColor: 0x4a4a3a,   // olive drab
+        emissiveColor: 0x2a2a20,     // very faint dark emissive
         trailColor: 0x504a44,
-        trailSize: 0.6,
+        trailSize: 0.55,
         pathColor: 0x8a7a52,
-        pathOpacity: 0.2,
+        pathOpacity: 0.18,
         explosionColor: 0xfff0b8,
         explosionScale: 1.6,
       };
@@ -373,13 +420,15 @@ function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void 
     // Real tank-shell silhouette (cylinder body + conical nose) instead of
     // a stretched sphere. Material is matte gunmetal with a soft warm
     // emissive so the nose reads as recently-fired without glowing.
-    const geo = buildShellGeometry(spec.projectileRadius);
+    // Nuke uses a dedicated bomb silhouette (long body + tail fins).
+    const isNuke = step.visualStyle === 'nuke_falling' || step.visualStyle === 'nuke';
+    const geo = isNuke ? buildNukeBombGeometry() : buildShellGeometry(spec.projectileRadius);
     const mat = new THREE.MeshStandardMaterial({
       color: spec.projectileColor,
       emissive: spec.emissiveColor,
-      emissiveIntensity: 0.45,
-      metalness: 0.6,
-      roughness: 0.5,
+      emissiveIntensity: isNuke ? 0.15 : 0.45,
+      metalness: isNuke ? 0.4 : 0.6,
+      roughness: isNuke ? 0.7 : 0.5,
     });
     const mesh = new THREE.Mesh(geo, mat);
     const first = step.points[0];
@@ -1047,7 +1096,7 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showBounceFlash(step, scene);
       } else if (step.visualStyle === 'mine_deploy' || step.visualStyle === 'drill_entry') {
         showDeployFlash(step, scene);
-      } else if (step.visualStyle === 'nuke') {
+      } else if (step.visualStyle === 'nuke' || step.visualStyle === 'nuke_falling') {
         showNukeExplosion(step, scene);
       } else {
         showExplosion(step, scene);
