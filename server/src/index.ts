@@ -2,9 +2,8 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { ClientEvents, ServerEvents } from '@shared/types/index';
 import { SERVER_PORT } from '@shared/constants';
-import { getRandomTerrainPresetId } from '@shared/terrain';
 import { initRapier } from '@shared/physics/RapierVoxelWorld';
-import { Room } from './rooms/Room';
+import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
@@ -33,14 +32,20 @@ async function main(): Promise<void> {
     perMessageDeflate: { threshold: 1024 },
   });
 
-  const mainRoom = new Room('main', io, getRandomTerrainPresetId());
+  const manager = new RoomManager(io);
 
   io.on('connection', (socket) => {
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
-      mainRoom.addPlayer(socket, data.playerName, data.color, data.flagId);
-      console.log(`Player ${data.playerName} (${socket.id}) joined room`);
+      const room = manager.findOrCreatePublic();
+      if (!room) {
+        console.warn(`[join] rejected ${data.playerName} (${socket.id}): server room cap reached`);
+        socket.disconnect(true);
+        return;
+      }
+      room.addPlayer(socket, data.playerName, data.color, data.flagId);
+      console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id}`);
     });
 
     socket.on('disconnect', () => {

@@ -199,6 +199,15 @@ interface ActivePickupRuntime extends PickupState {
   wire: PickupState;
 }
 
+export interface RoomOptions {
+  /** When true, the room is hidden from quick-join and is only reachable
+   *  via its invite code. */
+  private?: boolean;
+  /** Called once when the last human leaves. Lets the RoomManager drop
+   *  the room and call shutdown() to free Rapier wasm + intervals. */
+  onEmpty?: () => void;
+}
+
 export class Room {
   id: string;
   io: Server;
@@ -255,10 +264,24 @@ export class Room {
   /** Dev toggle: when false, bots are removed and never refilled. Flipped
    *  by the `toggle_bots` client event (default B key on the client). */
   private botsEnabled: boolean = true;
+  /** True for rooms created via an invite code. Public quick-join skips
+   *  these so a private lobby doesn't accidentally pull in strangers. */
+  readonly private: boolean;
+  /** Manager hook fired the instant the last human leaves so the manager
+   *  can call shutdown() and drop the room. Bots alone never keep a room
+   *  alive — they exist only to give a human someone to shoot at. */
+  private readonly onEmpty?: () => void;
 
-  constructor(id: string, io: Server, terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID) {
+  constructor(
+    id: string,
+    io: Server,
+    terrainPresetId: TerrainPresetId = DEFAULT_TERRAIN_PRESET_ID,
+    options: RoomOptions = {},
+  ) {
     this.id = id;
     this.io = io;
+    this.private = options.private ?? false;
+    this.onEmpty = options.onEmpty;
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
     this.terrainSeed = createRandomTerrainSeed();
@@ -376,7 +399,11 @@ export class Room {
   }
 
   addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
-    if (this.players.size >= MAX_PLAYERS) return;
+    // Count humans only — a room with 4 humans + 4 bots was hitting this
+    // gate and refusing the 5th human even though ensureFourTanks would
+    // immediately scrub the bots to free seats. The manager already
+    // routes humans to non-full public rooms; this is a defensive cap.
+    if (this.humanCount() >= MAX_PLAYERS) return;
 
     const playerId = socket.id;
 
@@ -450,9 +477,16 @@ export class Room {
       });
     }
 
-    this.ensureFourTanks();
-
-    if (this.players.size === 0) {
+    // Last human gone: tell the manager to drop the room. Bots alone are
+    // not worth keeping the sim/broadcast loops, the Rapier world, and
+    // ~2 MB of voxel grid alive — the manager calls shutdown() to free
+    // everything. If no manager is wired (legacy single-room boot), fall
+    // back to the old behaviour of refilling bots and idling.
+    if (this.humanCount() === 0) {
+      if (this.onEmpty) {
+        this.onEmpty();
+        return;
+      }
       this.stopLoop();
       if (this.countdownTimeout) {
         clearTimeout(this.countdownTimeout);
@@ -466,7 +500,42 @@ export class Room {
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
       this.pendingShotTimeouts.clear();
+      // Drop the bots that were keeping the empty room "populated"; with
+      // no humans they're just burning CPU.
+      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+      for (const [botId] of bots) this.removeBot(botId);
+      return;
     }
+
+    this.ensureFourTanks();
+  }
+
+  /** Number of human players currently in the room. Bots are excluded so
+   *  the manager can treat "empty" as "no humans" rather than "no
+   *  entities at all" (a room with only bots is a CPU leak). */
+  humanCount(): number {
+    let n = 0;
+    for (const p of this.players.values()) if (!p.isBot) n++;
+    return n;
+  }
+
+  /** Tear down all timers, intervals, and the Rapier wasm world. After
+   *  this returns the Room object is dead — it must not be reused. The
+   *  manager removes it from its map so it gets GC'd. */
+  shutdown(): void {
+    this.stopLoop();
+    if (this.countdownTimeout) { clearTimeout(this.countdownTimeout); this.countdownTimeout = null; }
+    if (this.resetTimeout) { clearTimeout(this.resetTimeout); this.resetTimeout = null; }
+    for (const t of this.pendingShotTimeouts) clearTimeout(t);
+    this.pendingShotTimeouts.clear();
+    this.scheduledStrikes = [];
+    this.activeProjectiles.clear();
+    this.activeHazards.clear();
+    this.activePickups.clear();
+    this.tanks.clear();
+    this.players.clear();
+    this.refreshTankList();
+    this.physics.dispose();
   }
 
   private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
