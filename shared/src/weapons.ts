@@ -292,10 +292,18 @@ export const LOADOUT_RANDOM_COUNT = 3;
 
 /** Roll a random loadout for a freshly-spawned tank. Slot 0 is always the
  *  infinite `standard` weapon; the remaining slots are a sample without
- *  replacement from the consumable pool. */
-export function createRandomLoadout(): { weaponId: string; ammo: number | 'infinite' }[] {
-  const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
-  // Fisher-Yates shuffle, then take the first LOADOUT_RANDOM_COUNT.
+ *  replacement from the consumable pool, optionally restricted to a
+ *  per-room allow-list. An empty / undefined `allowedIds` means "no
+ *  restriction" (full pool). `standard` is always included regardless
+ *  — without it, players who exhaust their consumables would have no
+ *  way to fight back. */
+export function createRandomLoadout(
+  allowedIds?: ReadonlyArray<string>,
+): { weaponId: string; ammo: number | 'infinite' }[] {
+  const allowed = allowedIds && allowedIds.length > 0 ? new Set(allowedIds) : null;
+  const pool = WEAPONS.filter(
+    (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
+  );
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];

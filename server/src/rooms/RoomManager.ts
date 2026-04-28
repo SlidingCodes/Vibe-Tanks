@@ -1,5 +1,5 @@
 import type { Server } from 'socket.io';
-import type { ClientEvents, RoomId, ServerEvents } from '@shared/types/index';
+import type { ClientEvents, RoomId, RoomSettings, ServerEvents } from '@shared/types/index';
 import { MAX_PLAYERS } from '@shared/constants';
 import { getRandomTerrainPresetId } from '@shared/terrain';
 import { Room } from './Room';
@@ -40,11 +40,17 @@ export class RoomManager {
   }
 
   /** Spin up a brand-new private room with a fresh invite code. The
-   *  caller is expected to immediately addPlayer the creator. Returns
-   *  null at the cap (same DoS gate as quick-join). */
-  createPrivate(): Room | null {
+   *  caller is expected to immediately addPlayer the creator. `settings`
+   *  is passed straight through to the Room — undefined falls back to
+   *  DEFAULT_ROOM_SETTINGS. Returns null at the cap (same DoS gate as
+   *  quick-join). */
+  createPrivate(settings?: RoomSettings): Room | null {
     if (this.rooms.size >= MAX_ROOMS) return null;
-    return this.createRoom({ private: true, inviteCode: this.freshCode() });
+    return this.createRoom({
+      private: true,
+      inviteCode: this.freshCode(),
+      settings,
+    });
   }
 
   /** Look up a private room by its share code (case-insensitive). Returns
@@ -72,12 +78,13 @@ export class RoomManager {
     }
   }
 
-  private createRoom(opts: { private: boolean; inviteCode?: string }): Room {
+  private createRoom(opts: { private: boolean; inviteCode?: string; settings?: RoomSettings }): Room {
     const id = `room_${this.nextRoomNum++}`;
     const presetId = getRandomTerrainPresetId();
     const room = new Room(id, this.io, presetId, {
       private: opts.private,
       inviteCode: opts.inviteCode,
+      settings: opts.settings,
       onEmpty: () => this.removeRoom(id),
     });
     this.rooms.set(id, room);

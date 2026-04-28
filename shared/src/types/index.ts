@@ -384,7 +384,29 @@ export type JoinErrorReason =
   | 'invalid_code'
   | 'room_full'
   | 'cap_reached'
-  | 'missing_code';
+  | 'missing_code'
+  | 'invalid_settings';
+
+/** Per-room tunables passed by the creator of a private room. Public
+ *  rooms always use the defaults. */
+export interface RoomSettings {
+  /** Hard cap on the number of bots filling the room. 0 = pure PvP. The
+   *  default of 3 preserves the old "1 human + 3 bots = 4 tanks" feel
+   *  for solo public rooms. The room never exceeds MAX_PLAYERS total
+   *  (humans + bots), so a high maxBots is silently scaled down as
+   *  more humans join. */
+  maxBots: number;
+  /** Whitelist of consumable weapon IDs that may appear in random
+   *  loadouts and pickup crates. Empty = no restriction. The infinite
+   *  default `standard` is always available regardless of this list —
+   *  it's the fallback when consumables run out. */
+  weaponAllowed: string[];
+}
+
+export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
+  maxBots: 3,
+  weaponAllowed: [],
+};
 
 // ── Fire (napalm cellular automaton) ──
 export interface FireCell {
@@ -467,6 +489,9 @@ export interface ClientEvents {
     /** Required when mode === 'join_private'. 4 letters from a no-confusables
      *  alphabet — the server lookup is case-insensitive. */
     inviteCode?: string;
+    /** Only honoured when mode === 'create_private'. Falls back to
+     *  DEFAULT_ROOM_SETTINGS when omitted. */
+    settings?: RoomSettings;
   }) => void;
   respawn_request: () => void;
   movement_input: (data: MovementInput) => void;

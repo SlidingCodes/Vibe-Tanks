@@ -9,6 +9,8 @@ import {
   buildRoadWheelsGeometry,
 } from '../entities/tankGeometry';
 import { FLAGS, createFlagMesh } from '../entities/flag';
+import { WEAPONS } from '@shared/weapons';
+import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 
@@ -253,6 +255,8 @@ export interface LoginResult {
   mode: JoinMode;
   /** Set only when mode === 'join_private'. Always 4 uppercase chars. */
   inviteCode?: string;
+  /** Set only when mode === 'create_private'. */
+  settings?: RoomSettings;
 }
 
 /** Block until the player submits a name + color. The promise rejects if
@@ -271,6 +275,11 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const inviteRow = document.getElementById('invite-code-row') as HTMLDivElement;
     const inviteInput = document.getElementById('invite-code-input') as HTMLInputElement;
     const errorBox = document.getElementById('login-error') as HTMLDivElement;
+    const settingsRow = document.getElementById('settings-row') as HTMLDivElement;
+    const botsSlider = document.getElementById('settings-bots-slider') as HTMLInputElement;
+    const botsValue = document.getElementById('settings-bots-value') as HTMLSpanElement;
+    const weaponsGrid = document.getElementById('settings-weapons') as HTMLDivElement;
+    const weaponsActions = document.getElementById('settings-weapons-actions') as HTMLDivElement;
 
     overlay.style.display = '';
     if (initialError) {
@@ -297,10 +306,52 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         el.classList.toggle('active', el.dataset.mode === m);
       });
       inviteRow.style.display = m === 'join_private' ? 'block' : 'none';
+      settingsRow.style.display = m === 'create_private' ? 'block' : 'none';
       submit.textContent = submitLabel(m);
       // Clear stale validation errors when the user changes intent.
       errorBox.style.display = 'none';
     };
+
+    // Build the weapon allow-list checkboxes once. All non-default
+    // (consumable) weapons are listed; standard is implicit (always
+    // available regardless). All-checked is the same as the empty
+    // allow-list semantically and is the default.
+    const consumables = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
+    const checkedIds = new Set(consumables.map((w) => w.id));
+    weaponsGrid.innerHTML = '';
+    consumables.forEach((w) => {
+      const lbl = document.createElement('label');
+      lbl.className = 'weapon-toggle';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.id = w.id;
+      cb.addEventListener('change', () => {
+        if (cb.checked) checkedIds.add(w.id);
+        else checkedIds.delete(w.id);
+      });
+      lbl.appendChild(cb);
+      const text = document.createElement('span');
+      text.textContent = w.name;
+      lbl.appendChild(text);
+      weaponsGrid.appendChild(lbl);
+    });
+    const setAllWeapons = (on: boolean): void => {
+      checkedIds.clear();
+      weaponsGrid.querySelectorAll('input[type=checkbox]').forEach((el) => {
+        const cb = el as HTMLInputElement;
+        cb.checked = on;
+        if (on) checkedIds.add(cb.dataset.id!);
+      });
+    };
+    weaponsActions.querySelectorAll('button').forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      el.addEventListener('click', () => setAllWeapons(el.dataset.action === 'all'));
+    });
+    botsSlider.addEventListener('input', () => {
+      botsValue.textContent = botsSlider.value;
+    });
+
     setMode('quick');
     modeSegment.querySelectorAll('.mode-btn').forEach((btn) => {
       const el = btn as HTMLButtonElement;
@@ -400,6 +451,19 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         inviteInput.focus();
         return;
       }
+      let settings: RoomSettings | undefined;
+      if (selectedMode === 'create_private') {
+        // Empty allow-list = "no restriction", which is what an all-on
+        // grid means semantically. Send [] in that case so the server
+        // doesn't have to handle "all 13 IDs" as a special case.
+        const allowed = checkedIds.size === consumables.length
+          ? []
+          : Array.from(checkedIds);
+        settings = {
+          maxBots: parseInt(botsSlider.value, 10),
+          weaponAllowed: allowed,
+        };
+      }
       overlay.style.display = 'none';
       submit.removeEventListener('click', done);
       nameInput.removeEventListener('keydown', onKey);
@@ -413,6 +477,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         flagId: selectedFlag,
         mode: selectedMode,
         inviteCode: selectedMode === 'join_private' ? inviteInput.value : undefined,
+        settings,
       });
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Enter') done(); };

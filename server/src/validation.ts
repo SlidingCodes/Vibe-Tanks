@@ -22,12 +22,22 @@ const hexColor = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
 // arbitrary user input ("' OR 1=1" etc); we don't trust it being short.
 const inviteCode = z.string().regex(/^[A-Za-z2-9]{4}$/);
 
+// Room settings ride alongside `mode: 'create_private'`. maxBots caps
+// at 7 because the room itself is hard-capped at 8 total tanks (humans
+// + bots). The weapon allow-list is bounded so a malicious payload can't
+// inflate ws frame size or memoize an unbounded Set.
+const RoomSettingsSchema = z.object({
+  maxBots: z.number().int().min(0).max(7),
+  weaponAllowed: z.array(z.string().min(1).max(32)).max(20),
+});
+
 export const JoinRoomSchema = z.object({
   playerName: z.string().min(1).max(32),
   color: hexColor.optional(),
   flagId: z.string().optional(),
   mode: z.enum(['quick', 'create_private', 'join_private']).optional(),
   inviteCode: inviteCode.optional(),
+  settings: RoomSettingsSchema.optional(),
 });
 
 export const MovementInputSchema = z.object({

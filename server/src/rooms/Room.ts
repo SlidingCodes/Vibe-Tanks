@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import {
   ActiveProjectileState,
   ClientEvents,
+  DEFAULT_ROOM_SETTINGS,
   HazardState,
   MatchPhase,
   MatchSnapshot,
@@ -10,6 +11,7 @@ import {
   PickupKind,
   PickupState,
   PlayerId,
+  RoomSettings,
   RoomStateUpdate,
   ServerEvents,
   ShotResult,
@@ -205,6 +207,10 @@ export interface RoomOptions {
   private?: boolean;
   /** 4-char share code for private rooms. Undefined for public rooms. */
   inviteCode?: string;
+  /** Per-room tunables (bot cap, weapon allow-list). Undefined applies
+   *  DEFAULT_ROOM_SETTINGS, which preserves the original public-room
+   *  feel (3 bots, all weapons). */
+  settings?: RoomSettings;
   /** Called once when the last human leaves. Lets the RoomManager drop
    *  the room and call shutdown() to free Rapier wasm + intervals. */
   onEmpty?: () => void;
@@ -271,6 +277,10 @@ export class Room {
   readonly private: boolean;
   /** 4-letter share code shown to private-room creators / joiners. */
   readonly inviteCode?: string;
+  /** Per-room tunables — bot cap and weapon allow-list. Captured at
+   *  creation; private rooms inherit whatever the creator submitted,
+   *  public rooms always run on DEFAULT_ROOM_SETTINGS. */
+  readonly settings: RoomSettings;
   /** Manager hook fired the instant the last human leaves so the manager
    *  can call shutdown() and drop the room. Bots alone never keep a room
    *  alive — they exist only to give a human someone to shoot at. */
@@ -286,6 +296,7 @@ export class Room {
     this.io = io;
     this.private = options.private ?? false;
     this.inviteCode = options.inviteCode;
+    this.settings = options.settings ?? DEFAULT_ROOM_SETTINGS;
     this.onEmpty = options.onEmpty;
     this.terrainPresetId = terrainPresetId;
     this.terrainSettings = getTerrainSettingsForPreset(this.terrainPresetId);
@@ -379,7 +390,7 @@ export class Room {
         player.burningOwner = null;
         // Fresh random loadout every match. Reassign the reference on both
         // PlayerState and TankState so broadcasts reflect the new slots.
-        player.inventory = createRandomLoadout();
+        player.inventory = createRandomLoadout(this.settings.weaponAllowed);
         tank.inventory = player.inventory;
       }
       this.physics.resetTank(pid, tank.position, 0);
@@ -425,7 +436,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(),
+      inventory: createRandomLoadout(this.settings.weaponAllowed),
     });
 
     this.spawnTank(playerId, playerName, color, flagId);
@@ -583,7 +594,7 @@ export class Room {
       flagId,
       burning: false,
       // Shared reference with PlayerState — one mutation, both sides see it.
-      inventory: player?.inventory ?? createRandomLoadout(),
+      inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
     };
     this.tanks.set(playerId, tank);
     this.refreshTankList();
@@ -740,28 +751,31 @@ export class Room {
   }
 
   private ensureFourTanks(): void {
-    const TARGET_TANKS = 4;
-
-    // With bots disabled, drop every existing bot and stop filling. Human
-    // players keep their slots.
+    // With bots disabled (dev toggle), drop every existing bot and stop
+    // filling. Human players keep their slots.
     if (!this.botsEnabled) {
       const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
       for (const [botId] of bots) this.removeBot(botId);
       return;
     }
 
-    // Remove bots if we have too many tanks
-    if (this.players.size > TARGET_TANKS) {
-      const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
-      const toRemove = this.players.size - TARGET_TANKS;
-      for (let i = 0; i < Math.min(toRemove, bots.length); i++) {
-        this.removeBot(bots[i][0]);
-      }
+    // Per-room tunable: max bots filling the room. Also clamped against
+    // MAX_PLAYERS so a 7-bot setting silently sheds bots when humans
+    // start arriving instead of refusing the join.
+    const desiredBots = Math.max(
+      0,
+      Math.min(this.settings.maxBots, MAX_PLAYERS - this.humanCount()),
+    );
+    const botEntries = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
+    if (botEntries.length > desiredBots) {
+      const toRemove = botEntries.length - desiredBots;
+      for (let i = 0; i < toRemove; i++) this.removeBot(botEntries[i][0]);
+      return;
     }
-
-    // Add bots if we have too few tanks
-    while (this.players.size < TARGET_TANKS) {
+    let botCount = botEntries.length;
+    while (botCount < desiredBots) {
       this.addBot();
+      botCount++;
     }
   }
 
@@ -787,7 +801,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(),
+      inventory: createRandomLoadout(this.settings.weaponAllowed),
     });
 
     // Pick a unique flag for the bot from the full countries list
@@ -1332,9 +1346,20 @@ export class Room {
     let kind: PickupKind;
     let weaponId: string | undefined;
     if (isWeaponCrate) {
-      const pool = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
-      kind = 'weapon';
-      weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+      const allowed = this.settings.weaponAllowed.length > 0
+        ? new Set(this.settings.weaponAllowed)
+        : null;
+      const pool = WEAPONS.filter(
+        (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
+      );
+      // Whitelist might exclude every consumable — fall back to an ammo
+      // crate so we don't crash on pool[0] when the array is empty.
+      if (pool.length === 0) {
+        kind = 'ammo';
+      } else {
+        kind = 'weapon';
+        weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+      }
     } else {
       kind = 'ammo';
     }
@@ -1443,7 +1468,7 @@ export class Room {
     player.burningOwner = null;
     player.input.seq = 0;
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
-    player.inventory = createRandomLoadout();
+    player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
     this.physics.resetTank(playerId, tank.position, 0);
   }

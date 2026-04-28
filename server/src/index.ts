@@ -41,7 +41,7 @@ async function main(): Promise<void> {
       const mode = data.mode ?? 'quick';
       let room: ReturnType<typeof manager.findOrCreatePublic>;
       if (mode === 'create_private') {
-        room = manager.createPrivate();
+        room = manager.createPrivate(data.settings);
         if (!room) {
           socket.emit('join_error', { reason: 'cap_reached' });
           return;

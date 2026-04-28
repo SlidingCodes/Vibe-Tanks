@@ -269,6 +269,7 @@ const sendJoin = (): void => {
     flagId: login.flagId,
     mode: login.mode,
     inviteCode: login.inviteCode,
+    settings: login.settings,
   });
   hud.showWaiting(true);
 };
