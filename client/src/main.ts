@@ -36,7 +36,7 @@ import { triggerHitFeedback } from './ui/hud';
 import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
-  getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
+  getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
   isShiftHeld, consumeRightClick, getMouseNDC,
 } from './ui/input';
@@ -48,9 +48,9 @@ import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from '
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning } from './audio/sounds';
+import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponInventorySlot } from '@shared/types/index';
+import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -145,6 +145,46 @@ let latestTanks: TankState[] = [];
  *  that's been fully charged for minutes. Mirrors the server's
  *  PlayerState.lastFireByWeapon map. */
 const lastFireByWeapon = new Map<string, number>();
+
+/** Local mirror of the server's heat gauge for hold-to-fire weapons
+ *  (currently the minigun). Predicted with the same formula so the HUD
+ *  stays responsive without waiting for a server round trip. Slight
+ *  divergence is harmless: server gates the actual shots, the gauge is
+ *  HUD feedback only. */
+interface LocalHeatState { value: number; lastUpdate: number; lockedUntil: number; }
+const weaponHeat = new Map<string, LocalHeatState>();
+
+function decayWeaponHeat(weaponId: string, weapon: WeaponDefinition, now: number): number {
+  const entry = weaponHeat.get(weaponId);
+  if (!entry) return 0;
+  const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
+  const dt = Math.max(0, now - entry.lastUpdate);
+  entry.value = Math.max(0, entry.value - coolRate * dt);
+  entry.lastUpdate = now;
+  return entry.value;
+}
+
+function isWeaponOverheatedLocal(weaponId: string, now: number): boolean {
+  const entry = weaponHeat.get(weaponId);
+  return !!entry && entry.lockedUntil > now;
+}
+
+function bumpWeaponHeatLocal(weapon: WeaponDefinition, now: number): void {
+  let entry = weaponHeat.get(weapon.id);
+  if (!entry) {
+    entry = { value: 0, lastUpdate: now, lockedUntil: 0 };
+    weaponHeat.set(weapon.id, entry);
+  } else {
+    decayWeaponHeat(weapon.id, weapon, now);
+  }
+  const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
+  entry.value = Math.min(1, entry.value + heatPerShot);
+  if (entry.value >= 1) {
+    const lockout = weapon.behaviorConfig?.overheatLockout ?? 2.5;
+    entry.lockedUntil = now + lockout;
+    entry.value = 1;
+  }
+}
 
 /** Last shot info per tank, used to drive the barrel-heat glow on every
  *  visible tank (local + remotes). Updated for the local player the
@@ -733,6 +773,10 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
+          // The new loadout may not even include a hold-to-fire weapon,
+          // and any heat carried over from the previous life would mis-
+          // gate the first burst — wipe it.
+          weaponHeat.clear();
           // Re-baseline the reconciliation clocks to match the server's
           // post-respawn ACK (also 0). Buffer entries from the previous
           // life are harmless because the circular index's seq check in
@@ -1556,13 +1600,20 @@ function animate(): void {
     }
 
     const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
-    if (consumeClick()) {
+    // Minigun (and any future hold-to-fire weapon) uses the raw mouse
+    // state so each frame the cooldown is up while the button is held
+    // produces a new fire_request. Single-shot weapons keep the
+    // edge-triggered consumeClick() so a tap = one round.
+    const isHoldFire = selectedWeapon.behavior === 'minigun';
+    const fireRequested = isHoldFire ? isMouseDown() : consumeClick();
+    if (fireRequested) {
       // Suppress fire entirely during the start-of-match countdown so the
       // input is consumed (no queued click leaking into the match start)
       // but no animation, sound, or fire_request is produced.
       if (inCountdown) {
-        // intentionally no-op
-      } else if (now - selLastFire >= selectedWeapon.cooldown) {
+        if (isHoldFire) consumeClick();
+      } else if (now - selLastFire >= selectedWeapon.cooldown
+        && !(isHoldFire && isWeaponOverheatedLocal(selectedWeapon.id, now))) {
         // Ammo guard — the server re-checks, but rejecting client-side
         // keeps the player's "oh I'm out" feedback snappy (no dry-click
         // noise, no fake fire animation).
@@ -1575,10 +1626,18 @@ function animate(): void {
           });
           lastFireByWeapon.set(selectedWeapon.id, now);
           lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
+          if (isHoldFire) bumpWeaponHeatLocal(selectedWeapon, now);
           // Cannon-shot SFX is wrong for the nuke (it falls from a bomber,
           // not the barrel) — its MOAB warning klaxon is triggered by the
-          // shot_resolved handler instead.
-          if (selectedWeapon.behavior !== 'nuke') playShoot();
+          // shot_resolved handler instead. The minigun has its own snappy
+          // bullet pop instead of the heavy cannon shot.
+          if (selectedWeapon.behavior === 'nuke') {
+            // no-op
+          } else if (isHoldFire) {
+            playMinigunShot();
+          } else {
+            playShoot();
+          }
           // Client-side jump prediction: mirror the server's launchTank
           // on the predicted Rapier body so the local tank lifts off
           // immediately, no rubberband while waiting for the next
@@ -1598,7 +1657,16 @@ function animate(): void {
       }
     }
 
-    const cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
+    // Drive the cooldown bar from heat for hold-to-fire weapons (1 = cool
+    // / ready, 0 = locked) so it visibly empties as sustained fire heats
+    // the gun and refills while the player lays off the trigger.
+    let cooldownProgress: number;
+    if (isHoldFire) {
+      const heatValue = decayWeaponHeat(selectedWeapon.id, selectedWeapon, now);
+      cooldownProgress = isWeaponOverheatedLocal(selectedWeapon.id, now) ? 0 : Math.max(0, 1 - heatValue);
+    } else {
+      cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
+    }
     hud.setCooldown(cooldownProgress);
     hud.updateWeaponCooldowns(lastFireByWeapon, now);
     const selSlot = getSelectedInventorySlot();

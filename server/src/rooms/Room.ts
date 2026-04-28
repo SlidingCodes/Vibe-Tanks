@@ -145,6 +145,11 @@ interface PlayerState {
    *  own cooldown clock, so sparking off a standard shot doesn't gate a
    *  seeker that's been ready for minutes. Missing entry = never fired. */
   lastFireByWeapon: Map<string, number>;
+  /** Heat gauge state for hold-to-fire weapons (currently the minigun).
+   *  `value` ∈ [0,1] decays at heatCoolRate when not firing; each shot
+   *  bumps it by heatPerShot. When it hits 1 the gun locks for
+   *  overheatLockout seconds and `lockedUntil` is set. */
+  weaponHeat: Map<string, { value: number; lastUpdate: number; lockedUntil: number }>;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -458,6 +463,7 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
+      weaponHeat: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
@@ -694,8 +700,14 @@ export class Room {
       const prevFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
       if (now - prevFire < weapon.cooldown) return;
 
+      // Hold-to-fire weapons (minigun): gate on the heat gauge. Once
+      // it locks the player out, fire requests are rejected until the
+      // lockout expires.
+      if (weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now)) return;
+
       this.consumeAmmo(player, weapon.id);
       player.lastFireByWeapon.set(weapon.id, now);
+      if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
       player.lastInputAt = now;
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
@@ -729,6 +741,46 @@ export class Room {
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  /** Decay the player's heat for `weapon` to its current value at `now`,
+   *  in place. Returns the new value. Caller is responsible for the
+   *  lockedUntil check separately so we don't compound a decay step on
+   *  top of an active lockout. */
+  private decayWeaponHeat(player: PlayerState, weapon: WeaponDefinition, now: number): number {
+    const entry = player.weaponHeat.get(weapon.id);
+    if (!entry) return 0;
+    const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
+    const dt = Math.max(0, now - entry.lastUpdate);
+    entry.value = Math.max(0, entry.value - coolRate * dt);
+    entry.lastUpdate = now;
+    return entry.value;
+  }
+
+  /** True while the gun is in overheat lockout. */
+  private isWeaponOverheated(player: PlayerState, weapon: WeaponDefinition, now: number): boolean {
+    const entry = player.weaponHeat.get(weapon.id);
+    return !!entry && entry.lockedUntil > now;
+  }
+
+  /** Add one shot's worth of heat. If the gauge fills, latch the lockout. */
+  private bumpWeaponHeat(player: PlayerState, weapon: WeaponDefinition, now: number): void {
+    let entry = player.weaponHeat.get(weapon.id);
+    if (!entry) {
+      entry = { value: 0, lastUpdate: now, lockedUntil: 0 };
+      player.weaponHeat.set(weapon.id, entry);
+    } else {
+      this.decayWeaponHeat(player, weapon, now);
+    }
+    const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
+    entry.value = Math.min(1, entry.value + heatPerShot);
+    if (entry.value >= 1) {
+      const lockout = weapon.behaviorConfig?.overheatLockout ?? 2.5;
+      entry.lockedUntil = now + lockout;
+      // Hold the gauge at full while the lockout runs so the HUD reads
+      // "still hot"; it drains on lockout expiry on the client side.
+      entry.value = 1;
+    }
   }
 
   private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
@@ -829,6 +881,7 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
+      weaponHeat: new Map(),
       spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
@@ -1576,6 +1629,9 @@ export class Room {
     player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
     player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
+    // Wipe any stale heat / lockout from the previous life — the new
+    // loadout may not even include a hold-to-fire weapon.
+    player.weaponHeat.clear();
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -2393,13 +2449,15 @@ export class Room {
 
         // Only run simulation if cooldown is ready to save performance
         const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
-        if (now - prevBotFire >= weapon.cooldown) {
+        if (now - prevBotFire >= weapon.cooldown
+          && !(weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now))) {
           // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
 
           // Fire! The jitter ensures they only hit 40-60% of the time.
           this.consumeAmmo(player, weapon.id);
           player.lastFireByWeapon.set(weapon.id, now);
+          if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
           this.performFire(tank, player, weapon, targetTank.position, result);
           // Reshuffle slot index against the (possibly shrunken) inventory.
           player.botWeaponIndex = player.inventory.length > 0

@@ -899,6 +899,39 @@ function simulateRailShot(
   ], damageTotals, allTanks);
 }
 
+function simulateMinigunShot(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  terrain: SimulationTerrain,
+  allTanks: TankState[],
+): ShotResult {
+  // Minigun is hitscan with a short trail, identical to a thinned-out
+  // rail beam. Range / hit radius come from behaviorConfig; per-shot
+  // damage is small (the punishing total comes from sustained fire).
+  // No terrain carving — bullet ground impacts only spawn a tracer.
+  const maxRange = weapon.behaviorConfig?.minigunRange ?? 55;
+  const beamRadius = weapon.behaviorConfig?.minigunRadius ?? 0.7;
+  const railHit = resolveRailEndpoint(
+    shooter,
+    maxRange,
+    beamRadius,
+    (x, z) => terrain.getHeight(x, z),
+    allTanks,
+  );
+  const hitTank = railHit.hitTankId
+    ? allTanks.find((tank) => tank.playerId === railHit.hitTankId) ?? null
+    : null;
+
+  const damageTotals: DamageTotals = new Map();
+  if (hitTank) {
+    applyDirectHit(hitTank, weapon.damage, damageTotals);
+  }
+
+  return createPredictedShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, [railHit.startPos, railHit.hitPoint], railHit.hitPoint, 'beam', false, beamRadius, 'minigun_tracer'),
+  ], damageTotals, allTanks);
+}
+
 export function planDrillShot(
   shooter: TankState,
   weapon: WeaponDefinition,
@@ -984,6 +1017,8 @@ export function simulateShot(
       return simulateBounceShot(shooter, weapon, terrain, allTanks);
     case 'rail':
       return simulateRailShot(shooter, weapon, terrain, allTanks);
+    case 'minigun':
+      return simulateMinigunShot(shooter, weapon, terrain, allTanks);
     case 'digger':
       return simulateDiggerShot(shooter, weapon, terrain, allTanks);
     case 'wall':

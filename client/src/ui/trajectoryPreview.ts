@@ -489,6 +489,26 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'minigun') {
+    // Hitscan, like rail. Show a thin warm-yellow dotted line out to
+    // the gun's max range; no resolved-endpoint variant since the
+    // beam is short-lived per shot, not a charged held beam.
+    parentMat.color.setHex(0xffd060);
+    const dir = normalize(startVel);
+    const range = weapon.behaviorConfig?.minigunRange ?? 55;
+    const end = {
+      x: startPos.x + dir.x * range,
+      y: startPos.y + dir.y * range,
+      z: startPos.z + dir.z * range,
+    };
+    placePoints(parentDots, makeLinePoints(startPos, end, 18));
+    placeMarker(end.x, end.y, end.z);
+    marker.group.scale.setScalar(0.35);
+    setMarkerColor(0xffe890, 0xfff0a0);
+    marker.group.visible = true;
+    return;
+  }
+
   if (weapon.behavior === 'seeker') {
     parentMat.color.setHex(0x7a9ab0);
     const dir = normalize(startVel);

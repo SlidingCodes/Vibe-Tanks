@@ -307,6 +307,37 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
+    // Minigun: hold-to-fire hitscan with a deep magazine and a heat
+    // gauge. Each click fires one bullet at ~13 rps; sustained fire
+    // fills the gauge in ~25 rounds and the gun locks out for ~2.5 s
+    // so the player can't just chain-tap forever. Damage per round is
+    // small — the minigun is a sustained-fire weapon, not a burst kill.
+    id: 'minigun',
+    name: 'Minigun',
+    description: 'Hold-to-fire spray — tiny per-shot damage, deep magazine, overheats.',
+    // Hitscan, like the rail. Range/radius live in behaviorConfig.
+    projectileSpeed: 0,
+    blastRadius: 0.5,
+    damage: 6,
+    terrainDamage: 0,
+    behavior: 'minigun',
+    // `cooldown` doubles as the inter-shot gap while held — 0.075 s ≈
+    // 13 rounds/sec.
+    cooldown: 0.075,
+    startAmmo: 500,
+    maxAmmo: 500,
+    // Slightly rarer than a normal pickup: the deep magazine is strong,
+    // so 0.6 weight keeps it from saturating the crate roll.
+    pickupWeight: 0.6,
+    behaviorConfig: {
+      minigunRange: 55,
+      minigunRadius: 0.7,
+      heatPerShot: 0.04,
+      heatCoolRate: 0.55,
+      overheatLockout: 2.5,
+    },
+  },
+  {
     // Rocket jump: the tank itself becomes the projectile. Aim with the
     // normal reticle — the same ballistic solver used by standard weapons
     // picks a turret/barrel angle that would land a shell at the target,

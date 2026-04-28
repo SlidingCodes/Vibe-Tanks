@@ -273,6 +273,21 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xd8f0f8,
         explosionScale: 0.45,
       };
+    case 'minigun_tracer':
+      // Minigun tracer: thin warm-yellow beam, no projectile mesh, no
+      // smoke trail. Hitscan, so the beam is alive for ~67 ms (one
+      // SECONDS_PER_SAMPLE) before the impact resolves.
+      return {
+        projectileRadius: 0.05,
+        projectileColor: 0xfff0a0,
+        emissiveColor: 0xffd060,
+        trailColor: 0xffd060,
+        trailSize: 0.1,
+        pathColor: 0xfff0a0,
+        pathOpacity: 0.95,
+        explosionColor: 0xffd060,
+        explosionScale: 0.18,
+      };
     case 'mortar_shell':
       return {
         projectileRadius: 0.28,
@@ -416,7 +431,7 @@ function disposeObject(obj: THREE.Object3D, scene: THREE.Scene): void {
 function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void {
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
 
-  if (step.visualStyle !== 'rail') {
+  if (step.visualStyle !== 'rail' && step.visualStyle !== 'minigun_tracer') {
     // Real tank-shell silhouette (cylinder body + conical nose) instead of
     // a stretched sphere. Material is matte gunmetal with a soft warm
     // emissive so the nose reads as recently-fired without glowing.
@@ -681,6 +696,40 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
       sM2.dispose();
       dustGeo.dispose();
       dustMat.dispose();
+    }
+  };
+  animate();
+}
+
+/** Minigun bullet impact: a tiny warm spark flash with a small dust puff.
+ *  No smoke plume, no dust ring — those would be absurd at 13 rps. The
+ *  whole effect lasts ~14 frames so back-to-back rounds don't pile up. */
+function showMinigunImpact(step: ActiveShotStep, scene: THREE.Scene): void {
+  const { fireBurst } = getParticleTextures();
+  const origin = new THREE.Vector3(step.endPoint.x, step.endPoint.y, step.endPoint.z);
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: fireBurst,
+    color: 0xffd060,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  flash.position.copy(origin);
+  flash.scale.setScalar(0.7);
+  scene.add(flash);
+
+  let frame = 0;
+  const animate = () => {
+    frame++;
+    const m = flash.material as THREE.SpriteMaterial;
+    flash.scale.setScalar(0.7 + frame * 0.08);
+    m.opacity = Math.max(0, 0.85 - frame * 0.07);
+    if (frame < 14) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(flash);
+      m.dispose();
     }
   };
   animate();
@@ -1098,6 +1147,8 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showDeployFlash(step, scene);
       } else if (step.visualStyle === 'nuke' || step.visualStyle === 'nuke_falling') {
         showNukeExplosion(step, scene);
+      } else if (step.visualStyle === 'minigun_tracer') {
+        showMinigunImpact(step, scene);
       } else {
         showExplosion(step, scene);
       }

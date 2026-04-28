@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="mgHub" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffd060"/>
+      <stop offset="0.7" stop-color="#a07020"/>
+      <stop offset="1" stop-color="#3a2a14"/>
+    </radialGradient>
+  </defs>
+  <!-- Six rotating barrels arranged in a circle -->
+  <g stroke="#2a2018" stroke-width="1.2" fill="#7a6a52">
+    <rect x="11" y="30" width="22" height="4" rx="0.6"/>
+    <rect x="11" y="30" width="22" height="4" rx="0.6" transform="rotate(60 22 32)"/>
+    <rect x="11" y="30" width="22" height="4" rx="0.6" transform="rotate(120 22 32)"/>
+    <rect x="11" y="30" width="22" height="4" rx="0.6" transform="rotate(180 22 32)"/>
+    <rect x="11" y="30" width="22" height="4" rx="0.6" transform="rotate(240 22 32)"/>
+    <rect x="11" y="30" width="22" height="4" rx="0.6" transform="rotate(300 22 32)"/>
+  </g>
+  <!-- Central hub -->
+  <circle cx="22" cy="32" r="9" fill="url(#mgHub)" stroke="#2a2018" stroke-width="1.4"/>
+  <circle cx="22" cy="32" r="3" fill="#1a140a"/>
+  <!-- Tracer streak from muzzle out to the right -->
+  <line x1="34" y1="32" x2="60" y2="32" stroke="#ffd060" stroke-width="2.4" opacity="0.85"/>
+  <line x1="46" y1="28" x2="60" y2="28" stroke="#fff0a0" stroke-width="1.2" opacity="0.7"/>
+  <line x1="46" y1="36" x2="60" y2="36" stroke="#fff0a0" stroke-width="1.2" opacity="0.7"/>
+</svg>

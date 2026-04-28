@@ -77,6 +77,40 @@ export function playShoot(): void {
   noise.stop(now + 0.1);
 }
 
+// ── Minigun bullet ("tac") ──
+// Short, snappy bullet pop. Designed to be replayable at ~13 rps without
+// stacking into mush — total duration is ~70 ms, with a sharp envelope
+// and a thin lowpass-filtered noise burst on top of a quick pitch
+// drop. No sustained body, so back-to-back triggers stay punchy.
+
+export function playMinigunShot(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Pitched click: square wave 700→180 Hz over 50 ms, very short.
+  const osc = ac.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(700, now);
+  osc.frequency.exponentialRampToValueAtTime(180, now + 0.05);
+  const oscGain = ac.createGain();
+  ramp(oscGain.gain, 0.28, 0, now, now + 0.06);
+  osc.connect(oscGain).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.07);
+
+  // Crack: highpassed noise burst, even shorter.
+  const noise = createNoise(ac, 0.06);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'highpass';
+  nf.frequency.value = 1400;
+  const ng = ac.createGain();
+  ramp(ng.gain, 0.22, 0, now, now + 0.04);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.05);
+}
+
 // ── Explosion (shell impact) ──
 // Scale 0–1 controls size: bigger = longer + lower.
 

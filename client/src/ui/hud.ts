@@ -284,6 +284,8 @@ function getWeaponRoleLabel(weapon: WeaponDefinition): string {
       return 'Trap';
     case 'nuke':
       return 'Nuke';
+    case 'minigun':
+      return 'Hold to fire';
     case 'standard':
     default:
       return 'Precision';

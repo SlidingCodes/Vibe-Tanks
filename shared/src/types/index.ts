@@ -111,7 +111,8 @@ export type WeaponBehavior =
   | 'wall'
   | 'ramp'
   | 'jump'
-  | 'nuke';
+  | 'nuke'
+  | 'minigun';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -135,7 +136,8 @@ export type ShotVisualStyle =
   | 'ramp_shell'
   | 'jump_launch'
   | 'nuke'
-  | 'nuke_falling';
+  | 'nuke_falling'
+  | 'minigun_tracer';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -204,6 +206,18 @@ export interface WeaponBehaviorConfig {
   /** Nuke: descent duration in seconds. The MOAB warning klaxon plays
    *  for the full window. */
   nukeFallDuration?: number;
+  /** Minigun: hitscan range (m). */
+  minigunRange?: number;
+  /** Minigun: hit radius around the beam (m). Tank centres within this
+   *  distance to the ray count as struck. */
+  minigunRadius?: number;
+  /** Minigun: heat added per shot (0..1). Once heat reaches 1 the gun
+   *  locks for `overheatLockout` seconds. */
+  heatPerShot?: number;
+  /** Minigun: heat cool rate per second when not firing (0..1). */
+  heatCoolRate?: number;
+  /** Minigun: cooldown (s) applied when the heat gauge fills. */
+  overheatLockout?: number;
 }
 
 export interface WeaponDefinition {
