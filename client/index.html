@@ -676,7 +676,44 @@
       padding: 6px 0; font-size: 11px; letter-spacing: 2px; color: #c0b890;
       cursor: pointer;
     }
-    .settings-toggle-row input { accent-color: #d8b058; cursor: pointer; }
+    /* iOS-style switch — drops the native checkbox in favour of a
+       sliding thumb in the brass / gunmetal palette. The <input> stays
+       in the DOM (visually hidden) so the existing change handler and
+       `.checked` reads keep working unchanged. */
+    .toggle-switch {
+      position: relative; display: inline-block;
+      width: 40px; height: 22px; flex-shrink: 0;
+    }
+    .toggle-switch input {
+      opacity: 0; width: 0; height: 0; margin: 0;
+      position: absolute;
+    }
+    .toggle-slider {
+      position: absolute; inset: 0; cursor: pointer;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      border-radius: 11px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #8a7858;
+      transition: transform 0.15s, background 0.15s, box-shadow 0.15s;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: rgba(80, 64, 32, 0.6);
+      border-color: rgba(216, 176, 88, 0.85);
+    }
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(18px);
+      background: #e8d8a0;
+      box-shadow: 0 0 8px rgba(216, 176, 88, 0.55);
+    }
+    .toggle-switch input:focus-visible + .toggle-slider {
+      outline: 2px solid rgba(216, 176, 88, 0.7);
+      outline-offset: 2px;
+    }
     .settings-cameras {
       display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
       margin-top: 8px;
@@ -1207,7 +1244,10 @@
         <h3>DISPLAY</h3>
         <label class="settings-toggle-row">
           <span>FULLSCREEN</span>
-          <input id="settings-fullscreen" type="checkbox" />
+          <span class="toggle-switch">
+            <input id="settings-fullscreen" type="checkbox" />
+            <span class="toggle-slider"></span>
+          </span>
         </label>
         <button id="settings-fs-ios" type="button" style="display:none">iPhone — how to enable fullscreen</button>
         <div id="settings-fs-ios-panel" style="display:none">
