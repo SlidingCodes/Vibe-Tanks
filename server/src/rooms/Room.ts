@@ -2162,24 +2162,25 @@ export class Room {
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.triggerAt > this.simTime);
 
     for (const strike of ready) {
+      // Nuke is on a deferred-damage path: 3.5 s descent is too long
+      // to lock damage in at strike-trigger time — players who turbo
+      // away should actually escape. We emit the visual immediately
+      // and recompute damage against live positions at impact.
+      if (strike.kind === 'nuke') {
+        this.fireNukeStrike(strike);
+        continue;
+      }
+
       const damageTotals: DamageTotals = new Map();
-      const isNuke = strike.kind === 'nuke';
       const carveTerrain = applyImpact({
         point: strike.position,
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
-        // Nuke: full damage (lethal) inside the crater zone, quadratic
-        // taper outside up to blastRadius — same crater feel as Fallout
-        // mini-nukes. Big knockback on top so survivors get punted clear.
-        flatCoreRadius: isNuke ? strike.blastRadius * 0.33 : undefined,
-        impulseScale: isNuke ? 5 : undefined,
       }, this.getTankList(), damageTotals);
 
-      if (strike.kind === 'mortar' || strike.kind === 'nuke') {
+      if (strike.kind === 'mortar') {
         const fallDuration = strike.fallDuration ?? 0.8;
-        const visualStyle: 'mortar_shell' | 'nuke_falling' =
-          strike.kind === 'nuke' ? 'nuke_falling' : 'mortar_shell';
         const start = {
           x: strike.position.x,
           y: strike.position.y + strike.spawnHeight,
@@ -2187,7 +2188,7 @@ export class Room {
         };
         const trajectory = createLinearTrajectory(start, strike.position, fallDuration);
         const result = createShotResult(strike.ownerId, strike.weaponId, [
-          makeStep(0, trajectory, strike.position, 'impact', carveTerrain, strike.blastRadius, visualStyle),
+          makeStep(0, trajectory, strike.position, 'impact', carveTerrain, strike.blastRadius, 'mortar_shell'),
         ], damageTotals);
         this.scheduleShotResult(result, strike.ownerId, strike.weaponId);
         continue;
@@ -2196,6 +2197,69 @@ export class Room {
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, carveTerrain, damageTotals);
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
+  }
+
+  /** Nuke strike: emit the descending shell immediately so the client
+   *  starts the MOAB klaxon + falling-bomb visual, then schedule a
+   *  setTimeout for the impact moment that:
+   *    1. Carves the crater against the authoritative voxel grid.
+   *    2. Computes damage from the current tank positions (so a turbo
+   *       escape during the fall actually pulls you out of range).
+   *    3. Applies HP/score via applyResolvedDamage and emits
+   *       damage_applied so the client pops floating numbers.
+   *    4. Triggers nearby mines via the standard chain helper. */
+  private fireNukeStrike(strike: ScheduledStrike): void {
+    const fallDuration = strike.fallDuration ?? 3.5;
+    const start = {
+      x: strike.position.x,
+      y: strike.position.y + strike.spawnHeight,
+      z: strike.position.z,
+    };
+    const trajectory = createLinearTrajectory(start, strike.position, fallDuration);
+    const visualStep = makeStep(0, trajectory, strike.position, 'impact', true, strike.blastRadius, 'nuke_falling');
+    const visualResult = createShotResult(strike.ownerId, strike.weaponId, [visualStep]);
+    // Empty damageDealt — the impact handler emits damage_applied.
+    this.io.to(this.id).emit('shot_resolved', visualResult);
+
+    const ownerId = strike.ownerId;
+    const weaponId = strike.weaponId;
+    const impactTimeout = setTimeout(() => {
+      this.pendingShotTimeouts.delete(impactTimeout);
+
+      // 1. Carve.
+      this.applyTerrainStep(visualStep);
+      this.regroundAliveTanks();
+
+      // 2. Damage from live positions.
+      const damageTotals: DamageTotals = new Map();
+      applyImpact({
+        point: strike.position,
+        blastRadius: strike.blastRadius,
+        damage: strike.damage,
+        terrainDamage: strike.terrainDamage,
+        flatCoreRadius: strike.blastRadius * 0.33,
+        impulseScale: 5,
+      }, this.getTankList(), damageTotals);
+
+      // 3. Pack damageDealt + impulses, apply, broadcast popups.
+      const damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+      const impulses: { playerId: PlayerId; impulse: Vec3 }[] = [];
+      for (const [pid, val] of damageTotals) {
+        const victim = this.tanks.get(pid);
+        const killed = !!victim && val.damage >= victim.hp;
+        damageDealt.push({ playerId: pid, damage: val.damage, killed });
+        const impLen2 = val.impulse.x ** 2 + val.impulse.y ** 2 + val.impulse.z ** 2;
+        if (impLen2 > 1e-4) impulses.push({ playerId: pid, impulse: val.impulse });
+      }
+      this.applyResolvedDamage(ownerId, weaponId, damageDealt, impulses);
+      if (damageDealt.length > 0) {
+        this.io.to(this.id).emit('damage_applied', { weaponId, hits: damageDealt });
+      }
+
+      // 4. Mine chain reactions.
+      this.triggerMinesInBlast(strike.position, strike.blastRadius);
+    }, fallDuration * 1000);
+    this.pendingShotTimeouts.add(impactTimeout);
   }
 
   /** Set of alive tanks whose hull-centre voxel is solid — i.e. they've been

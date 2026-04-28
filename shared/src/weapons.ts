@@ -287,7 +287,10 @@ export const WEAPONS: WeaponDefinition[] = [
     // Room.fireNuke, not the ballistic solver. Blast 18 lands a 36-m
     // diameter kill circle.
     projectileSpeed: 0,
-    blastRadius: 18,
+    // 22 m blast → ~44 m wide crater; full damage inside the ~7 m
+    // crater core, quadratic taper out to the rim where it survives
+    // a turbo escape.
+    blastRadius: 22,
     damage: 99,
     // Big crater on impact — a nuke leaves a mark.
     terrainDamage: 6,
