@@ -2,6 +2,7 @@ import { getVolume, setVolume } from '../audio/sounds';
 import { getMusicVolume, setMusicVolume } from '../audio/music';
 import { CameraPresetId, setCameraPreset } from '../scene/camera';
 import { WEAPONS } from '@shared/weapons';
+import { isFpsCounterVisible, setFpsCounterVisible } from './fpsCounter';
 
 const MUSIC_KEY = 'vt.musicVolume';
 const SFX_KEY = 'vt.sfxVolume';
@@ -52,6 +53,7 @@ export function setupSettingsDialog(onExit: () => void): void {
   const sfxSlider = document.getElementById('settings-sfx-slider') as HTMLInputElement;
   const sfxValue = document.getElementById('settings-sfx-value') as HTMLSpanElement;
   const fsToggle = document.getElementById('settings-fullscreen') as HTMLInputElement;
+  const statsToggle = document.getElementById('settings-stats') as HTMLInputElement;
   const cameraGrid = document.getElementById('settings-cameras') as HTMLDivElement;
   const weaponGuide = document.getElementById('settings-weapon-guide') as HTMLDivElement;
   const exitBtn = document.getElementById('settings-exit') as HTMLButtonElement;
@@ -116,6 +118,12 @@ export function setupSettingsDialog(onExit: () => void): void {
     if (!fsSupported) return;
     if (fsToggle.checked) requestFs!().catch(syncFs);
     else exitFs!().catch(syncFs);
+  });
+
+  // ── FPS / ping overlay toggle ──
+  statsToggle.checked = isFpsCounterVisible();
+  statsToggle.addEventListener('change', () => {
+    setFpsCounterVisible(statsToggle.checked);
   });
 
   // ── Camera preset picker ──

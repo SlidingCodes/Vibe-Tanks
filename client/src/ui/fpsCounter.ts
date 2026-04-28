@@ -5,6 +5,9 @@ let minDt = Infinity;
 let maxDt = 0;
 let fpsLine = 'FPS --';
 let pingLine = 'ping --';
+let visible = false;
+
+const VISIBLE_KEY = 'vt.fpsVisible';
 
 export function initFpsCounter(): void {
   if (el) return;
@@ -29,6 +32,18 @@ export function initFpsCounter(): void {
   ].join(';');
   render();
   document.body.appendChild(el);
+  visible = localStorage.getItem(VISIBLE_KEY) === '1';
+  el.style.display = visible ? '' : 'none';
+}
+
+export function isFpsCounterVisible(): boolean {
+  return visible;
+}
+
+export function setFpsCounterVisible(v: boolean): void {
+  visible = v;
+  if (el) el.style.display = v ? '' : 'none';
+  localStorage.setItem(VISIBLE_KEY, v ? '1' : '0');
 }
 
 function render(): void {
