@@ -440,6 +440,25 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'nuke') {
+    // Nuke is paint-the-target: the reticle sits on the mouse-raycast
+    // ground point (same source the server uses for the strike anchor),
+    // not on a ballistic arc. A faint vertical "drop line" from the
+    // configured fall altitude down to the ground hint at the trajectory.
+    parentMat.color.setHex(0xfff0b8);
+    const fallHeight = weapon.behaviorConfig?.nukeFallHeight ?? 80;
+    const target = aimTarget
+      ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
+      : { x: startPos.x, y: getTerrainHeight(startPos.x, startPos.z), z: startPos.z };
+    const top = { x: target.x, y: target.y + fallHeight, z: target.z };
+    placePoints(parentDots, makeLinePoints(top, target, 28));
+    placeMarker(target.x, target.y, target.z);
+    marker.group.scale.setScalar(Math.max(2.2, weapon.blastRadius * 0.3));
+    setMarkerColor(0xffd060, 0xffe8a0);
+    marker.group.visible = true;
+    return;
+  }
+
   if (weapon.behavior === 'mortar') {
     parentMat.color.setHex(0xc8a068);
     const impact = aimTarget

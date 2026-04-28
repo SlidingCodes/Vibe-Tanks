@@ -557,69 +557,100 @@ export function playHitMarker(): void {
 // variant (the very last tick before reset) is a touch higher and louder so
 // the run-out moment is unmistakable.
 
-/** MOAB-style nuclear warning klaxon: a sustained low rumble over the
- *  whole descent + a sequence of evenly-spaced sine beeps that climb in
- *  pitch and intensity as impact approaches. Caller passes the descent
- *  duration so the beeps space themselves out and the rumble fades to
- *  nothing exactly at zero. Returns nothing — fire and forget. */
+/** Air-raid nuclear warning siren: a continuous wailing sawtooth that
+ *  oscillates between a low and high pitch on a slow LFO cycle, layered
+ *  over a deep menacing rumble. No friendly beeps — this is the
+ *  "everyone in the bunker" tone. Caller passes the descent duration
+ *  so the wail fits exactly inside the fall window. */
 export function playNukeWarning(durationSec: number): void {
   const ac = getCtx();
   const now = ac.currentTime;
   const out = masterGain(ac);
 
-  // Layer 1 — low rumble: 70 Hz sine with detuned 100 Hz harmonic, fades
-  // in over the first second and tapers off over the last.
-  for (const [freq, gain] of [[70, 0.18], [102, 0.08]] as const) {
+  // Layer 1 — sub-bass rumble: 45 Hz sine + 65 Hz detuned harmonic.
+  // Fades up across the first second, swells across the descent, peaks
+  // just before impact, then cuts cleanly so the explosion lands fresh.
+  for (const [freq, gain] of [[45, 0.22], [65, 0.13]] as const) {
     const osc = ac.createOscillator();
     osc.type = 'sine';
     osc.frequency.value = freq;
     const g = ac.createGain();
     g.gain.setValueAtTime(0, now);
-    g.gain.linearRampToValueAtTime(gain, now + 0.6);
-    g.gain.linearRampToValueAtTime(gain * 1.4, now + durationSec - 0.3);
+    g.gain.linearRampToValueAtTime(gain, now + 0.8);
+    g.gain.linearRampToValueAtTime(gain * 1.6, now + durationSec - 0.15);
     g.gain.linearRampToValueAtTime(0, now + durationSec);
     osc.connect(g).connect(out);
     osc.start(now);
     osc.stop(now + durationSec + 0.05);
   }
 
-  // Layer 2 — evenly-spaced warning beeps. Pitch climbs from 700 Hz at
-  // the start to 1400 Hz on the final beep; spacing tightens slightly
-  // toward impact so the rhythm reads as "accelerating countdown".
-  const beepCount = Math.max(4, Math.round(durationSec * 2.2));
-  for (let i = 0; i < beepCount; i++) {
-    // Easing: quadratic — early beeps spaced widely, last few crowd up.
-    const t = i / Math.max(1, beepCount - 1);
-    const beepAt = now + t * t * durationSec;
-    if (beepAt > now + durationSec) break;
-    const freq = 700 + (1400 - 700) * t;
-    const peak = 0.16 + 0.12 * t;
-    const osc = ac.createOscillator();
-    osc.type = 'square';
-    osc.frequency.value = freq;
-    const g = ac.createGain();
-    g.gain.setValueAtTime(0, beepAt);
-    g.gain.linearRampToValueAtTime(peak, beepAt + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.0005, beepAt + 0.16);
-    osc.connect(g).connect(out);
-    osc.start(beepAt);
-    osc.stop(beepAt + 0.18);
-  }
-
-  // Layer 3 — a final long siren tone that overlaps the last 0.4 s,
-  // fading into the explosion sound for that "klaxon → boom" moment.
-  const sirenAt = now + durationSec - 0.45;
+  // Layer 2 — wailing siren: sawtooth that ramps between two pitches
+  // on a slow triangle cycle. Approximates the classic "two-tone air
+  // raid" wail by stacking linearRampToValueAtTime up the timeline.
+  // CYCLE_SEC tuned so a 3.5 s descent gets ~3 full wails.
+  const CYCLE_SEC = 1.1;
+  const LO_HZ = 360;
+  const HI_HZ = 760;
   const siren = ac.createOscillator();
   siren.type = 'sawtooth';
-  siren.frequency.setValueAtTime(900, sirenAt);
-  siren.frequency.linearRampToValueAtTime(1600, sirenAt + 0.4);
+  siren.frequency.setValueAtTime(LO_HZ, now);
+  // Mild distortion via a waveshaper so the saw doesn't read as a
+  // synth bass — it sounds like a stressed metal horn.
+  const shaper = ac.createWaveShaper();
+  const curve = new Float32Array(2048);
+  for (let i = 0; i < curve.length; i++) {
+    const x = (i / 2047) * 2 - 1;
+    // Soft clip: tanh-ish curve, clamps the peaks without ringing.
+    curve[i] = Math.tanh(x * 2.5);
+  }
+  shaper.curve = curve;
+  // Bandpass to carve a horn-like resonance, kills the high harmonics.
+  const bp = ac.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 700;
+  bp.Q.value = 1.4;
+
   const sirenG = ac.createGain();
-  sirenG.gain.setValueAtTime(0, sirenAt);
-  sirenG.gain.linearRampToValueAtTime(0.22, sirenAt + 0.05);
-  sirenG.gain.linearRampToValueAtTime(0, sirenAt + 0.45);
-  siren.connect(sirenG).connect(out);
-  siren.start(sirenAt);
-  siren.stop(sirenAt + 0.5);
+  sirenG.gain.setValueAtTime(0, now);
+  sirenG.gain.linearRampToValueAtTime(0.18, now + 0.4);
+
+  // Schedule the wail: alternate ramps up to HI then down to LO across
+  // the duration. Final cycle tightens to drive urgency on impact.
+  let t = 0;
+  let toHigh = true;
+  while (t < durationSec - 0.05) {
+    // Last ~1.5 s: shorten cycle so the wail accelerates.
+    const accel = t > durationSec - 1.6 ? 0.55 : 1;
+    const half = (CYCLE_SEC * 0.5) * accel;
+    const next = Math.min(t + half, durationSec);
+    const target = toHigh ? HI_HZ : LO_HZ;
+    siren.frequency.linearRampToValueAtTime(target, now + next);
+    t = next;
+    toHigh = !toHigh;
+  }
+  // Volume swell across the descent so the wail builds.
+  sirenG.gain.linearRampToValueAtTime(0.32, now + durationSec - 0.2);
+  sirenG.gain.linearRampToValueAtTime(0, now + durationSec);
+
+  siren.connect(shaper).connect(bp).connect(sirenG).connect(out);
+  siren.start(now);
+  siren.stop(now + durationSec + 0.05);
+
+  // Layer 3 — pink-ish noise wash under the wail for "metal stress"
+  // texture. Filtered narrow-band, very low gain.
+  const noise = createNoise(ac, durationSec + 0.05);
+  const noiseFilter = ac.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.value = 480;
+  noiseFilter.Q.value = 0.8;
+  const noiseG = ac.createGain();
+  noiseG.gain.setValueAtTime(0, now);
+  noiseG.gain.linearRampToValueAtTime(0.05, now + 0.6);
+  noiseG.gain.linearRampToValueAtTime(0.12, now + durationSec - 0.2);
+  noiseG.gain.linearRampToValueAtTime(0, now + durationSec);
+  noise.connect(noiseFilter).connect(noiseG).connect(out);
+  noise.start(now);
+  noise.stop(now + durationSec + 0.05);
 }
 
 export function playMatchTickBeep(final: boolean = false): void {

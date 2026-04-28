@@ -78,11 +78,16 @@ interface ImpactSpec {
    *  here. That tank receives bonus damage and a guaranteed-airborne
    *  impulse regardless of distance. */
   directHitTankId?: PlayerId | null;
-  /** When true, every alive tank inside `blastRadius` takes the full
-   *  `damage` value with no quadratic falloff. Reserved for guaranteed-
-   *  kill weapons (e.g. the Little Boy nuke) — every other weapon
-   *  expects the radial taper. */
-  flatDamage?: boolean;
+  /** Optional inner radius where damage stays flat at the full `damage`
+   *  value before the quadratic falloff kicks in. Models a "crater zone":
+   *  inside → certain death, outside → fading splash. Default undefined
+   *  → falloff starts at the impact point (every legacy weapon's
+   *  behaviour). */
+  flatCoreRadius?: number;
+  /** Multiplier on the kinetic impulse applied to victims. 1 = the
+   *  default damage-derived push, larger values yeet survivors clear of
+   *  the blast (used by the nuke for spectacle). */
+  impulseScale?: number;
 }
 
 export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3 }>;
@@ -352,7 +357,7 @@ export function applyImpact(
   allTanks: TankState[],
   damageTotals: DamageTotals,
 ): boolean {
-  const impulseMagnitude = impact.damage * IMPULSE_PER_DAMAGE;
+  const impulseMagnitude = impact.damage * IMPULSE_PER_DAMAGE * (impact.impulseScale ?? 1);
   if (impact.damage > 0) {
     for (const tank of allTanks) {
       if (!tank.alive) continue;
@@ -366,8 +371,23 @@ export function applyImpact(
       if (isDirect || dist < impact.blastRadius) {
         const entry = damageTotals.get(tank.playerId) ?? makeDamageEntry();
 
-        const t = dist / Math.max(impact.blastRadius, 0.001);
-        const falloff = isDirect ? 1 : impact.flatDamage ? 1 : 1 - t * t;
+        // Falloff curve. With a flatCoreRadius, damage stays at full
+        // strength inside the crater and tapers quadratically from
+        // there out to blastRadius. Without it, the legacy radial
+        // taper from the impact point applies.
+        let falloff: number;
+        if (isDirect) {
+          falloff = 1;
+        } else if (impact.flatCoreRadius && dist <= impact.flatCoreRadius) {
+          falloff = 1;
+        } else if (impact.flatCoreRadius) {
+          const span = Math.max(0.001, impact.blastRadius - impact.flatCoreRadius);
+          const t = (dist - impact.flatCoreRadius) / span;
+          falloff = Math.max(0, 1 - t * t);
+        } else {
+          const t = dist / Math.max(impact.blastRadius, 0.001);
+          falloff = 1 - t * t;
+        }
         const dmgScalar = isDirect ? DIRECT_HIT_DAMAGE_MULTIPLIER : 1;
         const dmg = Math.round(impact.damage * falloff * dmgScalar);
         if (dmg > 0) entry.damage += dmg;

@@ -2163,14 +2163,17 @@ export class Room {
 
     for (const strike of ready) {
       const damageTotals: DamageTotals = new Map();
+      const isNuke = strike.kind === 'nuke';
       const carveTerrain = applyImpact({
         point: strike.position,
         blastRadius: strike.blastRadius,
         damage: strike.damage,
         terrainDamage: strike.terrainDamage,
-        // The nuke lands a flat 99 in the whole radius — no falloff.
-        // Other strikes keep the standard radial taper.
-        flatDamage: strike.kind === 'nuke',
+        // Nuke: full damage (lethal) inside the crater zone, quadratic
+        // taper outside up to blastRadius — same crater feel as Fallout
+        // mini-nukes. Big knockback on top so survivors get punted clear.
+        flatCoreRadius: isNuke ? strike.blastRadius * 0.33 : undefined,
+        impulseScale: isNuke ? 5 : undefined,
       }, this.getTankList(), damageTotals);
 
       if (strike.kind === 'mortar' || strike.kind === 'nuke') {
