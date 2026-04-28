@@ -551,3 +551,26 @@ export function playHitMarker(): void {
   osc2.start(now);
   osc2.stop(now + 0.09);
 }
+
+// ── End-of-match countdown beep ──
+// Short blip on each second tick during the last 10 seconds. The "final"
+// variant (the very last tick before reset) is a touch higher and louder so
+// the run-out moment is unmistakable.
+
+export function playMatchTickBeep(final: boolean = false): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.value = final ? 1500 : 1100;
+  const g = ac.createGain();
+  const peak = final ? 0.22 : 0.16;
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(peak, now + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.001, now + (final ? 0.18 : 0.10));
+  osc.connect(g).connect(out);
+  osc.start(now);
+  osc.stop(now + (final ? 0.2 : 0.12));
+}

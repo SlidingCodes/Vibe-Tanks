@@ -1,3 +1,5 @@
+import { playMatchTickBeep } from '../audio/sounds';
+
 let el: HTMLDivElement | null = null;
 let resetAtMs = 0;
 let presetLabel = 'Default';
@@ -62,13 +64,21 @@ export function setupMatchTimer(): void {
       if (!el!.classList.contains('mt-urgent')) {
         el!.classList.add('mt-urgent');
       }
-      // Pulse on each integer-second boundary.
+      // Pulse + beep on each integer-second boundary. Skip the very first
+      // boundary after entering the urgent window so we don't fire a
+      // half-second-truncated beep mid-tick.
       const wholeSec = Math.ceil(totalSec);
       if (wholeSec !== lastWholeSec) {
+        const firstUrgentTick = lastWholeSec === -1;
         lastWholeSec = wholeSec;
         el!.classList.add('mt-pulse');
         // Drop the pulse class quickly so the next tick can re-trigger.
         setTimeout(() => el?.classList.remove('mt-pulse'), 140);
+        if (!firstUrgentTick) {
+          // wholeSec is what's about to be displayed for the next second;
+          // when it's 1 we're entering the very last second → final beep.
+          playMatchTickBeep(wholeSec <= 1);
+        }
       }
     } else {
       const total = Math.ceil(remainingMs / 1000);
