@@ -318,11 +318,8 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const checkedIds = new Set(consumables.map((w) => w.id));
     weaponsGrid.innerHTML = '';
     consumables.forEach((w) => {
-      const lbl = document.createElement('label');
-      lbl.className = 'weapon-toggle';
-      // Description rides as a hover tooltip; the settings dialog
-      // (Polish 4) will surface it inline as the dedicated weapon guide.
-      if (w.description) lbl.title = w.description;
+      const card = document.createElement('label');
+      card.className = 'weapon-card';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = true;
@@ -331,16 +328,26 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         if (cb.checked) checkedIds.add(w.id);
         else checkedIds.delete(w.id);
       });
-      lbl.appendChild(cb);
       const icon = document.createElement('img');
-      icon.className = 'weapon-toggle-icon';
+      icon.className = 'weapon-card-icon';
       icon.src = `/weapons/${w.id}.svg`;
       icon.alt = '';
-      lbl.appendChild(icon);
-      const text = document.createElement('span');
-      text.textContent = w.name;
-      lbl.appendChild(text);
-      weaponsGrid.appendChild(lbl);
+      const info = document.createElement('div');
+      info.className = 'weapon-card-info';
+      const name = document.createElement('div');
+      name.className = 'weapon-card-name';
+      name.textContent = w.name;
+      info.appendChild(name);
+      if (w.description) {
+        const desc = document.createElement('div');
+        desc.className = 'weapon-card-desc';
+        desc.textContent = w.description;
+        info.appendChild(desc);
+      }
+      card.appendChild(cb);
+      card.appendChild(icon);
+      card.appendChild(info);
+      weaponsGrid.appendChild(card);
     });
     const setAllWeapons = (on: boolean): void => {
       checkedIds.clear();
