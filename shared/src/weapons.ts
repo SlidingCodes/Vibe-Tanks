@@ -282,15 +282,17 @@ export const WEAPONS: WeaponDefinition[] = [
     // genuinely rare in the crate pool.
     id: 'little_boy',
     name: 'Little Boy',
-    description: 'Bomba nucleare dall\'alto — danno 99 fisso in tutto il raggio. Estremamente rara.',
+    description: 'Nuclear bomb dropped from altitude — lethal core, big knockback, leaves a burning crater. Extremely rare.',
     // Speed / blastRadius are routed through the strike scheduler in
     // Room.fireNuke, not the ballistic solver. Blast 18 lands a 36-m
     // diameter kill circle.
     projectileSpeed: 0,
-    // 22 m blast → ~44 m wide crater; full damage inside the ~7 m
-    // crater core, quadratic taper out to the rim where it survives
-    // a turbo escape.
-    blastRadius: 22,
+    // 26 m blast → ~52 m wide crater; full damage inside the ~8.6 m
+    // core, quadratic taper out so the visible rim (≈22 m) still bites
+    // for ~40 dmg and a turbo escape past 25 m walks away with a
+    // graze. Nuke also seeds a napalm corolla at impact (centre + 6
+    // rim patches) and triggers a strong sustained camera shake.
+    blastRadius: 26,
     damage: 99,
     // Big crater on impact — a nuke leaves a mark.
     terrainDamage: 6,

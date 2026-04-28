@@ -2256,7 +2256,28 @@ export class Room {
         this.io.to(this.id).emit('damage_applied', { weaponId, hits: damageDealt });
       }
 
-      // 4. Mine chain reactions.
+      // 4. Napalm corolla — one big central patch + 6 rim patches at
+      //    the visible crater edge. Active-cell budget caps total fire
+      //    coverage so the FireGrid CA stays cheap even with several
+      //    nukes burning concurrently.
+      const centerFuel = Math.min(255, Math.round(36 * 6));
+      const rimFuel = Math.min(255, Math.round(36 * 4));
+      this.fire.ignite(
+        { x: strike.position.x, z: strike.position.z },
+        Math.max(6, strike.blastRadius * 0.32),
+        centerFuel,
+        ownerId,
+      );
+      const rimRadius = strike.blastRadius * 0.85;
+      const rimPatchCount = 6;
+      for (let i = 0; i < rimPatchCount; i++) {
+        const angle = (i / rimPatchCount) * Math.PI * 2 + Math.random() * 0.4;
+        const x = strike.position.x + Math.cos(angle) * rimRadius;
+        const z = strike.position.z + Math.sin(angle) * rimRadius;
+        this.fire.ignite({ x, z }, 4, rimFuel, ownerId);
+      }
+
+      // 5. Mine chain reactions.
       this.triggerMinesInBlast(strike.position, strike.blastRadius);
     }, fallDuration * 1000);
     this.pendingShotTimeouts.add(impactTimeout);

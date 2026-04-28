@@ -1045,12 +1045,21 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const dy = myMesh.group.position.y - step.endPoint.y;
       const dz = myMesh.group.position.z - step.endPoint.z;
       const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const range = Math.max(6, step.blastRadius * 5.5);
+      const isNuke = step.visualStyle === 'nuke_falling' || step.visualStyle === 'nuke';
+      // Nuke is map-wide; everything else cuts off at ~5.5× blast.
+      const range = isNuke ? 9999 : Math.max(6, step.blastRadius * 5.5);
       if (distance > range) return;
 
-      const proximity = 1 - distance / range;
-      const intensity = (0.26 + step.blastRadius * 0.05) * proximity;
-      addImpactCameraShake(intensity, 0.32);
+      const proximity = isNuke ? Math.max(0.25, 1 - distance / 200) : 1 - distance / range;
+      // Nuke gets a sustained map-wide shake — even far players should
+      // feel the bomb. A floor of 0.5 keeps the rumble visible past the
+      // standard proximity range so survivors at the edge of the map
+      // still get the moment.
+      const intensity = isNuke
+        ? Math.max(0.6, 3.0 * proximity)
+        : (0.26 + step.blastRadius * 0.05) * proximity;
+      const duration = isNuke ? 1.4 : 0.32;
+      addImpactCameraShake(intensity, duration);
     }, delay * 1000);
   }
 
