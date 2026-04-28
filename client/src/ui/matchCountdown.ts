@@ -75,9 +75,9 @@ export function setupMatchCountdown(): void {
     if (!active || !el) return;
     const remainingMs = endsAtMs - performance.now();
     if (remainingMs <= 0) {
-      // The server flips phase ~3 s after Countdown started; allow ~500 ms of
-      // "FIGHT!" overshoot in case the room_snapshot is briefly delayed.
-      if (remainingMs < -500) {
+      // Hold "FIGHT!" on screen long enough for both the pop animation and
+      // the spoken "Fight" announcer to land.
+      if (remainingMs < -800) {
         hideMatchCountdown();
         return;
       }
@@ -102,8 +102,11 @@ function renderText(text: string, cls: string): void {
   if (phrase) playSpeech(phrase);
 }
 
-/** Called on every room_snapshot. `endsInMs <= 0` means we're not in
- *  Countdown anymore and the overlay should hide. */
+/** Called on every room_snapshot. `endsInMs > 0` (re)arms the overlay; once
+ *  the deadline passes the tick loop renders "FIGHT!" for ~500 ms and then
+ *  hides itself. If the server flips phase out of Countdown before we ever
+ *  saw a positive endsInMs (e.g. mid-match join), `active` is still false
+ *  and there's nothing to do. */
 export function setMatchCountdown(endsInMs: number): void {
   if (endsInMs > 0) {
     endsAtMs = performance.now() + endsInMs;
@@ -112,9 +115,11 @@ export function setMatchCountdown(endsInMs: number): void {
       lastShown = null;
       el?.classList.add('visible');
     }
-  } else {
-    hideMatchCountdown();
   }
+  // Intentionally no else-branch: the tick loop will hide the overlay on its
+  // own once the FIGHT! overshoot window expires. Hiding eagerly here would
+  // suppress the FIGHT! frame because the server emits a room_snapshot with
+  // phase=InProgress at the exact instant the countdown reaches 0.
 }
 
 export function hideMatchCountdown(): void {
