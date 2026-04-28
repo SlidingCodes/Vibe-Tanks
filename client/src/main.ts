@@ -47,6 +47,7 @@ import { setupSettingsMenu } from './ui/settings';
 import { setupAudioToggle } from './ui/audioToggle';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
+import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
@@ -245,6 +246,7 @@ setupSettingsMenu();
 setupAudioToggle();
 setupFeed();
 setupMatchTimer();
+setupMatchCountdown();
 
 // Activate touch controls on touch devices or when forced via ?mobile=1.
 if (isMobileDevice()) {
@@ -288,6 +290,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
   setMatchTerrainPreset(snap.terrainPresetLabel);
   setMatchResetCountdown(snap.resetsInSeconds);
+  setMatchCountdown(snap.phase === MatchPhase.Countdown ? (snap.countdownEndsInMs ?? 0) : 0);
 
   if (snap.phase === MatchPhase.Leaderboard) {
     hud.showLeaderboard(snap.tanks, snap.resetsInSeconds);
@@ -1202,7 +1205,18 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const rawInput = { ...getMovementInput(), turbo: turboActive };
+    const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    const baseInput = getMovementInput();
+    // Match the server-side mask in tickMovement: during Countdown the tank
+    // can still yaw on the spot (left/right) and aim, but forward/backward
+    // and turbo are nullified so prediction stays aligned with the frozen
+    // server state — no ghost movement, no leftover treads.
+    const rawInput = {
+      ...baseInput,
+      forward: inCountdown ? false : baseInput.forward,
+      backward: inCountdown ? false : baseInput.backward,
+      turbo: inCountdown ? false : turboActive,
+    };
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1449,8 +1463,12 @@ function animate(): void {
 
     const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
     if (consumeClick()) {
-      const timeSinceFire = now - selLastFire;
-      if (timeSinceFire >= selectedWeapon.cooldown) {
+      // Suppress fire entirely during the start-of-match countdown so the
+      // input is consumed (no queued click leaking into the match start)
+      // but no animation, sound, or fire_request is produced.
+      if (inCountdown) {
+        // intentionally no-op
+      } else if (now - selLastFire >= selectedWeapon.cooldown) {
         // Ammo guard — the server re-checks, but rejecting client-side
         // keeps the player's "oh I'm out" feedback snappy (no dry-click
         // noise, no fake fire animation).
