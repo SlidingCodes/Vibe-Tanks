@@ -175,6 +175,7 @@ export interface WeaponBehaviorConfig {
   railTerrainDamage?: number;
   mortarShellCount?: number;
   mortarSpread?: number;
+  mortarInitialDelay?: number;
   mortarInterval?: number;
   mortarSpawnHeight?: number;
   mortarImpactRadius?: number;

@@ -1429,6 +1429,7 @@ export class Room {
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
     const spread = weapon.behaviorConfig?.mortarSpread ?? 5;
     const interval = weapon.behaviorConfig?.mortarInterval ?? 0.28;
+    const initialDelay = weapon.behaviorConfig?.mortarInitialDelay ?? 0.8;
     const spawnHeight = weapon.behaviorConfig?.mortarSpawnHeight ?? 20;
     const blastRadius = weapon.behaviorConfig?.mortarImpactRadius ?? weapon.blastRadius;
     const damage = weapon.behaviorConfig?.mortarImpactDamage ?? weapon.damage;
@@ -1443,7 +1444,7 @@ export class Room {
       position: center,
       radius: spread + blastRadius,
       armed: true,
-      timeRemaining: shellCount * interval + 1.1,
+      timeRemaining: initialDelay + shellCount * interval + 1.0,
       damage: 0,
       tickInterval: 0,
       tickTimer: 0,
@@ -1464,7 +1465,7 @@ export class Room {
         kind: 'mortar',
         ownerId: tank.playerId,
         weaponId: weapon.id,
-        triggerAt: this.simTime + 0.25 + i * interval,
+        triggerAt: this.simTime + initialDelay + i * interval,
         position,
         blastRadius,
         damage,
