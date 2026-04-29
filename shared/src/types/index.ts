@@ -93,6 +93,8 @@ export interface TankState {
   /** Current weapon loadout for this tank. Slot 0 is always the default
    *  infinite weapon. Consumable slots are removed when ammo hits 0. */
   inventory: WeaponInventorySlot[];
+  /** True when the tank is in the parachute drop intro sequence. */
+  parachute?: boolean;
 }
 
 // ── Weapons ──

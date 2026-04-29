@@ -833,8 +833,8 @@ export class Room {
     const usedFlags = Array.from(this.tanks.values()).map(t => t.flagId?.toLowerCase()).filter(Boolean);
     const countryCodes = Object.keys(countries).map(k => k.toLowerCase());
     const availableFlags = countryCodes.filter(f => !usedFlags.includes(f));
-    
-    const randomFlag = availableFlags.length > 0 
+
+    const randomFlag = availableFlags.length > 0
       ? availableFlags[Math.floor(Math.random() * availableFlags.length)]
       : countryCodes[Math.floor(Math.random() * countryCodes.length)];
 
@@ -1785,6 +1785,19 @@ export class Room {
 
       const buried = buriedIds.has(pid);
       if (!buried) this.physics.readbackTank(pid, tank);
+
+      if (this.phase === MatchPhase.Countdown) {
+        const remain = Math.max(0, this.countdownEndsAt - Date.now());
+        const fraction = remain / 6000; // MATCH_COUNTDOWN_MS is 4000
+        const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+        const targetY = groundY + 100 * fraction;
+        this.physics.resetTank(pid, { x: tank.position.x, y: targetY, z: tank.position.z }, tank.bodyRotation);
+        this.physics.readbackTank(pid, tank);
+        tank.parachute = true;
+      } else {
+        tank.parachute = false;
+      }
+
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
@@ -1797,6 +1810,7 @@ export class Room {
       // their body is pinned, so any airborne flag would trigger a ragdoll
       // render on the client that's not actually happening.
       tank.airborne = buried ? false : !this.physics.isGrounded(pid);
+
 
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.

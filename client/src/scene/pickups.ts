@@ -36,7 +36,7 @@ const REINFORCE_COLOR = 0x141310;
 let parachuteTextureCache: THREE.CanvasTexture | null = null;
 const stencilTextureCache = new Map<string, THREE.CanvasTexture>();
 
-function getParachuteTexture(): THREE.CanvasTexture {
+export function getParachuteTexture(): THREE.CanvasTexture {
   if (parachuteTextureCache) return parachuteTextureCache;
   // 8 alternating red/white wedges painted as vertical stripes — the
   // sphere's U coordinate wraps around the dome, so vertical canvas

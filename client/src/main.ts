@@ -698,6 +698,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
         predictedState.airborne = tankState.airborne;
+        predictedState.parachute = tankState.parachute;
         predictedState.linVel.x = tankState.linVel.x;
         predictedState.linVel.y = tankState.linVel.y;
         predictedState.linVel.z = tankState.linVel.z;
