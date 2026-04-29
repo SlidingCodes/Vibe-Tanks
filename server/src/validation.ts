@@ -35,6 +35,7 @@ export const JoinRoomSchema = z.object({
   playerName: z.string().min(1).max(32),
   color: hexColor.optional(),
   flagId: z.string().optional(),
+  parachuteId: z.string().optional(),
   mode: z.enum(['quick', 'create_private', 'join_private']).optional(),
   inviteCode: inviteCode.optional(),
   settings: RoomSettingsSchema.optional(),

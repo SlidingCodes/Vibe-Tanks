@@ -52,6 +52,7 @@ export interface TankState {
   deaths: number;
   color: string;
   flagId?: string;
+  parachuteId?: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the
    *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
@@ -493,6 +494,7 @@ export interface ClientEvents {
     playerName: string;
     color?: string;
     flagId?: string;
+    parachuteId?: string;
     /** Routing mode. Omitted = 'quick'. */
     mode?: JoinMode;
     /** Required when mode === 'join_private'. 4 letters from a no-confusables

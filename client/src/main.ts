@@ -282,6 +282,7 @@ const sendJoin = (): void => {
     playerName: login.name,
     color: login.color,
     flagId: login.flagId,
+    parachuteId: login.parachuteId,
     mode: login.mode,
     inviteCode: login.inviteCode,
     settings: login.settings,

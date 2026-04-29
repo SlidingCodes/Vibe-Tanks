@@ -433,6 +433,32 @@
       box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
     }
 
+    #parachute-swatches {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .parachute-swatch {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.08s;
+      background: repeating-linear-gradient(90deg, #f0f0f0 0px, #f0f0f0 6px, var(--p-color) 6px, var(--p-color) 12px);
+    }
+
+    .parachute-swatch:hover {
+      transform: scale(1.08);
+    }
+
+    .parachute-swatch.selected {
+      border-color: #d8b058;
+      box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
+    }
+
     #flag-swatches {
       display: grid;
       grid-template-columns: repeat(7, 1fr);
@@ -2366,6 +2392,8 @@
       <label>FLAG</label>
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
+      <label>PARACHUTE</label>
+      <div id="parachute-swatches"></div>
       <label for="invite-code-input">MATCH CODE</label>
       <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
         placeholder="optional — leave blank to quick-join" />

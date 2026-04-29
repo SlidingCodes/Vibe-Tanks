@@ -242,7 +242,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   // Parachute and Shrouds (hidden by default)
   const parachuteGeom = new THREE.SphereGeometry(2.5, 24, 10, 0, Math.PI * 2, 0, Math.PI * 0.45);
   const parachuteMat = new THREE.MeshStandardMaterial({
-    map: getParachuteTexture(),
+    map: getParachuteTexture(tank.parachuteId),
     roughness: 0.95,
     metalness: 0,
     side: THREE.DoubleSide,

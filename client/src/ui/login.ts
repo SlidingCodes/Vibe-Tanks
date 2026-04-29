@@ -13,6 +13,7 @@ import { WEAPONS } from '@shared/weapons';
 import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
+const PARACHUTE_PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4', '#222', '#fff'];
 
 /** Full-viewport login preview: bigger tank, camera pulled to the front-right
  *  so the tank sits on the left half of the screen, ground scrolling backward
@@ -252,6 +253,7 @@ export interface LoginResult {
   name: string;
   color: string;
   flagId: string;
+  parachuteId: string;
   mode: JoinMode;
   /** Set only when mode === 'join_private'. Always 4 uppercase chars. */
   inviteCode?: string;
@@ -268,6 +270,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
     const flagSwatches = document.getElementById('flag-swatches') as HTMLDivElement;
+    const parachuteSwatches = document.getElementById('parachute-swatches') as HTMLDivElement;
     const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
@@ -397,6 +400,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    let selectedParachute = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
     let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
     nameInput.value = pickRandomName();
     nameInput.placeholder = pickRandomName();
@@ -436,6 +440,22 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       });
       swatches.appendChild(el);
     });
+
+    if (parachuteSwatches) {
+      parachuteSwatches.innerHTML = '';
+      PARACHUTE_PALETTE.forEach((hex) => {
+        const el = document.createElement('div');
+        el.className = 'parachute-swatch';
+        el.style.setProperty('--p-color', hex);
+        if (hex === selectedParachute) el.classList.add('selected');
+        el.addEventListener('click', () => {
+          selectedParachute = hex;
+          parachuteSwatches.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
+          el.classList.add('selected');
+        });
+        parachuteSwatches.appendChild(el);
+      });
+    }
 
     flagSwatches.innerHTML = '';
     FLAGS.forEach((f) => {
@@ -508,7 +528,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected, flagId: selectedFlag, mode, inviteCode, settings });
+      resolve({ name, color: selected, flagId: selectedFlag, parachuteId: selectedParachute, mode, inviteCode, settings });
     };
     const onSubmitClick = (): void => done(false);
     const onCreateClick = (): void => done(true);

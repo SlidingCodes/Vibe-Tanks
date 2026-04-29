@@ -434,7 +434,7 @@ export class Room {
     this.beginCountdown();
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     // Count humans only — a room with 4 humans + 4 bots was hitting this
     // gate and refusing the 5th human even though ensureFourTanks would
     // immediately scrub the bots to free seats. The manager already
@@ -461,7 +461,7 @@ export class Room {
       inventory: createRandomLoadout(this.settings.weaponAllowed),
     });
 
-    this.spawnTank(playerId, playerName, color, flagId);
+    this.spawnTank(playerId, playerName, color, flagId, parachuteId);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
@@ -576,7 +576,7 @@ export class Room {
     this.physics.dispose();
   }
 
-  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     const pos = this.findSpawnPosition();
     let safeColor: string;
     if (isValidHex(color)) {
@@ -614,6 +614,7 @@ export class Room {
       shieldAvailable: true,
       shieldTimeRemaining: 0,
       flagId,
+      parachuteId,
       burning: false,
       // Shared reference with PlayerState — one mutation, both sides see it.
       inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
