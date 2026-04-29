@@ -24,6 +24,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   setColor: (hex: string) => void;
   setFlag: (id: string) => void;
   setParachute: (primary: string, secondary: string) => void;
+  setView: (mode: 'normal' | 'advanced') => void;
   stop: () => void;
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -45,20 +46,51 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   // the tank onto the left half so the side panel has room; on mobile
   // (<=720px, panel stacks at the bottom) the camera recenters horizontally
   // and tilts lower so the tank reads in the upper half of the viewport.
+  // In 'advanced' view the camera pulls back + up so the deployed parachute
+  // (suspended ~y=4.5) reads in frame alongside the tank.
   const camera = new THREE.PerspectiveCamera(38, 2, 0.1, 80);
+
+  let viewMode: 'normal' | 'advanced' = 'normal';
+  const camTargetPos = new THREE.Vector3();
+  const camTargetLook = new THREE.Vector3();
+  const camCurrentPos = new THREE.Vector3();
+  const camCurrentLook = new THREE.Vector3();
+  let camPrimed = false;
+
+  const refreshCamTargets = (): void => {
+    const w = window.innerWidth;
+    if (viewMode === 'advanced') {
+      if (w <= 720) {
+        camTargetPos.set(0, 5.0, 14.5);
+        camTargetLook.set(0, 2.6, 0);
+      } else {
+        camTargetPos.set(2.6, 4.4, 11.5);
+        camTargetLook.set(1, 2.2, 0);
+      }
+    } else {
+      if (w <= 720) {
+        camTargetPos.set(0, 2.6, 10);
+        camTargetLook.set(0, -1, 0);
+      } else {
+        camTargetPos.set(2.0, 1.7, 5.5);
+        camTargetLook.set(1, 0.7, 0);
+      }
+    }
+  };
 
   const resize = (): void => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    if (w <= 720) {
-      camera.position.set(0, 2.6, 10);
-      camera.lookAt(0, -1, 0);
-    } else {
-      camera.position.set(2.0, 1.7, 5.5);
-      camera.lookAt(1, 0.7, 0);
+    refreshCamTargets();
+    if (!camPrimed) {
+      camCurrentPos.copy(camTargetPos);
+      camCurrentLook.copy(camTargetLook);
+      camPrimed = true;
     }
+    camera.position.copy(camCurrentPos);
+    camera.lookAt(camCurrentLook);
     camera.updateProjectionMatrix();
   };
 
@@ -163,27 +195,57 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     group.add(currentFlag);
   };
 
-  // Folded parachute pack on the ground (soft and rounded fabric bundle)
-  const parachuteGeom = new THREE.SphereGeometry(0.6, 24, 16);
+  // Deployed parachute suspended above the tank (mirrors the in-game
+  // tank.ts geometry: 2.5-radius half-sphere at y=4.5, 4 shroud lines
+  // from hull corners to the skirt). Hidden by default — only revealed
+  // when the user opens the Advanced Customization panel and the
+  // camera pulls back to frame the canopy.
+  const parachuteGeom = new THREE.SphereGeometry(2.5, 24, 10, 0, Math.PI * 2, 0, Math.PI * 0.45);
   const parachuteMat = new THREE.MeshStandardMaterial({
     map: getParachuteTexture(),
-    roughness: 0.9,
-    metalness: 0.05,
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.95,
   });
   const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
-  // Position it on the ground and squash it to look folded/deflated
-  // y = 0.21 is the scaled radius (0.6 * 0.35), so it sits perfectly on the ground.
-  // x = 0, z = 1.9 puts it exactly in front of the tank (tank front is +Z)
-  parachuteMesh.position.set(0, 0.21, 1.9);
-  parachuteMesh.scale.set(1.0, 0.35, 0.8);
-  parachuteMesh.rotation.y = Math.PI / 6;
-  parachuteMesh.rotation.z = Math.PI / 16; // Slight tilt for natural look
-  parachuteMesh.castShadow = true;
+  parachuteMesh.position.y = 4.5;
+  parachuteMesh.visible = false;
   group.add(parachuteMesh);
+
+  const shroudPoints: number[] = [];
+  const hullCorners: Array<[number, number, number]> = [
+    [1.0, 0.8, 1.2],
+    [1.0, 0.8, -1.2],
+    [-1.0, 0.8, 1.2],
+    [-1.0, 0.8, -1.2],
+  ];
+  const paraAngles = [Math.PI * 0.25, -Math.PI * 0.25, Math.PI * 0.75, -Math.PI * 0.75];
+  for (let i = 0; i < hullCorners.length; i++) {
+    const [cx, cy, cz] = hullCorners[i];
+    const a = paraAngles[i];
+    const px = Math.cos(a) * 2.2;
+    const pz = Math.sin(a) * 2.2;
+    shroudPoints.push(cx, cy, cz, px, 4.35, pz);
+  }
+  const shroudGeom = new THREE.BufferGeometry();
+  shroudGeom.setAttribute('position', new THREE.Float32BufferAttribute(shroudPoints, 3));
+  const shroudMat = new THREE.LineBasicMaterial({ color: 0x242018, transparent: true, opacity: 0.85 });
+  const parachuteShrouds = new THREE.LineSegments(shroudGeom, shroudMat);
+  parachuteShrouds.visible = false;
+  group.add(parachuteShrouds);
 
   const setParachute = (primary: string, secondary: string) => {
     parachuteMat.map = getParachuteTexture(`${primary},${secondary}`);
     parachuteMat.needsUpdate = true;
+  };
+
+  const setView = (mode: 'normal' | 'advanced'): void => {
+    viewMode = mode;
+    parachuteMesh.visible = mode === 'advanced';
+    parachuteShrouds.visible = mode === 'advanced';
+    refreshCamTargets();
   };
 
   group.add(turretGroup);
@@ -244,6 +306,21 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     // Faint suspension wobble so the hull doesn't feel glued to the ground.
     group.position.y = Math.sin(t * 0.0035) * 0.015;
     group.rotation.x = Math.sin(t * 0.0022) * 0.006;
+    // Parachute canopy gently sways while shown (advanced view). Same
+    // amplitudes as the in-game tank parachute (tickTankEffects) so the
+    // preview reads identical to what the player will see in match.
+    if (parachuteMesh.visible) {
+      parachuteMesh.rotation.z = Math.sin(t * 0.0024) * 0.05;
+      parachuteMesh.rotation.x = Math.cos(t * 0.002) * 0.035;
+    }
+    // Smooth camera pull-back when the user opens / closes Advanced
+    // Customization. Exponential lerp toward target — 1 - exp(-k·dt)
+    // is dt-independent so the rate stays consistent across framerates.
+    const camLerp = 1 - Math.exp(-dt * 5.5);
+    camCurrentPos.lerp(camTargetPos, camLerp);
+    camCurrentLook.lerp(camTargetLook, camLerp);
+    camera.position.copy(camCurrentPos);
+    camera.lookAt(camCurrentLook);
     renderer.render(scene, camera);
     raf = requestAnimationFrame(loop);
   };
@@ -256,6 +333,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     },
     setFlag,
     setParachute,
+    setView,
     stop: () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
@@ -264,6 +342,10 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       treadAlbedo.dispose();
       treadNormal.dispose();
       treadRough.dispose();
+      shroudGeom.dispose();
+      shroudMat.dispose();
+      parachuteGeom.dispose();
+      parachuteMat.dispose();
       renderer.dispose();
     },
   };
@@ -305,6 +387,8 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const openCreateLink = document.getElementById('open-create-link') as HTMLButtonElement;
     const createBack = document.getElementById('create-back') as HTMLButtonElement;
     const createSubmit = document.getElementById('create-submit') as HTMLButtonElement;
+    const openAdvancedLink = document.getElementById('open-advanced-link') as HTMLButtonElement;
+    const advancedBack = document.getElementById('advanced-back') as HTMLButtonElement;
     const botsSlider = document.getElementById('settings-bots-slider') as HTMLInputElement;
     const botsValue = document.getElementById('settings-bots-value') as HTMLSpanElement;
     const weaponsGrid = document.getElementById('settings-weapons') as HTMLDivElement;
@@ -312,6 +396,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
 
     overlay.style.display = '';
     overlay.classList.remove('creating');
+    overlay.classList.remove('advanced-open');
     if (initialError) {
       errorBox.textContent = initialError;
       errorBox.style.display = 'block';
@@ -436,15 +521,10 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       botsValue.textContent = botsSlider.value;
     });
 
-    // The create panel is folded inside the overlay and slides into view
-    // only when the user opts in. Until then there's a single login
-    // panel — quick-join is the default-zero-friction path.
-    const setCreating = (on: boolean): void => {
-      overlay.classList.toggle('creating', on);
-      errorBox.style.display = 'none';
-    };
-    openCreateLink.addEventListener('click', () => setCreating(true));
-    createBack.addEventListener('click', () => setCreating(false));
+    // The create + advanced panel listeners are wired after the preview
+    // is initialised below — both are mutually exclusive (opening one
+    // closes the other) since they share the slot to the left of the
+    // main login panel.
 
     // Force uppercase + strip non-alphabet chars as the user types and
     // refresh the JOIN button label after every keystroke.
@@ -453,6 +533,12 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       refreshJoinLabel();
     };
     inviteInput.addEventListener('input', onCodeInput);
+
+    // Preview is initialised below after IP detection; declared here so
+    // the setAdvanced closure above can call setView once it's ready.
+    // Annotated explicitly because TypeScript otherwise widens it to the
+    // assignment site's full return type at every closure reference.
+    let preview: ReturnType<typeof createTankPreview> | null = null;
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
@@ -501,10 +587,37 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       }
     }
 
-    const preview = createTankPreview(previewCanvas);
+    preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
     preview.setFlag(selectedFlag);
     preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
+
+    // Wire the side-panel toggles now that `preview` is non-null. Quick-
+    // join is the default-zero-friction path; create + advanced panels
+    // open into the slot to the left of the main panel and are mutually
+    // exclusive — opening one closes the other.
+    const setCreating = (on: boolean): void => {
+      overlay.classList.toggle('creating', on);
+      if (on) {
+        overlay.classList.remove('advanced-open');
+        // If the user jumped from Advanced → Create without going Back,
+        // collapse the camera back to the tight framing too.
+        preview!.setView('normal');
+      }
+      errorBox.style.display = 'none';
+    };
+    const setAdvanced = (on: boolean): void => {
+      overlay.classList.toggle('advanced-open', on);
+      if (on) overlay.classList.remove('creating');
+      errorBox.style.display = 'none';
+      // Pull camera back + reveal the deployed parachute on advanced;
+      // collapse to the tight no-parachute framing when going Back.
+      preview!.setView(on ? 'advanced' : 'normal');
+    };
+    openCreateLink.addEventListener('click', () => setCreating(true));
+    createBack.addEventListener('click', () => setCreating(false));
+    openAdvancedLink.addEventListener('click', () => setAdvanced(true));
+    advancedBack.addEventListener('click', () => setAdvanced(false));
 
     swatches.innerHTML = '';
     PALETTE.forEach((hex) => {
@@ -516,7 +629,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         selected = hex;
         swatches.querySelectorAll('.color-swatch').forEach((e) => e.classList.remove('selected'));
         el.classList.add('selected');
-        preview.setColor(hex);
+        preview!.setColor(hex);
       });
       swatches.appendChild(el);
     });
@@ -532,7 +645,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           selectedParachutePrimary = hex;
           parachuteSwatches.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
           el.classList.add('selected');
-          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
+          preview!.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
         });
         parachuteSwatches.appendChild(el);
       });
@@ -550,7 +663,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           selectedParachuteSecondary = hex;
           parachuteSwatchesSecondary.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
           el.classList.add('selected');
-          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
+          preview!.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
         });
         parachuteSwatchesSecondary.appendChild(el);
       });
@@ -570,7 +683,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         selectedFlag = f.id;
         flagSwatches.querySelectorAll('.flag-swatch').forEach((e) => e.classList.remove('selected'));
         el.classList.add('selected');
-        preview.setFlag(f.id);
+        preview!.setFlag(f.id);
       });
       flagSwatches.appendChild(el);
     });
@@ -633,7 +746,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       inviteInput.removeEventListener('keydown', onKey);
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
-      preview.stop();
+      preview?.stop();
 
       const prefs = {
         name: nameInput.value.trim(),

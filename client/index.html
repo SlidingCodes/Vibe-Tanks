@@ -552,7 +552,8 @@
     }
 
     /* Subtle text-link affordance to open the create-private side panel. */
-    #open-create-link {
+    #open-create-link,
+    #open-advanced-link {
       display: block;
       width: 100%;
       margin-top: 12px;
@@ -567,7 +568,12 @@
       text-transform: uppercase;
     }
 
-    #open-create-link:hover {
+    #open-advanced-link {
+      margin-top: 8px;
+    }
+
+    #open-create-link:hover,
+    #open-advanced-link:hover {
       color: #e8d8a0;
     }
 
@@ -658,6 +664,92 @@
 
     #create-submit:hover {
       background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
+    }
+
+    /* Advanced customization panel — flag picker + parachute palette. Lives
+       to the LEFT of the main login panel, mirrors the create panel slot
+       (mutually exclusive with create — opening either closes the other). */
+    #login-advanced-panel {
+      position: absolute;
+      right: 414px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(20, 22, 16, 0.78);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 24px 28px;
+      border-radius: 3px;
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      width: 280px;
+      z-index: 2;
+      display: none;
+    }
+
+    #login-overlay.advanced-open #login-advanced-panel {
+      display: block;
+    }
+
+    #login-advanced-panel h3 {
+      margin: 0 0 16px;
+      font-size: 13px;
+      letter-spacing: 4px;
+      color: #d8b058;
+      text-align: center;
+      font-weight: bold;
+    }
+
+    #login-advanced-panel label {
+      font-size: 12px;
+      opacity: 0.85;
+      display: block;
+      margin: 14px 0 4px;
+      letter-spacing: 2px;
+      color: #c0b890;
+    }
+
+    #login-advanced-panel label:first-of-type {
+      margin-top: 0;
+    }
+
+    #login-advanced-panel input[type=text] {
+      width: 100%;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      background: rgba(8, 10, 6, 0.85);
+      border: 1px solid rgba(120, 130, 100, 0.45);
+      border-radius: 2px;
+      color: #e8e0c8;
+      outline: none;
+    }
+
+    #login-advanced-panel input[type=text]:focus {
+      border-color: rgba(216, 176, 88, 0.75);
+    }
+
+    #advanced-actions {
+      margin-top: 16px;
+    }
+
+    #advanced-actions button {
+      width: 100%;
+      padding: 11px 0;
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 2px;
+      font-weight: bold;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+    }
+
+    #advanced-actions button:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
     }
 
     /* Per-room settings — sliders + weapon toggles. */
@@ -906,16 +998,18 @@
         padding: 10px;
       }
 
-      /* Mobile create flow: both panels stacked + overlay scrolls. The
-         pilot panel un-anchors from the bottom so the create panel can
-         sit above it inside the scroll container. */
-      #login-overlay.creating {
+      /* Mobile create / advanced flows: both panels stacked + overlay
+         scrolls. The pilot panel un-anchors from the bottom so the
+         secondary panel can sit above it inside the scroll container. */
+      #login-overlay.creating,
+      #login-overlay.advanced-open {
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         padding: 60px 0 12px;
       }
 
-      #login-overlay.creating #login-panel {
+      #login-overlay.creating #login-panel,
+      #login-overlay.advanced-open #login-panel {
         position: relative;
         right: auto;
         left: auto;
@@ -923,7 +1017,8 @@
         margin: 0 12px;
       }
 
-      #login-create-panel {
+      #login-create-panel,
+      #login-advanced-panel {
         right: auto;
         left: auto;
         transform: none;
@@ -2424,6 +2519,16 @@
       <input id="login-name" type="text" maxlength="16" autocomplete="off" />
       <label>COLOR</label>
       <div id="color-swatches"></div>
+      <label for="invite-code-input">MATCH CODE</label>
+      <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
+        placeholder="optional — leave blank to quick-join" />
+      <div id="login-error" style="display:none"></div>
+      <button id="login-submit">QUICK JOIN</button>
+      <button id="open-advanced-link" type="button">advanced customization &rarr;</button>
+      <button id="open-create-link" type="button">or create a private match &rarr;</button>
+    </div>
+    <div id="login-advanced-panel">
+      <h3>CUSTOMIZATION</h3>
       <label>FLAG</label>
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
@@ -2431,12 +2536,9 @@
       <div id="parachute-swatches"></div>
       <label>PARACHUTE SECONDARY</label>
       <div id="parachute-swatches-secondary"></div>
-      <label for="invite-code-input">MATCH CODE</label>
-      <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
-        placeholder="optional — leave blank to quick-join" />
-      <div id="login-error" style="display:none"></div>
-      <button id="login-submit">QUICK JOIN</button>
-      <button id="open-create-link" type="button">or create a private match &rarr;</button>
+      <div id="advanced-actions">
+        <button id="advanced-back" type="button">Back</button>
+      </div>
     </div>
     <div id="login-create-panel">
       <h3>PRIVATE ROOM</h3>
