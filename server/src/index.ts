@@ -89,7 +89,7 @@ async function main(): Promise<void> {
           return;
         }
       }
-      room.addPlayer(socket, data.playerName, data.color, data.flagId);
+      room.addPlayer(socket, data.playerName, data.color, data.flagId, data.parachuteId);
       console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id} (mode=${mode})`);
     });
 

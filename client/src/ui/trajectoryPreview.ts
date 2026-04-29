@@ -86,12 +86,48 @@ function createReticle(): Reticle {
   return { group, ringMat, accentMat };
 }
 
-function placeReticle(r: Reticle, x: number, y: number, z: number, scale: number, ringHex: number, accentHex: number): void {
-  r.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+function placeReticle(r: Reticle, x: number, y: number, z: number, scale: number, ringHex: number, accentHex: number, tilt: boolean = true): void {
+  applyMarkerPose(r.group, x, y, z, tilt);
   r.group.scale.setScalar(scale);
   r.ringMat.color.setHex(ringHex);
   r.accentMat.color.setHex(accentHex);
   r.group.visible = true;
+}
+
+const _normalScratch = new THREE.Vector3();
+const _upScratch = new THREE.Vector3(0, 1, 0);
+const _quatScratch = new THREE.Quaternion();
+/** Sample the terrain normal at (x, z) via central-difference height
+ *  finite differences and align `group`'s local +Y axis to it. Lift is
+ *  applied along the normal so the marker stays a constant 0.2 m clear
+ *  of the surface regardless of slope. When `tilt` is false (hitscan
+ *  rail / minigun) we keep the legacy flat-on-XZ pose: those weapons
+ *  fire horizontally, the reticle reads as a target plate facing the
+ *  shooter, and a tilted ring just makes the hit-spot harder to parse. */
+function applyMarkerPose(group: THREE.Object3D, x: number, y: number, z: number, tilt: boolean): void {
+  if (!tilt) {
+    group.position.set(x, y + MARKER_GROUND_LIFT, z);
+    group.quaternion.identity();
+    return;
+  }
+  // Central difference on the voxel surface. Step matches the cell size
+  // (default 1 m) so we capture the slope of the same terrain triangle
+  // the marker sits on, not a sub-cell artefact.
+  const step = Math.max(0.5, getTerrainCellSize());
+  const hL = getTerrainHeight(x - step, z);
+  const hR = getTerrainHeight(x + step, z);
+  const hB = getTerrainHeight(x, z - step);
+  const hF = getTerrainHeight(x, z + step);
+  // Heightmap normal: (-dh/dx, 1, -dh/dz). Avoid normalizing a zero on
+  // perfectly-flat terrain — falls back to (0,1,0).
+  _normalScratch.set((hL - hR) / (2 * step), 1, (hB - hF) / (2 * step)).normalize();
+  group.position.set(
+    x + _normalScratch.x * MARKER_GROUND_LIFT,
+    y + _normalScratch.y * MARKER_GROUND_LIFT,
+    z + _normalScratch.z * MARKER_GROUND_LIFT,
+  );
+  _quatScratch.setFromUnitVectors(_upScratch, _normalScratch);
+  group.quaternion.copy(_quatScratch);
 }
 
 function hideAuxReticles(): void {
@@ -133,8 +169,8 @@ function init(scene: THREE.Scene): void {
   initialized = true;
 }
 
-function placeMarker(x: number, y: number, z: number): void {
-  marker.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+function placeMarker(x: number, y: number, z: number, tilt: boolean = true): void {
+  applyMarkerPose(marker.group, x, y, z, tilt);
 }
 
 function setMarkerColor(ringHex: number, accentHex: number): void {
@@ -440,6 +476,25 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'nuke') {
+    // Nuke is paint-the-target: the reticle sits on the mouse-raycast
+    // ground point (same source the server uses for the strike anchor),
+    // not on a ballistic arc. A faint vertical "drop line" from the
+    // configured fall altitude down to the ground hint at the trajectory.
+    parentMat.color.setHex(0xfff0b8);
+    const fallHeight = weapon.behaviorConfig?.nukeFallHeight ?? 80;
+    const target = aimTarget
+      ? { x: aimTarget.x, y: getTerrainHeight(aimTarget.x, aimTarget.z), z: aimTarget.z }
+      : { x: startPos.x, y: getTerrainHeight(startPos.x, startPos.z), z: startPos.z };
+    const top = { x: target.x, y: target.y + fallHeight, z: target.z };
+    placePoints(parentDots, makeLinePoints(top, target, 28));
+    placeMarker(target.x, target.y, target.z);
+    marker.group.scale.setScalar(Math.max(2.2, weapon.blastRadius * 0.3));
+    setMarkerColor(0xffd060, 0xffe8a0);
+    marker.group.visible = true;
+    return;
+  }
+
   if (weapon.behavior === 'mortar') {
     parentMat.color.setHex(0xc8a068);
     const impact = aimTarget
@@ -463,9 +518,87 @@ export function updateTrajectoryPreview(
           z: startPos.z + dir.z * (weapon.behaviorConfig?.railRange ?? 50),
         };
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
-    placeMarker(end.x, end.y, end.z);
+    // Hitscan: the player aims along a horizontal line, so a tilted
+    // reticle slanted with the ground would read as random clutter.
+    // Keep the legacy flat pose.
+    placeMarker(end.x, end.y, end.z, false);
     marker.group.scale.setScalar(0.45);
     setMarkerColor(0xc8e4ec, 0xe8f4f8);
+    marker.group.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'minigun') {
+    // Hitscan, like rail. The reticle lands on the cursor (aimTarget) so
+    // the player can read where the next round will go, not on a fixed
+    // max-range projection. Falls back to a forward projection if the
+    // raycast missed terrain entirely (mouse over the sky).
+    parentMat.color.setHex(0xffd060);
+    const range = weapon.behaviorConfig?.minigunRange ?? 55;
+    let end: Vec3;
+    if (aimTarget) {
+      end = { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z };
+    } else {
+      const dir = normalize(startVel);
+      end = {
+        x: startPos.x + dir.x * range,
+        y: startPos.y + dir.y * range,
+        z: startPos.z + dir.z * range,
+      };
+    }
+    placePoints(parentDots, makeLinePoints(startPos, end, 18));
+    // Hitscan: see the rail branch above — flat pose, no terrain tilt.
+    placeMarker(end.x, end.y, end.z, false);
+    marker.group.scale.setScalar(0.55);
+    setMarkerColor(0xffd060, 0xfff0a0);
+    marker.group.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'predator') {
+    // Steerable cruise missile: launches at a fixed 45° elevation along
+    // the muzzle direction, then the player steers with WASD. Preview
+    // mirrors the server's straight-line tick (no gravity, constant
+    // speed) and clips at the first terrain hit — otherwise a muzzle
+    // pointing into a small hill draws a clean preview line through
+    // the rock, and the actual missile detonates at frame 0.
+    parentMat.color.setHex(0xc8a878);
+    const dir = normalize(startVel);
+    const speed = Math.hypot(startVel.x, startVel.y, startVel.z) || 22;
+    const previewRange = 22;
+    // Step in the same fixed dt the server uses; if the line punches
+    // through the surface before reaching the nominal range, end there
+    // and place the marker on the actual impact point.
+    const dt = SIM_DT;
+    const stepX = dir.x * speed * dt;
+    const stepY = dir.y * speed * dt;
+    const stepZ = dir.z * speed * dt;
+    const maxTicks = Math.ceil(previewRange / (speed * dt));
+    const samples: Vec3[] = [{ x: startPos.x, y: startPos.y, z: startPos.z }];
+    let endX = startPos.x;
+    let endY = startPos.y;
+    let endZ = startPos.z;
+    for (let i = 1; i <= maxTicks; i++) {
+      const px = startPos.x + stepX * i;
+      const py = startPos.y + stepY * i;
+      const pz = startPos.z + stepZ * i;
+      const terrainH = getTerrainHeight(px, pz);
+      if (py <= terrainH) {
+        endX = px; endY = terrainH; endZ = pz;
+        samples.push({ x: endX, y: endY, z: endZ });
+        break;
+      }
+      endX = px; endY = py; endZ = pz;
+      // Sub-sample dot density to ~14 dots over the line length —
+      // independent of the maxTicks count, which scales with speed.
+      if (i % Math.max(1, Math.floor(maxTicks / 14)) === 0) {
+        samples.push({ x: px, y: py, z: pz });
+      }
+    }
+    placePoints(parentDots, samples);
+    placeMarker(endX, endY, endZ);
+    marker.group.scale.setScalar(0.4);
+    setMarkerColor(0xc8a878, 0xe8c898);
     marker.group.visible = true;
     return;
   }
@@ -541,6 +674,15 @@ export function updateTrajectoryPreview(
     marker.group.scale.setScalar(Math.max(0.9, rampR * 0.16));
     setMarkerColor(0xa8763a, 0xc89254);
     marker.group.visible = true;
+    return;
+  }
+
+  if (weapon.behavior === 'soldiers') {
+    // Soldiers fire individually after deploy — there's no shell trajectory
+    // to preview, and a marker at the muzzle position would just obscure
+    // the player's own tank. Hide every dot/marker until the next
+    // weapon swap. Aim is still sent to the server so the deploy ring
+    // orientation tracks the cursor.
     return;
   }
 

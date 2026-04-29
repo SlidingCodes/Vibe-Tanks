@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="slBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a7a58"/>
+      <stop offset="1" stop-color="#3a3a24"/>
+    </linearGradient>
+  </defs>
+  <g stroke="#1a1814" stroke-width="1.4" stroke-linejoin="round">
+    <!-- Three-soldier squad silhouette -->
+    <!-- Left soldier -->
+    <rect x="8" y="30" width="10" height="14" fill="url(#slBody)"/>
+    <rect x="9" y="22" width="8" height="8" fill="#d6b78c"/>
+    <rect x="8" y="20" width="10" height="4" fill="#5a5e44"/>
+    <rect x="6" y="44" width="4" height="10" fill="#3a3a2a"/>
+    <rect x="14" y="44" width="4" height="10" fill="#3a3a2a"/>
+    <rect x="3" y="34" width="10" height="2" fill="#1a1814"/>
+    <!-- Centre soldier (bigger, foreground) -->
+    <rect x="24" y="26" width="14" height="20" fill="url(#slBody)"/>
+    <rect x="26" y="14" width="10" height="10" fill="#d6b78c"/>
+    <rect x="25" y="11" width="12" height="5" fill="#5a5e44"/>
+    <rect x="22" y="46" width="5" height="14" fill="#3a3a2a"/>
+    <rect x="33" y="46" width="5" height="14" fill="#3a3a2a"/>
+    <rect x="18" y="32" width="14" height="2.5" fill="#1a1814"/>
+    <!-- Right soldier -->
+    <rect x="44" y="30" width="10" height="14" fill="url(#slBody)"/>
+    <rect x="45" y="22" width="8" height="8" fill="#d6b78c"/>
+    <rect x="44" y="20" width="10" height="4" fill="#5a5e44"/>
+    <rect x="42" y="44" width="4" height="10" fill="#3a3a2a"/>
+    <rect x="50" y="44" width="4" height="10" fill="#3a3a2a"/>
+    <rect x="50" y="34" width="10" height="2" fill="#1a1814"/>
+  </g>
+  <!-- Brass accents on rifles -->
+  <g fill="#c89638">
+    <rect x="11" y="33" width="2" height="1"/>
+    <rect x="24" y="31" width="2" height="1.5"/>
+    <rect x="51" y="33" width="2" height="1"/>
+  </g>
+</svg>

@@ -78,11 +78,21 @@ interface ImpactSpec {
    *  here. That tank receives bonus damage and a guaranteed-airborne
    *  impulse regardless of distance. */
   directHitTankId?: PlayerId | null;
+  /** Optional inner radius where damage stays flat at the full `damage`
+   *  value before the quadratic falloff kicks in. Models a "crater zone":
+   *  inside → certain death, outside → fading splash. Default undefined
+   *  → falloff starts at the impact point (every legacy weapon's
+   *  behaviour). */
+  flatCoreRadius?: number;
+  /** Multiplier on the kinetic impulse applied to victims. 1 = the
+   *  default damage-derived push, larger values yeet survivors clear of
+   *  the blast (used by the nuke for spectacle). */
+  impulseScale?: number;
 }
 
-export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3 }>;
+export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3; shielded?: boolean }>;
 
-function makeDamageEntry(): { damage: number; killed: boolean; impulse: Vec3 } {
+function makeDamageEntry(): { damage: number; killed: boolean; impulse: Vec3; shielded?: boolean } {
   return { damage: 0, killed: false, impulse: { x: 0, y: 0, z: 0 } };
 }
 
@@ -174,7 +184,7 @@ export function createShotResult(
   const impulses: ShotResult['impulses'] = [];
   const damageDealt: ShotResult['damageDealt'] = [];
   for (const [playerId, value] of damageTotals) {
-    damageDealt.push({ playerId, damage: value.damage, killed: value.killed });
+    damageDealt.push({ playerId, damage: value.damage, killed: value.killed, shielded: value.shielded });
     const impLenSq = value.impulse.x ** 2 + value.impulse.y ** 2 + value.impulse.z ** 2;
     if (impLenSq > 1e-4) impulses.push({ playerId, impulse: value.impulse });
   }
@@ -186,7 +196,10 @@ export function createShotResult(
 function finalizeDamageTotals(allTanks: TankState[], damageTotals: DamageTotals): void {
   for (const [playerId, totals] of damageTotals) {
     const victim = allTanks.find((tank) => tank.playerId === playerId);
-    if (victim && totals.damage >= victim.hp) totals.killed = true;
+    if (victim) {
+      if (victim.shieldActive) totals.shielded = true;
+      if (totals.damage >= victim.hp) totals.killed = true;
+    }
   }
 }
 
@@ -347,7 +360,7 @@ export function applyImpact(
   allTanks: TankState[],
   damageTotals: DamageTotals,
 ): boolean {
-  const impulseMagnitude = impact.damage * IMPULSE_PER_DAMAGE;
+  const impulseMagnitude = impact.damage * IMPULSE_PER_DAMAGE * (impact.impulseScale ?? 1);
   if (impact.damage > 0) {
     for (const tank of allTanks) {
       if (!tank.alive) continue;
@@ -361,8 +374,23 @@ export function applyImpact(
       if (isDirect || dist < impact.blastRadius) {
         const entry = damageTotals.get(tank.playerId) ?? makeDamageEntry();
 
-        const t = dist / Math.max(impact.blastRadius, 0.001);
-        const falloff = isDirect ? 1 : 1 - t * t;
+        // Falloff curve. With a flatCoreRadius, damage stays at full
+        // strength inside the crater and tapers quadratically from
+        // there out to blastRadius. Without it, the legacy radial
+        // taper from the impact point applies.
+        let falloff: number;
+        if (isDirect) {
+          falloff = 1;
+        } else if (impact.flatCoreRadius && dist <= impact.flatCoreRadius) {
+          falloff = 1;
+        } else if (impact.flatCoreRadius) {
+          const span = Math.max(0.001, impact.blastRadius - impact.flatCoreRadius);
+          const t = (dist - impact.flatCoreRadius) / span;
+          falloff = Math.max(0, 1 - t * t);
+        } else {
+          const t = dist / Math.max(impact.blastRadius, 0.001);
+          falloff = 1 - t * t;
+        }
         const dmgScalar = isDirect ? DIRECT_HIT_DAMAGE_MULTIPLIER : 1;
         const dmg = Math.round(impact.damage * falloff * dmgScalar);
         if (dmg > 0) entry.damage += dmg;
@@ -585,6 +613,37 @@ function simulateSplitShot(
   return createPredictedShotResult(shooter.playerId, weapon.id, steps, damageTotals, allTanks);
 }
 
+/** Range (m) within which the bouncer's bounce snaps its outgoing XZ
+ *  direction onto the nearest enemy. Outside this radius the geometric
+ *  reflection is preserved, so a long-range bounce off a wall behaves
+ *  predictably when no target is around. */
+const BOUNCER_RETARGET_RADIUS = 30;
+/** Range (m) within which the drill steers underground toward the
+ *  nearest enemy on entry. Mirrors BOUNCER_RETARGET_RADIUS. */
+const DRILL_RETARGET_RADIUS = 30;
+
+function findNearestEnemy(
+  shooterId: string,
+  fromXZ: { x: number; z: number },
+  allTanks: TankState[],
+  maxRadius: number,
+): TankState | null {
+  let best: TankState | null = null;
+  let bestDist2 = maxRadius * maxRadius;
+  for (const tank of allTanks) {
+    if (tank.playerId === shooterId) continue;
+    if (!tank.alive) continue;
+    const dx = tank.position.x - fromXZ.x;
+    const dz = tank.position.z - fromXZ.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      best = tank;
+    }
+  }
+  return best;
+}
+
 function simulateBounceShot(
   shooter: TankState,
   weapon: WeaponDefinition,
@@ -610,7 +669,26 @@ function simulateBounceShot(
 
   const impactNormal = terrain.getSurfaceNormal(firstSegment.endPoint.x, firstSegment.endPoint.z);
   const damping = weapon.behaviorConfig?.bounceDamping ?? 0.72;
-  const bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
+  let bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
+  // Smart bounce: snap the outgoing XZ direction to the nearest enemy if any
+  // is within range. Preserves the magnitude of the geometric bounce, the
+  // Y component (so the shell still arcs up and back down), and damping —
+  // only the horizontal heading is rewritten so the second segment steers
+  // toward a target instead of off a useless wall.
+  const target = findNearestEnemy(shooter.playerId, firstSegment.endPoint, allTanks, BOUNCER_RETARGET_RADIUS);
+  if (target) {
+    const tx = target.position.x - firstSegment.endPoint.x;
+    const tz = target.position.z - firstSegment.endPoint.z;
+    const horizLen = Math.sqrt(tx * tx + tz * tz);
+    if (horizLen > 1e-3) {
+      const horizSpeed = Math.sqrt(bouncedVelocity.x * bouncedVelocity.x + bouncedVelocity.z * bouncedVelocity.z);
+      bouncedVelocity = {
+        x: (tx / horizLen) * horizSpeed,
+        y: bouncedVelocity.y,
+        z: (tz / horizLen) * horizSpeed,
+      };
+    }
+  }
   const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
   const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain, { hitCandidates: candidates });
   const carveTerrain = applySegmentImpact(
@@ -824,10 +902,44 @@ function simulateRailShot(
   ], damageTotals, allTanks);
 }
 
+function simulateMinigunShot(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  terrain: SimulationTerrain,
+  allTanks: TankState[],
+): ShotResult {
+  // Minigun is hitscan with a short trail, identical to a thinned-out
+  // rail beam. Range / hit radius come from behaviorConfig; per-shot
+  // damage is small (the punishing total comes from sustained fire).
+  // No terrain carving — bullet ground impacts only spawn a tracer.
+  const maxRange = weapon.behaviorConfig?.minigunRange ?? 55;
+  const beamRadius = weapon.behaviorConfig?.minigunRadius ?? 0.7;
+  const railHit = resolveRailEndpoint(
+    shooter,
+    maxRange,
+    beamRadius,
+    (x, z) => terrain.getHeight(x, z),
+    allTanks,
+  );
+  const hitTank = railHit.hitTankId
+    ? allTanks.find((tank) => tank.playerId === railHit.hitTankId) ?? null
+    : null;
+
+  const damageTotals: DamageTotals = new Map();
+  if (hitTank) {
+    applyDirectHit(hitTank, weapon.damage, damageTotals);
+  }
+
+  return createPredictedShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, [railHit.startPos, railHit.hitPoint], railHit.hitPoint, 'beam', false, beamRadius, 'minigun_tracer'),
+  ], damageTotals, allTanks);
+}
+
 export function planDrillShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
+  allTanks: TankState[] = [],
 ): DrillPlan {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
@@ -843,7 +955,18 @@ export function planDrillShot(
     y: 0,
     z: Math.cos(shooter.turretRotation),
   };
-  const direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+  let direction = (Math.abs(horizontal.x) + Math.abs(horizontal.z)) > 0.001 ? horizontal : fallback;
+  // Smart underground steering: when entering the ground, redirect the burrow
+  // toward the nearest enemy (XZ only) so the eruption surfaces under them
+  // instead of along the inertial heading. Falls back to the geometric
+  // direction if no enemy is in range.
+  const target = findNearestEnemy(shooter.playerId, segment.endPoint, allTanks, DRILL_RETARGET_RADIUS);
+  if (target) {
+    const tx = target.position.x - segment.endPoint.x;
+    const tz = target.position.z - segment.endPoint.z;
+    const horizLen = Math.sqrt(tx * tx + tz * tz);
+    if (horizLen > 1e-3) direction = { x: tx / horizLen, y: 0, z: tz / horizLen };
+  }
   const drillDistance = weapon.behaviorConfig?.drillDistance ?? 5;
   const eruptionXZ = {
     x: segment.endPoint.x + direction.x * drillDistance,
@@ -897,6 +1020,8 @@ export function simulateShot(
       return simulateBounceShot(shooter, weapon, terrain, allTanks);
     case 'rail':
       return simulateRailShot(shooter, weapon, terrain, allTanks);
+    case 'minigun':
+      return simulateMinigunShot(shooter, weapon, terrain, allTanks);
     case 'digger':
       return simulateDiggerShot(shooter, weapon, terrain, allTanks);
     case 'wall':

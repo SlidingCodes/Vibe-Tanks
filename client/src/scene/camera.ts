@@ -289,6 +289,83 @@ let spectateInitialized = false;
 const spectateSmoothedPos = new THREE.Vector3();
 let spectateSmoothedBoom = 0;
 
+// Predator missile chase camera state. Dedicated smoothing so swapping in
+// and out of pilot mode doesn't snap the third-person follow.
+let missileFollowInitialized = false;
+const missileFollowPos = new THREE.Vector3();
+const missileFollowDir = new THREE.Vector3();
+
+/** Reset the missile-chase smoothing state so the next followMissile()
+ *  snaps to the launch position without easing in from wherever the
+ *  follow camera was a frame ago. */
+export function beginFollowMissile(): void {
+  missileFollowInitialized = false;
+}
+
+/** Chase camera for the steerable Predator missile. Eye sits behind and
+ *  slightly above the warhead, looking along its velocity vector. We
+ *  smooth the *direction* the camera is offset by (rather than yawing it
+ *  hard each tick) so a sharp WASD twitch reads as a confident chase
+ *  swerve instead of a snap. The look target is the missile itself, not
+ *  a forward-projected point — at 22 m/s with a 12 m back-offset that
+ *  already centres the warhead in the lower third of the screen. */
+export function followMissile(
+  missilePos: THREE.Vector3,
+  velocity: { x: number; y: number; z: number },
+  dt: number,
+): void {
+  const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+  // Velocity can briefly drop to zero on the first frame (server hasn't
+  // ticked yet). Fall back to the previous smoothed direction or +Z so
+  // the camera doesn't jump to the origin.
+  const fallbackDir = missileFollowInitialized ? missileFollowDir : new THREE.Vector3(0, 0, 1);
+  const dir = speed > 0.01
+    ? new THREE.Vector3(velocity.x / speed, velocity.y / speed, velocity.z / speed)
+    : fallbackDir.clone();
+
+  if (!missileFollowInitialized) {
+    missileFollowDir.copy(dir);
+    // Seed the camera position from the back offset so frame 0 reads as
+    // a chase camera, not a teleport.
+    const seed = missilePos.clone().sub(dir.clone().multiplyScalar(11)).add(new THREE.Vector3(0, 3, 0));
+    missileFollowPos.copy(seed);
+    missileFollowInitialized = true;
+  }
+
+  // Exponentially smooth the chase direction so the camera doesn't whip
+  // around when the player twitches yaw. ~6 Hz response.
+  const dirBlend = 1 - Math.exp(-6 * dt);
+  missileFollowDir.lerp(dir, dirBlend).normalize();
+
+  // Target eye position: behind the missile along the smoothed direction
+  // plus a small lift so the warhead doesn't occlude the impact area.
+  const back = 11;
+  const lift = 3;
+  const desired = missilePos.clone()
+    .sub(missileFollowDir.clone().multiplyScalar(back))
+    .add(new THREE.Vector3(0, lift, 0));
+
+  // Floor: don't dip the camera below local terrain, otherwise a
+  // dive-bomb attack puts the eye underground for the last half-second.
+  const floor = getTerrainHeight(desired.x, desired.z) + 1.0;
+  if (desired.y < floor) desired.y = floor;
+
+  const eyeBlend = 1 - Math.exp(-9 * dt);
+  missileFollowPos.lerp(desired, eyeBlend);
+  camera.position.copy(missileFollowPos);
+
+  const shakeOffset = new THREE.Vector3();
+  const lookShakeOffset = new THREE.Vector3();
+  computeShake(dt, shakeOffset, lookShakeOffset);
+  camera.position.add(shakeOffset);
+
+  // Look slightly past the missile so the impact point reads in the
+  // upper half of the frame instead of being hidden behind the warhead.
+  const ahead = missileFollowDir.clone().multiplyScalar(2.0);
+  const lookAt = missilePos.clone().add(ahead).add(lookShakeOffset);
+  camera.lookAt(lookAt);
+}
+
 /** Reset the spectate smoothing state so the next spectateTank() call snaps
  *  to the target without interpolating from the previous camera pose. */
 export function beginSpectate(): void {

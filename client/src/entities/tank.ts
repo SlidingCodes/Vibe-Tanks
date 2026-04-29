@@ -3,6 +3,7 @@ import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { TICK_RATE } from '@shared/constants';
 import { TankState } from '@shared/types/index';
 import { getParticleTextures } from '../scene/particles';
+import { getParachuteTexture } from '../scene/pickups';
 import { getTankTextures, configureHullMaterial } from './tankTextures';
 import {
   buildHullGeometry,
@@ -40,6 +41,8 @@ export interface TankMesh {
   leftTread: THREE.Mesh;
   rightTread: THREE.Mesh;
   shieldMesh: THREE.Mesh;
+  parachuteMesh: THREE.Mesh;
+  parachuteShrouds: THREE.LineSegments;
   /** Through-walls silhouette meshes (body + turret + barrel clones) that
    *  render with depthTest:false so the player can see their own tank
    *  even after it's been buried by a wall or ramp drop. Hidden by
@@ -236,6 +239,46 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   shieldMesh.visible = tank.shieldActive ?? false;
   chassisGroup.add(shieldMesh);
 
+  // Parachute and Shrouds (hidden by default)
+  const parachuteGeom = new THREE.SphereGeometry(2.5, 24, 10, 0, Math.PI * 2, 0, Math.PI * 0.45);
+  const parachuteMat = new THREE.MeshStandardMaterial({
+    map: getParachuteTexture(tank.parachuteId),
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
+  parachuteMesh.position.y = 4.5;
+  parachuteMesh.visible = false;
+  
+  // Attach parachute to the root group instead of chassisGroup so it doesn't tilt with recoil
+  group.add(parachuteMesh);
+
+  // Shroud lines from the tank hull corners up to the parachute skirt
+  const shroudPoints: number[] = [];
+  const hullCorners = [
+    [1.0, 0.8, 1.2],
+    [1.0, 0.8, -1.2],
+    [-1.0, 0.8, 1.2],
+    [-1.0, 0.8, -1.2],
+  ];
+  const paraAngles = [Math.PI * 0.25, -Math.PI * 0.25, Math.PI * 0.75, -Math.PI * 0.75];
+  for (let i = 0; i < hullCorners.length; i++) {
+    const [cx, cy, cz] = hullCorners[i];
+    const a = paraAngles[i];
+    const px = Math.cos(a) * 2.2;
+    const pz = Math.sin(a) * 2.2;
+    shroudPoints.push(cx, cy, cz, px, 4.35, pz);
+  }
+  const shroudGeom = new THREE.BufferGeometry();
+  shroudGeom.setAttribute('position', new THREE.Float32BufferAttribute(shroudPoints, 3));
+  const shroudMat = new THREE.LineBasicMaterial({ color: 0x242018, transparent: true, opacity: 0.85 });
+  const parachuteShrouds = new THREE.LineSegments(shroudGeom, shroudMat);
+  parachuteShrouds.visible = false;
+  group.add(parachuteShrouds);
+
   // Burning VFX: multi-layer billboards riding on the tank. When the
   // tank is standing in / just left a napalm patch this whole stack
   // pulses out of phase. Five fire sprites blanket the hull + turret,
@@ -295,7 +338,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
 
   const tm: TankMesh = {
     group, chassisGroup, body, turretGroup, turret, barrel,
-    leftTread, rightTread, shieldMesh,
+    leftTread, rightTread, shieldMesh, parachuteMesh, parachuteShrouds,
     outlineBody, outlineTurret, outlineBarrel,
     burningFlames,
 
@@ -431,6 +474,23 @@ export function tickTankEffects(dt: number): void {
       mat.opacity = 0.28 + Math.sin(performance.now() * 0.004) * 0.10;
     } else {
       tm.shieldMesh.visible = false;
+    }
+
+    if (tm.state.parachute) {
+      tm.parachuteMesh.visible = true;
+      tm.parachuteShrouds.visible = true;
+      const swing = Math.sin(performance.now() * 0.0024) * 0.05;
+      tm.parachuteMesh.rotation.z = swing;
+      tm.parachuteMesh.rotation.x = Math.cos(performance.now() * 0.002) * 0.035;
+      // Slight matching sway on the chassis itself. Must be a setter (not
+      // an accumulator) — chassisGroup.rotation.z is otherwise untouched
+      // each frame, so += would drift into a permanent ~0.5 rad tilt
+      // after a single 4-second countdown.
+      tm.chassisGroup.rotation.z = swing * 0.3;
+    } else {
+      tm.parachuteMesh.visible = false;
+      tm.parachuteShrouds.visible = false;
+      tm.chassisGroup.rotation.z = 0;
     }
 
     // Burning VFX — 5 additive fire_burst sprites blanket the hull +

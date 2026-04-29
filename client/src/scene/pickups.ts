@@ -33,11 +33,16 @@ const CRATE_BODY_WEAPON = '#3f4a2a';
 const CRATE_BODY_AMMO = '#504426';
 const REINFORCE_COLOR = 0x141310;
 
-let parachuteTextureCache: THREE.CanvasTexture | null = null;
+const parachuteTextureCache = new Map<string, THREE.CanvasTexture>();
 const stencilTextureCache = new Map<string, THREE.CanvasTexture>();
 
-function getParachuteTexture(): THREE.CanvasTexture {
-  if (parachuteTextureCache) return parachuteTextureCache;
+export function getParachuteTexture(colorString: string = '#b43020,#e8e8e0'): THREE.CanvasTexture {
+  if (parachuteTextureCache.has(colorString)) return parachuteTextureCache.get(colorString)!;
+  
+  const [primary, secondary] = colorString.split(',');
+  const colorHexPrimary = primary || '#b43020';
+  const colorHexSecondary = secondary || '#e8e8e0';
+
   // 8 alternating red/white wedges painted as vertical stripes — the
   // sphere's U coordinate wraps around the dome, so vertical canvas
   // stripes become radial panels on the parachute.
@@ -47,7 +52,7 @@ function getParachuteTexture(): THREE.CanvasTexture {
   const WEDGES = 8;
   const stripeW = canvas.width / WEDGES;
   for (let i = 0; i < WEDGES; i++) {
-    ctx.fillStyle = i % 2 === 0 ? '#e8e8e0' : '#b43020';
+    ctx.fillStyle = i % 2 === 0 ? colorHexSecondary : colorHexPrimary;
     ctx.fillRect(i * stripeW, 0, stripeW, canvas.height);
   }
   // Thin black seam lines between panels so the stripes read as stitched
@@ -65,7 +70,7 @@ function getParachuteTexture(): THREE.CanvasTexture {
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  parachuteTextureCache = tex;
+  parachuteTextureCache.set(colorString, tex);
   return tex;
 }
 

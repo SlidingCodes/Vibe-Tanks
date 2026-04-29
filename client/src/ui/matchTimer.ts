@@ -1,8 +1,10 @@
 import { playMatchTickBeep } from '../audio/sounds';
+import { isMatchCountdownActive } from './matchCountdown';
 
 let el: HTMLDivElement | null = null;
 let resetAtMs = 0;
 let presetLabel = 'Default';
+let lastSeconds = 0;
 
 const FINAL_COUNTDOWN_S = 10; // last N seconds switch to the urgent style
 
@@ -49,7 +51,11 @@ export function setupMatchTimer(): void {
   let lastWholeSec = -1;
 
   const tick = () => {
-    const remainingMs = Math.max(0, resetAtMs - performance.now());
+    const now = performance.now();
+    const isFrozen = isMatchCountdownActive();
+    const remainingMs = isFrozen
+      ? lastSeconds * 1000
+      : Math.max(0, resetAtMs - now);
     const totalSec = remainingMs / 1000;
     const val = document.getElementById('mt-value');
 
@@ -103,5 +109,6 @@ export function setMatchTerrainPreset(label: string): void {
 }
 
 export function setMatchResetCountdown(seconds: number): void {
+  lastSeconds = seconds;
   resetAtMs = performance.now() + seconds * 1000;
 }

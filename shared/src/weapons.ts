@@ -186,7 +186,10 @@ export const WEAPONS: WeaponDefinition[] = [
     maxAmmo: 8,
     behaviorConfig: {
       mineArmTime: 0.8,
-      mineLifetime: 14,
+      // Mines no longer expire on a timer — they persist until they
+      // detonate (proximity, chain, or shot) or until the next match
+      // reset. Field kept as a stat for HUD use; server ignores it.
+      mineLifetime: 9999,
       mineTriggerRadius: 2.5,
       mineBlastRadius: 3.6,
       mineDamage: 36,
@@ -271,6 +274,167 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
+    // Little Boy: paint a target with the reticle, an actual nuclear
+    // bomb falls vertically from very high altitude over ~3.5 s, the
+    // MOAB warning klaxon plays during descent, and on impact every
+    // alive tank inside the radius eats a flat 99 — no falloff. One
+    // round per loadout and `pickupWeight` 0.05 keeps the weapon
+    // genuinely rare in the crate pool.
+    id: 'little_boy',
+    name: 'Little Boy',
+    description: 'Nuclear bomb dropped from altitude — lethal core, big knockback, leaves a burning crater. Extremely rare.',
+    // Speed / blastRadius are routed through the strike scheduler in
+    // Room.fireNuke, not the ballistic solver. Blast 18 lands a 36-m
+    // diameter kill circle.
+    projectileSpeed: 0,
+    // 26 m blast → ~52 m wide crater; full damage inside the ~8.6 m
+    // core, quadratic taper out so the visible rim (≈22 m) still bites
+    // for ~40 dmg and a turbo escape past 25 m walks away with a
+    // graze. Nuke also seeds a napalm corolla at impact (centre + 6
+    // rim patches) and triggers a strong sustained camera shake.
+    blastRadius: 26,
+    damage: 99,
+    // Big crater on impact — a nuke leaves a mark.
+    terrainDamage: 6,
+    behavior: 'nuke',
+    cooldown: 8,
+    startAmmo: 1,
+    maxAmmo: 1,
+    pickupWeight: 0.05,
+    behaviorConfig: {
+      nukeFallHeight: 80,
+      nukeFallDuration: 3.5,
+    },
+  },
+  {
+    // Minigun: hold-to-fire hitscan with a deep magazine and a heat
+    // gauge. Each click fires one bullet at ~13 rps; sustained fire
+    // fills the gauge in ~25 rounds and the gun locks out for ~2.5 s
+    // so the player can't just chain-tap forever. Damage per round is
+    // small — the minigun is a sustained-fire weapon, not a burst kill.
+    id: 'minigun',
+    name: 'Minigun',
+    description: 'Hold-to-fire spray — tiny per-shot damage, deep magazine, overheats.',
+    // Hitscan, like the rail. Range/radius live in behaviorConfig.
+    projectileSpeed: 0,
+    blastRadius: 0.5,
+    damage: 6,
+    terrainDamage: 0,
+    behavior: 'minigun',
+    // `cooldown` doubles as the inter-shot gap while held — 0.075 s ≈
+    // 13 rounds/sec.
+    cooldown: 0.075,
+    startAmmo: 500,
+    maxAmmo: 500,
+    // Slightly rarer than a normal pickup: the deep magazine is strong,
+    // so 0.6 weight keeps it from saturating the crate roll.
+    pickupWeight: 0.6,
+    behaviorConfig: {
+      minigunRange: 55,
+      minigunRadius: 0.7,
+      heatPerShot: 0.04,
+      heatCoolRate: 0.55,
+      overheatLockout: 2.5,
+    },
+  },
+  {
+    // Predator: pilot a steerable cruise missile to your target. Aim
+    // launches it; while in flight the player's WASD steers yaw + pitch
+    // and the camera switches to a chase view behind the warhead. Tank
+    // body stays in the world and remains vulnerable for the whole ride
+    // — the trade-off for the precision strike. Only one missile per
+    // tank at a time; lifetime auto-detonates so the player can't park
+    // it indefinitely.
+    id: 'predator',
+    name: 'Predator',
+    description: 'Pilot a steerable missile — your tank stays exposed while you fly.',
+    // projectileSpeed feeds the trajectory preview's ballistic solver
+    // (so the reticle shows where the missile would land if you flew it
+    // straight) and the launch velocity. Steering takes over the moment
+    // the round is in the air.
+    projectileSpeed: 22,
+    blastRadius: 5,
+    // Direct hit gets 1.6× via DIRECT_HIT_DAMAGE_MULTIPLIER (see
+    // applyImpact). 65 × 1.6 = 104 → guaranteed kill on a full-HP tank,
+    // which is what "I literally guided this missile onto you" should
+    // feel like. Splash from outside the flat core falls off quadratic.
+    damage: 65,
+    terrainDamage: 3.5,
+    behavior: 'predator',
+    cooldown: 7,
+    startAmmo: 1,
+    maxAmmo: 2,
+    // Rare-ish: the steering camera is a strong utility, but each round
+    // freezes the owner for several seconds so it's not pure upside.
+    pickupWeight: 0.4,
+    behaviorConfig: {
+      predatorSpeed: 22,
+      // Roughly 90°/s yaw, 70°/s pitch — punchy enough to chase a
+      // moving tank without making the missile feel like a fighter jet.
+      predatorTurnRate: 1.6,
+      predatorPitchRate: 1.2,
+      // 7 s of flight max — enough to range across most of the map at
+      // 22 m/s (~150 m) without letting the player camp the camera
+      // forever / hide their tank from a flank push.
+      predatorLifetime: 7,
+      predatorBlastRadius: 5,
+      predatorDamage: 65,
+      predatorTerrainDamage: 3.5,
+      // Splash flat core: anyone inside 1.6 m of the impact eats full
+      // damage even without a direct contact, so a near-miss on a
+      // moving tank still bites hard.
+      predatorFlatCoreRadius: 1.6,
+    },
+  },
+  {
+    // Soldiers: drop 5 infantry units in a ring around the firing tank.
+    // They fan out, find the nearest enemy tank, and pop hitscan rifle
+    // shots at ~1 round / 2 s each. Each unit has 10 HP — a single
+    // splash blast clears them. Run them over with an enemy hull and
+    // they die on contact. They despawn after 30 s or when the owner
+    // dies; the trade-off for a low-cooldown swarm of pressure.
+    id: 'soldiers',
+    name: 'Soldiers',
+    description: 'Drops 5 riflemen — fragile, persistent, fan out and shoot the nearest enemy.',
+    // Spawn doesn't fire a shell — the units appear instantly around the
+    // tank, so projectileSpeed/blastRadius/damage are unused by the
+    // ballistic solver. The fire path is custom (`fireSoldiers`).
+    projectileSpeed: 0,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'soldiers',
+    cooldown: 6,
+    startAmmo: 1,
+    maxAmmo: 2,
+    // Mid-rare: 5 units × 30 s of pressure is strong, but the units
+    // themselves are paper-thin so a single competent shell blast
+    // cleans them up. 0.5 weight keeps the pickup pool diverse.
+    pickupWeight: 0.5,
+    behaviorConfig: {
+      soldierCount: 5,
+      soldierHp: 10,
+      soldierLifetime: 30,
+      soldierShotInterval: 2.0,
+      // 1 dmg per round × 5 soldiers × 0.5 shots/s = 2.5 dps total —
+      // a steady tickle of pressure that spans tens of seconds before
+      // it kills, not a burst weapon. Encourages the user to deploy
+      // proactively and reposition under cover, rather than relying on
+      // the squad to one-shot anything.
+      soldierShotDamage: 1,
+      // 22 m engagement range — a bit shorter than the rail's 50 m so
+      // soldiers don't dominate the long sightlines.
+      soldierShotRange: 22,
+      // Match (and slightly exceed) the tank's top speed so the squad
+      // can actually keep pace when the owner pushes forward — tested
+      // 4.5 m/s left them 30+ m behind on every advance.
+      soldierMoveSpeed: 8,
+      // Tight following: 3 m sits just outside the hull collision so
+      // they stay in a clear ring without nipping at the tank's heels.
+      soldierFollowDistance: 3,
+    },
+  },
+  {
     // Rocket jump: the tank itself becomes the projectile. Aim with the
     // normal reticle — the same ballistic solver used by standard weapons
     // picks a turret/barrel angle that would land a shell at the target,
@@ -323,11 +487,23 @@ export function createRandomLoadout(
   const pool = WEAPONS.filter(
     (w) => w.startAmmo !== 'infinite' && (!allowed || allowed.has(w.id)),
   );
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+  // Weighted sample without replacement, biased by pickupWeight (default
+  // 1). Each step picks one weapon proportional to its remaining weight,
+  // then removes it from the pool. Keeps the rare-weapon ban from a
+  // shuffle giving a Little Boy on every spawn.
+  const rolled: typeof pool = [];
+  while (rolled.length < LOADOUT_RANDOM_COUNT && pool.length > 0) {
+    let total = 0;
+    for (const w of pool) total += w.pickupWeight ?? 1;
+    let roll = Math.random() * total;
+    let pickedIdx = 0;
+    for (let i = 0; i < pool.length; i++) {
+      roll -= pool[i].pickupWeight ?? 1;
+      if (roll <= 0) { pickedIdx = i; break; }
+    }
+    rolled.push(pool[pickedIdx]);
+    pool.splice(pickedIdx, 1);
   }
-  const rolled = pool.slice(0, LOADOUT_RANDOM_COUNT);
   return [
     { weaponId: 'standard', ammo: 'infinite' as const },
     ...rolled.map((w) => ({ weaponId: w.id, ammo: w.startAmmo as number })),

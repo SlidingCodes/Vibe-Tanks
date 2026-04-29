@@ -11,6 +11,95 @@ import {
 import { AtmosphereHandle } from '../scene/atmosphere';
 import { getParticleTextures } from '../scene/particles';
 
+/** Build a slow-fall nuclear-bomb silhouette: long cylindrical body with
+ *  a rounded nose cap, a hemispherical tail cap, and 4 cross-shaped tail
+ *  fins. Same +Z-forward convention as buildShellGeometry so the lookAt
+ *  pipeline orients the bomb along its descent vector. Returns a single
+ *  merged BufferGeometry — one material, one mesh, so the existing
+ *  projectile render path handles it without changes. */
+function buildNukeBombGeometry(): THREE.BufferGeometry {
+  const bodyLen = 2.4;
+  const bodyR = 0.42;
+
+  const body = new THREE.CylinderGeometry(bodyR, bodyR, bodyLen, 18);
+  body.rotateX(Math.PI / 2);
+
+  // Nose: half-sphere cap on the +Z end
+  const nose = new THREE.SphereGeometry(bodyR, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  nose.rotateX(-Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2);
+
+  // Tail cap: half-sphere on the -Z end, slightly smaller for the tapered look
+  const tail = new THREE.SphereGeometry(bodyR * 0.95, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+  tail.rotateX(Math.PI / 2);
+  tail.translate(0, 0, -bodyLen / 2);
+
+  // Cross fins: 4 thin radial plates at the tail
+  const finExt = 0.42;   // extension beyond body radius
+  const finLen = 0.62;   // along bomb axis
+  const finT = 0.05;     // thickness
+  const finCenterZ = -bodyLen / 2 - finLen / 2 + 0.18;
+  const fins: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 4; i++) {
+    const fin = new THREE.BoxGeometry(finExt, finT, finLen);
+    fin.translate(bodyR + finExt / 2, 0, finCenterZ);
+    fin.rotateZ((i * Math.PI) / 2);
+    fins.push(fin);
+  }
+
+  const merged = mergeGeometries([body, nose, tail, ...fins]);
+  body.dispose();
+  nose.dispose();
+  tail.dispose();
+  for (const f of fins) f.dispose();
+  if (!merged) throw new Error('buildNukeBombGeometry: mergeGeometries returned null');
+  return merged;
+}
+
+/** Build a steerable cruise-missile silhouette: a long cylindrical fuselage
+ *  with a rounded ogive nose and 4 cross-shaped tail fins. Same +Z-forward
+ *  convention as buildShellGeometry so Object3D.lookAt(behind) orients the
+ *  warhead along the velocity vector. Returns one merged geometry — same
+ *  one-mesh contract as the other projectile builders. */
+function buildPredatorMissileGeometry(): THREE.BufferGeometry {
+  const bodyLen = 1.9;
+  const bodyR = 0.18;
+
+  const body = new THREE.CylinderGeometry(bodyR, bodyR, bodyLen, 14);
+  body.rotateX(Math.PI / 2);
+
+  // Ogive nose: cone with a rounded apex
+  const nose = new THREE.ConeGeometry(bodyR, 0.55, 14);
+  nose.rotateX(Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2 + 0.55 / 2);
+
+  // Tail booster ring (hint of an exhaust nozzle)
+  const booster = new THREE.CylinderGeometry(bodyR * 0.85, bodyR * 0.95, 0.18, 14);
+  booster.rotateX(Math.PI / 2);
+  booster.translate(0, 0, -bodyLen / 2 - 0.09);
+
+  // Cross fins at the rear, narrower than the bomb's
+  const finExt = 0.22;
+  const finLen = 0.36;
+  const finT = 0.03;
+  const finCenterZ = -bodyLen / 2 + 0.18;
+  const fins: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 4; i++) {
+    const fin = new THREE.BoxGeometry(finExt, finT, finLen);
+    fin.translate(bodyR + finExt / 2, 0, finCenterZ);
+    fin.rotateZ((i * Math.PI) / 2);
+    fins.push(fin);
+  }
+
+  const merged = mergeGeometries([body, nose, booster, ...fins]);
+  body.dispose();
+  nose.dispose();
+  booster.dispose();
+  for (const f of fins) f.dispose();
+  if (!merged) throw new Error('buildPredatorMissileGeometry: mergeGeometries returned null');
+  return merged;
+}
+
 /** Build a true tank-shell geometry: cylindrical body + conical nose,
  *  merged into a single BufferGeometry oriented with the nose along +Z so
  *  Object3D.lookAt(behind) aims it down-trajectory. The radius parameter
@@ -228,6 +317,21 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xd8f0f8,
         explosionScale: 0.45,
       };
+    case 'minigun_tracer':
+      // Minigun tracer: thin warm-yellow beam, no projectile mesh, no
+      // smoke trail. Hitscan, so the beam is alive for ~67 ms (one
+      // SECONDS_PER_SAMPLE) before the impact resolves.
+      return {
+        projectileRadius: 0.05,
+        projectileColor: 0xfff0a0,
+        emissiveColor: 0xffd060,
+        trailColor: 0xffd060,
+        trailSize: 0.1,
+        pathColor: 0xfff0a0,
+        pathOpacity: 0.95,
+        explosionColor: 0xffd060,
+        explosionScale: 0.18,
+      };
     case 'mortar_shell':
       return {
         projectileRadius: 0.28,
@@ -304,6 +408,38 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         explosionColor: 0xa8763a,    // brass dust
         explosionScale: 0.18,
       };
+    case 'nuke':
+    case 'nuke_falling':
+      // Slow-falling nuclear bomb: fat olive-drab silhouette, no fiery
+      // emissive (it's an unguided dumb bomb until impact), greyed trail.
+      // The real money shot is showNukeExplosion; the body itself reads
+      // as a Little Boy / Fat Man military bomb falling from the sky.
+      return {
+        projectileRadius: 0.42,
+        projectileColor: 0x4a4a3a,   // olive drab
+        emissiveColor: 0x2a2a20,     // very faint dark emissive
+        trailColor: 0x504a44,
+        trailSize: 0.55,
+        pathColor: 0x8a7a52,
+        pathOpacity: 0.18,
+        explosionColor: 0xfff0b8,
+        explosionScale: 1.6,
+      };
+    case 'predator_missile':
+      // Steerable cruise missile: olive fuselage + brass-tipped warhead,
+      // bright booster glow at the tail. Trail is a warm exhaust plume so
+      // the chase camera reads "rocket motor" instead of "smoke shell".
+      return {
+        projectileRadius: 0.22,
+        projectileColor: 0x5a5e44,   // olive military green
+        emissiveColor: 0xffa040,     // warm booster glow
+        trailColor: 0x807468,        // warm grey exhaust
+        trailSize: 0.55,
+        pathColor: 0x9a8060,
+        pathOpacity: 0.22,
+        explosionColor: 0xff7820,
+        explosionScale: 0.85,
+      };
     case 'standard':
     default:
       return {
@@ -354,17 +490,19 @@ function disposeObject(obj: THREE.Object3D, scene: THREE.Scene): void {
 function createProjectileVisual(step: ActiveShotStep, scene: THREE.Scene): void {
   const spec = getVisualSpec(step.visualStyle, step.colorOverride);
 
-  if (step.visualStyle !== 'rail') {
+  if (step.visualStyle !== 'rail' && step.visualStyle !== 'minigun_tracer') {
     // Real tank-shell silhouette (cylinder body + conical nose) instead of
     // a stretched sphere. Material is matte gunmetal with a soft warm
     // emissive so the nose reads as recently-fired without glowing.
-    const geo = buildShellGeometry(spec.projectileRadius);
+    // Nuke uses a dedicated bomb silhouette (long body + tail fins).
+    const isNuke = step.visualStyle === 'nuke_falling' || step.visualStyle === 'nuke';
+    const geo = isNuke ? buildNukeBombGeometry() : buildShellGeometry(spec.projectileRadius);
     const mat = new THREE.MeshStandardMaterial({
       color: spec.projectileColor,
       emissive: spec.emissiveColor,
-      emissiveIntensity: 0.45,
-      metalness: 0.6,
-      roughness: 0.5,
+      emissiveIntensity: isNuke ? 0.15 : 0.45,
+      metalness: isNuke ? 0.4 : 0.6,
+      roughness: isNuke ? 0.7 : 0.5,
     });
     const mesh = new THREE.Mesh(geo, mat);
     const first = step.points[0];
@@ -426,19 +564,21 @@ export function playShotAnimation(
   const tm = getAllTankMeshes().get(result.shooterId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
 
-  // Trigger Muzzle FX at the start of the first step
-  if (atmosphere && result.steps.length > 0) {
-    const firstStep = result.steps[0];
-    if (firstStep.trajectory.length >= 2) {
-      const p0 = firstStep.trajectory[0];
-      const p1 = firstStep.trajectory[1];
-      const pos = new THREE.Vector3(p0.x, p0.y, p0.z);
-      const dir = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z).normalize();
-      atmosphere.spawnMuzzleFX(pos, dir);
-      
-      if (tm) {
-        atmosphere.spawnShellCasing(tm.group.position, tm.group.rotation.y, tm.state.turretRotation);
-      }
+  // Trigger Muzzle FX at the start of the first step. Skipped for the
+  // minigun: at ~13 rps the cannon-sized flash and ejected shell case
+  // would pile up into a permanent fireball / brass storm that swallows
+  // the tank — the per-shot tracer + impact spark already read clearly.
+  const firstStep = result.steps.length > 0 ? result.steps[0] : null;
+  const isMinigun = firstStep?.visualStyle === 'minigun_tracer';
+  if (atmosphere && firstStep && firstStep.trajectory.length >= 2 && !isMinigun) {
+    const p0 = firstStep.trajectory[0];
+    const p1 = firstStep.trajectory[1];
+    const pos = new THREE.Vector3(p0.x, p0.y, p0.z);
+    const dir = new THREE.Vector3(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z).normalize();
+    atmosphere.spawnMuzzleFX(pos, dir);
+
+    if (tm) {
+      atmosphere.spawnShellCasing(tm.group.position, tm.group.rotation.y, tm.state.turretRotation);
     }
   }
 
@@ -622,6 +762,178 @@ function showExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
   animate();
 }
 
+/** Minigun bullet impact: a tiny warm spark flash with a small dust puff.
+ *  No smoke plume, no dust ring — those would be absurd at 13 rps. The
+ *  whole effect lasts ~14 frames so back-to-back rounds don't pile up. */
+function showMinigunImpact(step: ActiveShotStep, scene: THREE.Scene): void {
+  const { fireBurst } = getParticleTextures();
+  const origin = new THREE.Vector3(step.endPoint.x, step.endPoint.y, step.endPoint.z);
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: fireBurst,
+    color: 0xffd060,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  }));
+  flash.position.copy(origin);
+  flash.scale.setScalar(0.7);
+  scene.add(flash);
+
+  let frame = 0;
+  const animate = () => {
+    frame++;
+    const m = flash.material as THREE.SpriteMaterial;
+    flash.scale.setScalar(0.7 + frame * 0.08);
+    m.opacity = Math.max(0, 0.85 - frame * 0.07);
+    if (frame < 14) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(flash);
+      m.dispose();
+    }
+  };
+  animate();
+}
+
+/** Nuke detonation: blinding flash, expanding fireball, ascending stem,
+ *  mushroom cap, and a wide ground dust ring. All the same camera-facing
+ *  sprite primitives the standard explosion uses, just bigger / longer-
+ *  lived / sequenced so it reads as a genuine nuclear blast. The full
+ *  effect plays for ~6 s and disposes itself afterwards. */
+function showNukeExplosion(step: ActiveShotStep, scene: THREE.Scene): void {
+  const { fireBurst, smokePuff } = getParticleTextures();
+  const baseRadius = Math.max(20, step.blastRadius);
+  const origin = new THREE.Vector3(step.endPoint.x, step.endPoint.y, step.endPoint.z);
+
+  const fireMat = (tint: number, opacity: number, rot: number) =>
+    new THREE.SpriteMaterial({
+      map: fireBurst, color: tint, transparent: true, opacity,
+      depthWrite: false, blending: THREE.AdditiveBlending, rotation: rot,
+    });
+  const smokeMat = (tint: number, opacity: number, rot: number) =>
+    new THREE.SpriteMaterial({
+      map: smokePuff, color: tint, transparent: true, opacity,
+      depthWrite: false, blending: THREE.NormalBlending, rotation: rot,
+    });
+
+  // Layer 1 — blinding white flash
+  const flash = new THREE.Sprite(fireMat(0xffffff, 1.0, 0));
+  flash.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.25, 0));
+  flash.scale.setScalar(baseRadius * 3);
+  scene.add(flash);
+
+  // Layer 2 — orange fireball that expands then collapses
+  const fire = new THREE.Sprite(fireMat(0xffa040, 0.95, 0.3));
+  fire.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.4, 0));
+  fire.scale.setScalar(baseRadius * 2);
+  scene.add(fire);
+
+  // Layer 3 — rising stem (tall narrow plume)
+  const stem = new THREE.Sprite(smokeMat(0x4a3a30, 0, 0.1));
+  stem.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 0.6, 0));
+  stem.scale.set(baseRadius * 0.7, baseRadius * 0.4, 1);
+  scene.add(stem);
+
+  // Layer 4 — mushroom cap, two overlapping plumes
+  const cap1 = new THREE.Sprite(smokeMat(0x5a4838, 0, 0.2));
+  const cap2 = new THREE.Sprite(smokeMat(0x3a2a20, 0, -0.3));
+  cap1.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 1.2, 0));
+  cap2.position.copy(origin).add(new THREE.Vector3(0, baseRadius * 1.0, 0));
+  cap1.scale.setScalar(baseRadius * 0.6);
+  cap2.scale.setScalar(baseRadius * 0.5);
+  scene.add(cap1);
+  scene.add(cap2);
+
+  // Layer 5 — wide ground dust shockwave
+  const dustGeo = new THREE.RingGeometry(baseRadius * 0.4, baseRadius * 0.7, 48);
+  const dustMat = new THREE.MeshBasicMaterial({
+    map: smokePuff,
+    color: 0x9a8a6a,
+    transparent: true,
+    opacity: 0.7,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const dust = new THREE.Mesh(dustGeo, dustMat);
+  dust.rotation.x = -Math.PI / 2;
+  dust.position.set(origin.x, origin.y + 0.1, origin.z);
+  scene.add(dust);
+
+  let frame = 0;
+  const animate = () => {
+    frame++;
+    const flashMat = flash.material as THREE.SpriteMaterial;
+    const fireMatRef = fire.material as THREE.SpriteMaterial;
+    const stemMat = stem.material as THREE.SpriteMaterial;
+    const cap1Mat = cap1.material as THREE.SpriteMaterial;
+    const cap2Mat = cap2.material as THREE.SpriteMaterial;
+
+    // Flash burns out across the first ~10 frames
+    flash.scale.setScalar(baseRadius * 3 * (1 + frame * 0.06));
+    flashMat.opacity = Math.max(0, 1.0 - frame * 0.1);
+
+    // Fireball expands then collapses
+    const fireGrow = frame < 14 ? 1 + frame * 0.08 : 1 + 14 * 0.08 - (frame - 14) * 0.02;
+    fire.scale.setScalar(baseRadius * 2 * Math.max(0.3, fireGrow));
+    fireMatRef.opacity = frame < 6
+      ? 0.95 - frame * 0.02
+      : Math.max(0, 0.85 - (frame - 6) * 0.025);
+    fireMatRef.rotation += 0.01;
+
+    // Stem rises continuously during the early window, then holds
+    if (frame < 90) {
+      stem.position.y += baseRadius * 0.012;
+      stem.scale.x = baseRadius * 0.7 * (1 + frame * 0.012);
+      stem.scale.y = baseRadius * 0.4 * (1 + frame * 0.05);
+      stemMat.opacity = Math.min(0.7, frame * 0.012);
+    } else {
+      stemMat.opacity = Math.max(0, 0.7 - (frame - 90) * 0.005);
+    }
+
+    // Mushroom cap: rises slower, expands, lingers long
+    if (frame < 140) {
+      cap1.position.y += baseRadius * 0.008;
+      cap2.position.y += baseRadius * 0.007;
+      const capGrow = 1 + frame * 0.018;
+      cap1.scale.setScalar(baseRadius * 0.6 * capGrow);
+      cap2.scale.setScalar(baseRadius * 0.5 * capGrow);
+      cap1Mat.opacity = Math.min(0.85, frame * 0.012);
+      cap2Mat.opacity = Math.min(0.7, frame * 0.01);
+      cap1Mat.rotation += 0.002;
+      cap2Mat.rotation -= 0.0015;
+    } else {
+      cap1Mat.opacity = Math.max(0, 0.85 - (frame - 140) * 0.005);
+      cap2Mat.opacity = Math.max(0, 0.7 - (frame - 140) * 0.004);
+    }
+
+    // Dust shockwave: expands fast, fades by frame 80
+    dust.scale.setScalar(1 + frame * 0.06);
+    dustMat.opacity = frame < 12
+      ? 0.7 + frame * 0.005
+      : Math.max(0, 0.78 - (frame - 12) * 0.012);
+
+    if (frame < 320) {
+      requestAnimationFrame(animate);
+    } else {
+      scene.remove(flash);
+      scene.remove(fire);
+      scene.remove(stem);
+      scene.remove(cap1);
+      scene.remove(cap2);
+      scene.remove(dust);
+      flashMat.dispose();
+      fireMatRef.dispose();
+      stemMat.dispose();
+      cap1Mat.dispose();
+      cap2Mat.dispose();
+      dustGeo.dispose();
+      dustMat.dispose();
+    }
+  };
+  animate();
+}
+
 function showSplitFlash(step: ActiveShotStep, scene: THREE.Scene): void {
   const color = step.colorOverride !== null ? step.colorOverride : 0x9ab4c0;
   const geo = new THREE.SphereGeometry(0.45, 12, 12);
@@ -700,11 +1012,16 @@ function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.S
   const tm = getAllTankMeshes().get(state.ownerId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
   const spec = getVisualSpec(state.visualStyle, colorOverride);
-  const geo = buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
+  // Predator gets a dedicated cruise-missile silhouette (long fuselage +
+  // ogive + tail fins) so the chase camera reads as a real warhead, not
+  // a stretched tank shell.
+  const geo = state.visualStyle === 'predator_missile'
+    ? buildPredatorMissileGeometry()
+    : buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
   const mat = new THREE.MeshStandardMaterial({
     color: spec.projectileColor,
     emissive: spec.emissiveColor,
-    emissiveIntensity: 0.4,
+    emissiveIntensity: state.visualStyle === 'predator_missile' ? 0.6 : 0.4,
     metalness: 0.6,
     roughness: 0.5,
   });
@@ -822,6 +1139,26 @@ function removeHazardVisual(id: string, scene: THREE.Scene): void {
   hazardVisuals.delete(id);
 }
 
+/** Read the lerped client-side position of a server-broadcast projectile.
+ *  Returns null if the projectile id isn't currently rendered. Used by the
+ *  Predator chase camera so the eye tracks the smooth visual instead of
+ *  jittering with every 20 Hz broadcast snap. */
+export function getReplicatedProjectilePosition(id: string, out: THREE.Vector3): boolean {
+  const v = replicatedProjectiles.get(id);
+  if (!v) return false;
+  out.copy(v.currentPosition);
+  return true;
+}
+
+/** Read the cached velocity of a server-broadcast projectile (last
+ *  state_update value). Used by the Predator chase camera to orient the
+ *  eye along the warhead's heading without waiting for the next broadcast. */
+export function getReplicatedProjectileVelocity(id: string): { x: number; y: number; z: number } | null {
+  const v = replicatedProjectiles.get(id);
+  if (!v) return null;
+  return v.velocity;
+}
+
 export function syncActiveCombatState(
   scene: THREE.Scene,
   projectiles: ActiveProjectileState[],
@@ -894,6 +1231,10 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         showBounceFlash(step, scene);
       } else if (step.visualStyle === 'mine_deploy' || step.visualStyle === 'drill_entry') {
         showDeployFlash(step, scene);
+      } else if (step.visualStyle === 'nuke' || step.visualStyle === 'nuke_falling') {
+        showNukeExplosion(step, scene);
+      } else if (step.visualStyle === 'minigun_tracer') {
+        showMinigunImpact(step, scene);
       } else {
         showExplosion(step, scene);
       }

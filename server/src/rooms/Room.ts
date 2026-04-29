@@ -16,6 +16,7 @@ import {
   ServerEvents,
   ShotResult,
   ShotStep,
+  SoldierState,
   TankState,
   TerrainOp,
   TerrainPresetId,
@@ -43,6 +44,7 @@ import {
   PICKUP_DROP_HEIGHT,
   PICKUP_FALL_SPEED,
   PICKUP_WEAPON_CHANCE,
+  PARACHUTE_DROP_HEIGHT,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -90,7 +92,7 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
-const MATCH_COUNTDOWN_MS = 3000; // freeze tanks for this long at the start of every match
+const MATCH_COUNTDOWN_MS = 4000; // 4s total (3s visual + 1s buffer)
 const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 /** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
@@ -122,6 +124,11 @@ const IDLE_WARN_SECONDS = 75;
  *  idle clock or a stationary player camping the cursor would never be
  *  considered idle. ~0.6° on either axis. */
 const IDLE_AIM_EPSILON = 0.01;
+/** Extra distance (m) beyond a mine's triggerRadius at which an enemy
+ *  starts seeing the mine in their state_update. Small enough to feel
+ *  like "preavviso minimo" — they get a frame or two of warning, never
+ *  free intel about the whole minefield from across the map. */
+const MINE_STEALTH_REVEAL_MARGIN = 1.2;
 
 interface PlayerState {
   socket?: Socket;
@@ -140,6 +147,12 @@ interface PlayerState {
    *  own cooldown clock, so sparking off a standard shot doesn't gate a
    *  seeker that's been ready for minutes. Missing entry = never fired. */
   lastFireByWeapon: Map<string, number>;
+  /** Heat gauge state for hold-to-fire weapons (currently the minigun).
+   *  `value` ∈ [0,1] decays at heatCoolRate during *idle* time only
+   *  (gap-since-last-shot minus the weapon's nominal inter-shot
+   *  cooldown). Each shot bumps it by heatPerShot. When it hits 1 the
+   *  gun locks for overheatLockout seconds and `lockedUntil` is set. */
+  weaponHeat: Map<string, { value: number; lastShotAt: number; lockedUntil: number }>;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -168,6 +181,23 @@ interface PlayerState {
    *  from the array when ammo hits 0. The same array reference is stored
    *  on the tank's TankState so broadcasts stay in sync without a copy. */
   inventory: WeaponInventorySlot[];
+  /** Predator: id of the steerable missile currently in flight for this
+   *  player, or null. While set, the tank's MovementInput is rerouted to
+   *  the missile's yaw/pitch and the body is frozen in place (vulnerable,
+   *  but cannot move). Cleared on detonation, lifetime expiry, owner
+   *  death, or disconnect. */
+  activeMissileId: string | null;
+  /** Epoch seconds until which the tank is descending in a respawn
+   *  parachute drop. 0 means no respawn descent active (the start-of-
+   *  match Countdown drop is gated on `phase === Countdown` instead and
+   *  doesn't use this field). While positive: KCC drive is bypassed,
+   *  Y is lerped from the elevated peak down to `parachuteGroundY`,
+   *  and fire (human + bot) is rejected. */
+  parachuteUntil: number;
+  /** Cached ground Y at the respawn XZ, sampled once at respawnTank time
+   *  so the descent stays a clean linear lerp. Read by the integrator
+   *  every tick during the descent and on the just-landed snap. */
+  parachuteGroundY: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -178,6 +208,19 @@ interface ActiveProjectileRuntime extends ActiveProjectileState {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
+  /** Predator-only: pilot-controlled flight state. Yaw/pitch are integrated
+   *  from the owner's MovementInput (A/D yaw, W/S pitch) at predatorTurnRate
+   *  and predatorPitchRate. predatorPitchRate doubles as the marker that
+   *  this projectile is a steerable missile (vs. a passive seeker). */
+  predatorYaw?: number;
+  predatorPitch?: number;
+  predatorTurnRate?: number;
+  predatorPitchRate?: number;
+  predatorSpeed?: number;
+  /** Inner radius around the impact in which damage stays flat at the
+   *  full value before the quadratic falloff kicks in. Forwarded to
+   *  `applyImpact.flatCoreRadius`. */
+  predatorFlatCoreRadius?: number;
   /** Pre-allocated wire view kept in sync with the mutable public fields.
    *  Broadcast reuses this reference every tick instead of mapping a fresh
    *  object per projectile — critical on Pi where 20 Hz × N .map() allocs
@@ -198,7 +241,7 @@ interface ActiveHazardRuntime extends HazardState {
 
 interface ScheduledStrike {
   strikeId: string;
-  kind: 'drill' | 'mortar';
+  kind: 'drill' | 'mortar' | 'nuke';
   ownerId: PlayerId;
   weaponId: string;
   triggerAt: number;
@@ -206,8 +249,38 @@ interface ScheduledStrike {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
-  visualStyle: 'drill_burst' | 'mortar_shell';
+  visualStyle: 'drill_burst' | 'mortar_shell' | 'nuke';
   spawnHeight: number;
+  /** Nuke-only: descent duration (s). Mortar uses a hardcoded 0.8s. */
+  fallDuration?: number;
+}
+
+interface ActiveSoldierRuntime extends SoldierState {
+  /** Seconds of life remaining before natural despawn. */
+  lifetime: number;
+  /** Seconds until the next shot is allowed (counts down to 0). */
+  fireTimer: number;
+  /** Cached weapon-config tuning — copied at spawn so repeated lookups
+   *  per tick (engagement range, movement speed, etc.) don't have to walk
+   *  the WEAPONS array. */
+  shotDamage: number;
+  shotRange: number;
+  shotInterval: number;
+  moveSpeed: number;
+  followDistance: number;
+  /** Fixed angle (rad) around the owner this soldier holds station at —
+   *  spread evenly across 2π at spawn so the squad forms a stable ring
+   *  instead of all collapsing onto the owner's centre while marching. */
+  formationAngle: number;
+  /** True once the soldier has switched from "march to formation slot"
+   *  to "march back to the tank to re-board". Latched at lifetime ≤
+   *  RETREAT_LEAD_SECONDS and never cleared — once they head home, the
+   *  countdown to re-entry is one-way. */
+  retreating: boolean;
+  weaponId: string;
+  /** Pre-allocated wire view kept in sync with the mutable public fields,
+   *  same pattern as the projectile/hazard runtimes. */
+  wire: SoldierState;
 }
 
 interface ActivePickupRuntime extends PickupState {
@@ -264,6 +337,7 @@ export class Room {
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
   private activePickups: Map<string, ActivePickupRuntime> = new Map();
+  private activeSoldiers: Map<string, ActiveSoldierRuntime> = new Map();
   /** Cached public views rebuilt only on insert/delete (not per tick). The
    *  broadcast path reuses these arrays as-is, and per-tick tank/projectile/
    *  hazard updates sync fields into the matching wire object in place. */
@@ -271,6 +345,7 @@ export class Room {
   private wireProjectiles: ActiveProjectileState[] = [];
   private wireHazards: HazardState[] = [];
   private wirePickups: PickupState[] = [];
+  private wireSoldiers: SoldierState[] = [];
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
@@ -285,6 +360,7 @@ export class Room {
   private nextHazardId = 1;
   private nextStrikeId = 1;
   private nextPickupId = 1;
+  private nextSoldierId = 1;
   /** Sim-time (seconds) at which the next pickup will spawn. */
   private nextPickupSpawnAt = 0;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -334,7 +410,6 @@ export class Room {
     this.fire = new FireGrid(this.voxels);
 
     this.physics = new RapierVoxelWorld(this.voxels);
-    this.scheduleReset();
     this.ensureFourTanks();
   }
 
@@ -385,6 +460,11 @@ export class Room {
     for (const player of this.players.values()) player.lastTrackSampleAt = null;
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
+      // Pre-lift Y so the room_snapshot emitted by resetMatch already shows
+      // every tank suspended with its parachute deployed — beginCountdown
+      // fires immediately after this loop, so no client should see a
+      // ground-level frame between the snapshot and the first tickMovement.
+      pos.y = pos.y + PARACHUTE_DROP_HEIGHT;
       tank.position = pos;
       tank.hp = TANK_MAX_HP;
       tank.alive = true;
@@ -397,14 +477,19 @@ export class Room {
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
       tank.airborne = false;
+      tank.parachute = true;
       tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
       tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
       tank.lastAppliedSeq = 0;
+      tank.shieldActive = false;
+      tank.shieldAvailable = true;
+      tank.shieldTimeRemaining = 0;
       tank.burning = false;
       const player = this.players.get(pid);
       if (player) {
-        player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+        player.spawnProtectionUntil = 0;
+        player.shieldExpiresAt = 0;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.input.seq = 0;
@@ -418,7 +503,6 @@ export class Room {
       this.physics.resetTank(pid, tank.position, 0);
     }
     this.ensureFourTanks();
-    this.scheduleReset();
     // If the reset timer fired on an empty server (no human ever joined
     // during the previous match), resetMatch flips phase to InProgress
     // without anyone having called startLoop. The first player to
@@ -436,7 +520,7 @@ export class Room {
     this.beginCountdown();
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     // Count humans only — a room with 4 humans + 4 bots was hitting this
     // gate and refusing the 5th human even though ensureFourTanks would
     // immediately scrub the bots to free seats. The manager already
@@ -451,7 +535,8 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      weaponHeat: new Map(),
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
@@ -461,9 +546,12 @@ export class Room {
       burningUntil: 0,
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
+      activeMissileId: null,
+      parachuteUntil: 0,
+      parachuteGroundY: 0,
     });
 
-    this.spawnTank(playerId, playerName, color, flagId);
+    this.spawnTank(playerId, playerName, color, flagId, parachuteId);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
@@ -508,6 +596,8 @@ export class Room {
         this.unregisterHazard(hazardId);
       }
     }
+
+    this.clearOwnerSoldiers(playerId);
 
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.ownerId !== playerId);
     this.io.to(this.id).emit('player_left', { playerId });
@@ -578,7 +668,7 @@ export class Room {
     this.physics.dispose();
   }
 
-  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     const pos = this.findSpawnPosition();
     let safeColor: string;
     if (isValidHex(color)) {
@@ -591,6 +681,16 @@ export class Room {
     }
     const safeName = sanitizeName(playerName);
     const player = this.players.get(playerId);
+    // Pre-lift the spawn Y so the very first room_snapshot already shows the
+    // tank suspended in the air with the parachute deployed — otherwise the
+    // joiner sees a single frame of the tank at ground level before the next
+    // tickMovement broadcasts the elevated position. Only lift when a
+    // start-of-match countdown is upcoming or running; for late joins into
+    // an InProgress room there's no parachute window to land into.
+    const willParachute = this.phase !== MatchPhase.InProgress;
+    if (willParachute) {
+      pos.y = pos.y + PARACHUTE_DROP_HEIGHT;
+    }
     const tank: TankState = {
       playerId,
       playerName: safeName,
@@ -616,13 +716,19 @@ export class Room {
       shieldAvailable: true,
       shieldTimeRemaining: 0,
       flagId,
+      parachuteId,
       burning: false,
+      parachute: willParachute,
       // Shared reference with PlayerState — one mutation, both sides see it.
       inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
     };
     this.tanks.set(playerId, tank);
     this.refreshTankList();
     this.physics.addTank(tank);
+
+    if (player && this.phase === MatchPhase.InProgress) {
+      this.applySpawnProtection(tank, player);
+    }
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -683,12 +789,31 @@ export class Room {
       const weapon = WEAPONS.find((w) => w.id === data.weaponId);
       if (!weapon) return;
 
+      // Already piloting a Predator missile? The camera is gone from the
+      // tank and the tank body is frozen — let nothing else fire while
+      // the player is in missile-pilot mode. Mirrors the client-side
+      // suppression so a desync can't backdoor a shell out of the
+      // unattended cannon.
+      if (player.activeMissileId) return;
+
       const now = Date.now() / 1000;
+      // Cannon is locked while the tank is descending under a respawn
+      // parachute. The Countdown-phase parachute is already covered by
+      // the InProgress-only gate above (fire_request returns early
+      // outside InProgress), so this only triggers for the per-player
+      // respawn descent.
+      if (now < player.parachuteUntil) return;
       const prevFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
       if (now - prevFire < weapon.cooldown) return;
 
+      // Hold-to-fire weapons (minigun): gate on the heat gauge. Once
+      // it locks the player out, fire requests are rejected until the
+      // lockout expires.
+      if (weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now)) return;
+
       this.consumeAmmo(player, weapon.id);
       player.lastFireByWeapon.set(weapon.id, now);
+      if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
       player.lastInputAt = now;
       this.performFire(tank, player, weapon, data.aimPoint ?? null);
     });
@@ -715,6 +840,24 @@ export class Room {
       player.lastInputAt = nowSec;
     });
 
+    socket.on('predator_detonate', () => {
+      const player = this.players.get(socket.id);
+      if (!player || !player.activeMissileId) return;
+      const missile = this.activeProjectiles.get(player.activeMissileId);
+      if (!missile || missile.visualStyle !== 'predator_missile') return;
+      // Detonate at the current position. prevPos = current position
+      // too — the visual shot animation collapses to a one-frame burst
+      // at the impact since there's no in-flight segment to travel.
+      const here: Vec3 = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+      // No directHitTankId on a manual self-destruct — players inside
+      // the blast still take splash damage, with the flatCoreRadius
+      // making close targets eat the full base damage.
+      this.detonatePredatorMissile(missile, here, here, null);
+      // Stamp activity so the manual self-destruct keeps the player
+      // out of the idle-kick window.
+      player.lastInputAt = Date.now() / 1000;
+    });
+
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -722,6 +865,52 @@ export class Room {
     socket.on('disconnect', () => {
       this.removePlayer(socket.id);
     });
+  }
+
+  /** Read the player's *derived* heat at `now` without mutating. The
+   *  stored value is anchored to `lastShotAt`; cooling only counts the
+   *  idle time beyond the weapon's nominal inter-shot cooldown — burst
+   *  fire at the natural rate must not net-cool, otherwise the gauge
+   *  can never fill (decay × cooldown ≈ heatPerShot was the case for
+   *  the minigun's first tuning, so the player just heard "click" at
+   *  500 rps with no overheat). */
+  private heatValueAt(player: PlayerState, weapon: WeaponDefinition, now: number): number {
+    const entry = player.weaponHeat.get(weapon.id);
+    if (!entry) return 0;
+    const idle = Math.max(0, (now - entry.lastShotAt) - weapon.cooldown);
+    if (idle <= 0) return entry.value;
+    const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
+    return Math.max(0, entry.value - coolRate * idle);
+  }
+
+  /** True while the gun is in overheat lockout. */
+  private isWeaponOverheated(player: PlayerState, weapon: WeaponDefinition, now: number): boolean {
+    const entry = player.weaponHeat.get(weapon.id);
+    return !!entry && entry.lockedUntil > now;
+  }
+
+  /** Commit one shot's worth of heat. Re-derives the cooled value from
+   *  `lastShotAt`, adds `heatPerShot`, latches the lockout if the gauge
+   *  hits 1, and stamps `lastShotAt = now`. */
+  private bumpWeaponHeat(player: PlayerState, weapon: WeaponDefinition, now: number): void {
+    let entry = player.weaponHeat.get(weapon.id);
+    if (!entry) {
+      entry = { value: 0, lastShotAt: now, lockedUntil: 0 };
+      player.weaponHeat.set(weapon.id, entry);
+    } else {
+      entry.value = this.heatValueAt(player, weapon, now);
+    }
+    const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
+    entry.value = Math.min(1, entry.value + heatPerShot);
+    if (entry.value >= 1) {
+      const lockout = weapon.behaviorConfig?.overheatLockout ?? 2.5;
+      entry.lockedUntil = now + lockout;
+      // Hold the gauge at full while the lockout runs; once the
+      // lockout expires the next bump's heatValueAt() drains it
+      // smoothly off the lockout-end timestamp.
+      entry.value = 1;
+    }
+    entry.lastShotAt = now;
   }
 
   private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
@@ -746,6 +935,15 @@ export class Room {
         break;
       case 'jump':
         this.fireJump(tank, weapon);
+        break;
+      case 'nuke':
+        this.fireNuke(tank, weapon, aimPoint);
+        break;
+      case 'predator':
+        this.firePredator(tank, player, weapon);
+        break;
+      case 'soldiers':
+        this.fireSoldiers(tank, weapon);
         break;
       default: {
         const result = precomputedResult || simulateShot(
@@ -819,7 +1017,8 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      weaponHeat: new Map(),
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
@@ -829,14 +1028,17 @@ export class Room {
       burningUntil: 0,
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
+      activeMissileId: null,
+      parachuteUntil: 0,
+      parachuteGroundY: 0,
     });
 
     // Pick a unique flag for the bot from the full countries list
     const usedFlags = Array.from(this.tanks.values()).map(t => t.flagId?.toLowerCase()).filter(Boolean);
     const countryCodes = Object.keys(countries).map(k => k.toLowerCase());
     const availableFlags = countryCodes.filter(f => !usedFlags.includes(f));
-    
-    const randomFlag = availableFlags.length > 0 
+
+    const randomFlag = availableFlags.length > 0
       ? availableFlags[Math.floor(Math.random() * availableFlags.length)]
       : countryCodes[Math.floor(Math.random() * countryCodes.length)];
 
@@ -953,11 +1155,22 @@ export class Room {
     for (const step of result.steps) {
       const flightSeconds = this.getStepFlightSeconds(step);
       lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
-      if (!step.carveTerrain) continue;
       const timeout = setTimeout(() => {
         this.pendingShotTimeouts.delete(timeout);
-        this.applyTerrainStep(step);
-        this.regroundAliveTanks();
+        if (step.carveTerrain) {
+          this.applyTerrainStep(step);
+          this.regroundAliveTanks();
+        }
+        // Chain-trigger any mine whose centre lies inside this step's
+        // blast — fires whether or not the step actually carves, so a
+        // direct-hit shell with a non-zero blastRadius still detonates
+        // mines in the splash without needing a terrain crater.
+        if (step.blastRadius > 0) {
+          this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+          // Soldiers within the blast die unless they belong to the
+          // shooter (no friendly fire on your own squad).
+          this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
+        }
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
     }
@@ -983,6 +1196,15 @@ export class Room {
     if (appliedCarve) this.regroundAliveTanks();
 
     this.applyResolvedDamage(ownerId, weaponId, result.damageDealt, result.impulses);
+
+    // Chain-trigger any mine sitting inside any step's blast. Same hook as
+    // scheduleShotResult but evaluated immediately for instant-resolve
+    // weapons (mortar landings, drill eruptions, mine-trigger detonations).
+    for (const step of result.steps) {
+      if (step.blastRadius <= 0) continue;
+      this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+      this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
+    }
   }
 
   private applyResolvedDamage(
@@ -1025,6 +1247,12 @@ export class Room {
         victim.deaths++;
         if (victimPlayer) {
           victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+          // Drop any predator missile they were piloting — tickPredatorMissiles
+          // will see ownerLost=true on the next sim tick and detonate it
+          // where it currently is, returning camera control to the corpse.
+          if (victimPlayer.activeMissileId) {
+            victimPlayer.activeMissileId = null;
+          }
         }
         if (owner) {
           if (dmg.playerId === ownerId) {
@@ -1084,7 +1312,7 @@ export class Room {
   }
 
   private fireDrill(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
-    const plan = planDrillShot(tank, weapon, this.voxels);
+    const plan = planDrillShot(tank, weapon, this.voxels, this.getTankList());
     this.io.to(this.id).emit('shot_resolved', plan.entryResult);
 
     if (!plan.didImpact) return;
@@ -1221,6 +1449,153 @@ export class Room {
     }
   }
 
+  /** Little Boy: drops a nuclear bomb vertically from very high altitude
+   *  onto the aim point. Routed through a single ScheduledStrike of kind
+   *  'nuke' so the descent + impact reuse the strike scheduler — fires
+   *  immediately to give the client time to play the MOAB warning klaxon
+   *  during the fall window. Damage is flat 99 in the entire blastRadius
+   *  (no falloff) per applyImpact's `flatDamage` flag. */
+  private fireNuke(tank: TankState, weapon: (typeof WEAPONS)[number], aimPoint: Vec3 | null): void {
+    const fallback = simulateSegment(
+      createMuzzlePosition(tank),
+      createInitialVelocity(tank, Math.max(weapon.projectileSpeed, 18)),
+      this.voxels,
+    ).endPoint;
+    const center = aimPoint
+      ? { x: aimPoint.x, y: this.voxels.getHeight(aimPoint.x, aimPoint.z), z: aimPoint.z }
+      : fallback;
+
+    const fallHeight = weapon.behaviorConfig?.nukeFallHeight ?? 80;
+    const fallDuration = weapon.behaviorConfig?.nukeFallDuration ?? 3.5;
+
+    this.scheduledStrikes.push({
+      strikeId: `strike_${this.nextStrikeId++}`,
+      kind: 'nuke',
+      ownerId: tank.playerId,
+      weaponId: weapon.id,
+      // Trigger immediately so the client receives the descent shot now —
+      // the actual carve + damage land flightSeconds later via
+      // scheduleShotResult, matched to the visual fall.
+      triggerAt: this.simTime,
+      position: center,
+      blastRadius: weapon.blastRadius,
+      damage: weapon.damage,
+      terrainDamage: weapon.terrainDamage,
+      visualStyle: 'nuke',
+      spawnHeight: fallHeight,
+      fallDuration,
+    });
+  }
+
+  /** Predator: spawn a steerable missile and bind it to the player as their
+   *  one-and-only `activeMissileId`. While the missile is alive,
+   *  tickMovement masks the tank's translation input (the body stays
+   *  vulnerable but motionless) and tickPredatorMissiles reads the same
+   *  MovementInput as steering (A/D yaw, W/S pitch). Cooldown + ammo are
+   *  consumed by the caller before we get here, but we still gate on
+   *  "already piloting" so a double-click can't spawn two missiles. */
+  private firePredator(tank: TankState, player: PlayerState, weapon: (typeof WEAPONS)[number]): void {
+    if (player.activeMissileId) return; // already piloting — no chain-launch
+    const projectileId = `proj_${this.nextProjectileId++}`;
+    const position = createMuzzlePosition(tank);
+    const speed = weapon.behaviorConfig?.predatorSpeed ?? 22;
+    const velocity = createInitialVelocity(tank, speed);
+    // Initial yaw/pitch derived from the launch velocity so the steering
+    // integrator picks up where the muzzle pointed.
+    const yaw = Math.atan2(velocity.x, velocity.z);
+    const horiz = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    const pitch = Math.atan2(velocity.y, Math.max(0.0001, horiz));
+    this.registerProjectile({
+      projectileId,
+      ownerId: tank.playerId,
+      weaponId: weapon.id,
+      position,
+      velocity,
+      visualStyle: 'predator_missile',
+      targetId: null,
+      age: 0,
+      lifetime: weapon.behaviorConfig?.predatorLifetime ?? 9,
+      // Reuse turnRate/targetRadius fields for completeness (unused by
+      // the predator branch in tickProjectiles); steering rates live in
+      // the predator-specific fields below.
+      turnRate: 0,
+      targetRadius: 0,
+      blastRadius: weapon.behaviorConfig?.predatorBlastRadius ?? weapon.blastRadius,
+      damage: weapon.behaviorConfig?.predatorDamage ?? weapon.damage,
+      terrainDamage: weapon.behaviorConfig?.predatorTerrainDamage ?? weapon.terrainDamage,
+      predatorYaw: yaw,
+      predatorPitch: pitch,
+      predatorFlatCoreRadius: weapon.behaviorConfig?.predatorFlatCoreRadius ?? 1.6,
+      predatorTurnRate: weapon.behaviorConfig?.predatorTurnRate ?? 1.6,
+      predatorPitchRate: weapon.behaviorConfig?.predatorPitchRate ?? 1.2,
+      predatorSpeed: speed,
+    });
+    player.activeMissileId = projectileId;
+  }
+
+  /** Soldiers: drop a small squad of infantry units in a ring around the
+   *  firing tank. Each unit is independent — its own HP, fire timer, and
+   *  AI loop in `tickSoldiers`. They do not carve terrain, do not collide
+   *  with each other, and are filtered out of friendly fire (the owner's
+   *  splash never kills their own soldiers). Lifetime expiry / owner death
+   *  cleans them up. */
+  private fireSoldiers(tank: TankState, weapon: WeaponDefinition): void {
+    const cfg = weapon.behaviorConfig;
+    const count = cfg?.soldierCount ?? 5;
+    const hp = cfg?.soldierHp ?? 10;
+    const lifetime = cfg?.soldierLifetime ?? 30;
+    const shotInterval = cfg?.soldierShotInterval ?? 2;
+    const shotDamage = cfg?.soldierShotDamage ?? 8;
+    const shotRange = cfg?.soldierShotRange ?? 22;
+    const moveSpeed = cfg?.soldierMoveSpeed ?? 4.5;
+    const followDistance = cfg?.soldierFollowDistance ?? 8;
+
+    // No synthetic shot_resolved — the cannon doesn't actually fire a
+    // shell; the squad just appears. Routing this through shot_resolved
+    // would trigger the standard chassis-tilt recoil + barrel-glow
+    // animation, which look wrong for a deploy. The local client plays
+    // the deploy SFX off the fire_request directly.
+
+    const cx = tank.position.x;
+    const cz = tank.position.z;
+    // Phase offset randomises which way the ring is oriented per
+    // deploy, so a second cast doesn't perfectly stack on the first
+    // one's slots when a player has multiple ammo charges.
+    const phaseOffset = Math.random() * Math.PI * 2;
+    for (let i = 0; i < count; i++) {
+      const ang = phaseOffset + (i / count) * Math.PI * 2;
+      const soldierId = `sld_${this.nextSoldierId++}`;
+      // Slight per-soldier desync on the first shot so a 5-strong
+      // squad doesn't fire one synchronised volley every 2 s.
+      const initialFireDelay = 0.4 + Math.random() * 0.8;
+      // Spawn at the tank's hull, not at the formation slot — the
+      // tickSoldiers loop will march them out to their slot on the
+      // next tick, so visually they appear to climb out of the tank
+      // and walk to their station instead of teleporting in around it.
+      this.registerSoldier({
+        soldierId,
+        ownerId: tank.playerId,
+        position: { x: cx, y: tank.position.y, z: cz },
+        // Start facing outward toward the slot they're about to walk to.
+        rotation: Math.atan2(Math.cos(ang), Math.sin(ang)),
+        hp,
+        maxHp: hp,
+        walkPhase: 0,
+        color: tank.color,
+        lifetime,
+        fireTimer: initialFireDelay,
+        shotDamage,
+        shotRange,
+        shotInterval,
+        moveSpeed,
+        followDistance,
+        formationAngle: ang,
+        retreating: false,
+        weaponId: weapon.id,
+      });
+    }
+  }
+
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
     const startPos = createMuzzlePosition(tank);
     const startVel = createInitialVelocity(tank, weapon.projectileSpeed);
@@ -1243,7 +1618,12 @@ export class Room {
           position: segment.endPoint,
           radius: weapon.behaviorConfig?.mineBlastRadius ?? weapon.blastRadius,
           armed: false,
-          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 12,
+          // Mines persist for the whole match (tickHazards no longer
+          // decays mine timeRemaining). The stored value is only used to
+          // populate the wire field; clients display the mine the same
+          // way regardless. Keep the configured lifetime as a stat for
+          // future use.
+          timeRemaining: weapon.behaviorConfig?.mineLifetime ?? 9999,
           damage: weapon.behaviorConfig?.mineDamage ?? weapon.damage,
           tickInterval: 0,
           tickTimer: weapon.behaviorConfig?.mineArmTime ?? 0.8,
@@ -1387,7 +1767,17 @@ export class Room {
         kind = 'ammo';
       } else {
         kind = 'weapon';
-        weaponId = pool[Math.floor(Math.random() * pool.length)].id;
+        // Weighted sample: weapons with `pickupWeight` < 1 (rare) are
+        // proportionally less likely than the default-1 majority. Sum
+        // the weights, roll, walk until the bucket is hit.
+        let total = 0;
+        for (const w of pool) total += w.pickupWeight ?? 1;
+        let roll = Math.random() * total;
+        weaponId = pool[0].id;
+        for (const w of pool) {
+          roll -= w.pickupWeight ?? 1;
+          if (roll <= 0) { weaponId = w.id; break; }
+        }
       }
     } else {
       kind = 'ammo';
@@ -1455,8 +1845,20 @@ export class Room {
     }
 
     if (player.inventory.length < INVENTORY_MAX_SLOTS) {
+      // Fallback: ammo crate with no refillable slot grants a brand-new
+      // consumable weapon. Honour the room's `weaponAllowed` allow-list
+      // so a private match locked to e.g. just `mine` + `napalm` doesn't
+      // leak the rest of the arsenal in via this path. Same 3-state
+      // semantics as elsewhere: undefined = unrestricted, [] = explicit
+      // "no consumables" (return null since the pool collapses), [ids]
+      // = whitelist.
+      const allowed = this.settings.weaponAllowed
+        ? new Set(this.settings.weaponAllowed)
+        : null;
       const poolDefs = WEAPONS.filter(
-        (w) => w.startAmmo !== 'infinite' && !player.inventory.some((s) => s.weaponId === w.id),
+        (w) => w.startAmmo !== 'infinite'
+          && !player.inventory.some((s) => s.weaponId === w.id)
+          && (!allowed || allowed.has(w.id)),
       );
       if (poolDefs.length === 0) return null;
       const pick = poolDefs[Math.floor(Math.random() * poolDefs.length)];
@@ -1472,6 +1874,14 @@ export class Room {
     const player = this.players.get(playerId);
     if (!tank || !player) return;
     const pos = this.findSpawnPosition();
+    // Respawn parachute: lift Y and arm the per-player descent timer so
+    // the integrator runs the same parachute path used at match-start.
+    // Spawn protection is *not* applied here — it'll be applied at the
+    // moment the descent ends (integrator transition-out branch) so the
+    // 3 s shield-bubble window covers the post-landing walk, not the
+    // descent itself (which is already invulnerable via parachute gate).
+    const groundY = pos.y;
+    pos.y = groundY + PARACHUTE_DROP_HEIGHT;
     tank.position = pos;
     tank.hp = TANK_MAX_HP;
     tank.alive = true;
@@ -1481,6 +1891,7 @@ export class Room {
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
     tank.airborne = false;
+    tank.parachute = true;
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
     tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
@@ -1496,9 +1907,17 @@ export class Room {
     player.burningUntil = 0;
     player.burningOwner = null;
     player.input.seq = 0;
-    player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = 0;
+    player.parachuteUntil = Date.now() / 1000 + MATCH_COUNTDOWN_MS / 1000;
+    player.parachuteGroundY = groundY;
     player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
+    // Wipe any stale heat / lockout from the previous life — the new
+    // loadout may not even include a hold-to-fire weapon.
+    player.weaponHeat.clear();
+    // Defensive: kill cleanup already cleared this, but a desync would
+    // leave the camera locked to a despawned missile across respawn.
+    player.activeMissileId = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -1507,6 +1926,16 @@ export class Room {
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
     this.beginCountdown();
+  }
+
+  private applySpawnProtection(tank: TankState, player: PlayerState): void {
+    if (this.phase !== MatchPhase.InProgress) return;
+    const nowSec = Date.now() / 1000;
+    tank.shieldActive = true;
+    tank.shieldAvailable = true;
+    tank.shieldTimeRemaining = SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = nowSec + SPAWN_PROTECTION_SECONDS;
+    player.shieldExpiresAt = nowSec + SPAWN_PROTECTION_SECONDS;
   }
 
   /** Freeze tanks for MATCH_COUNTDOWN_MS, then flip to InProgress.
@@ -1526,6 +1955,16 @@ export class Room {
       if (this.phase !== MatchPhase.Countdown) return;
       this.phase = MatchPhase.InProgress;
       this.countdownEndsAt = 0;
+      this.scheduleReset();
+
+      // Apply spawn protection exactly as the tank touches the ground and the match starts
+      for (const [pid, player] of this.players) {
+        const tank = this.tanks.get(pid);
+        if (tank && tank.alive) {
+          this.applySpawnProtection(tank, player);
+        }
+      }
+
       this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     }, MATCH_COUNTDOWN_MS);
   }
@@ -1553,13 +1992,22 @@ export class Room {
       this.tickBots(simDt);
       this.tickMovement(simDt);
       this.tickProjectiles(simDt);
+      this.tickPredatorMissiles(simDt);
       this.tickHazards(simDt);
+      this.tickSoldiers(simDt);
       this.tickScheduledStrikes();
       this.tickPickups(simDt);
     }, targetTickMs);
 
     this.broadcastInterval = setInterval(() => {
-      this.io.to(this.id).emit('state_update', this.getStateUpdate());
+      // Per-recipient state_update so we can hide enemy mines outside
+      // their proximity-reveal range. Bots have no socket and are skipped.
+      // Cost: O(humans × hazards) per tick — small (≤8 humans, a handful
+      // of mines) so the saved fan-out from io.to() is a wash.
+      for (const [pid, player] of this.players) {
+        if (!player.socket) continue;
+        player.socket.emit('state_update', this.getStateUpdateFor(pid));
+      }
     }, (1 / TICK_RATE) * 1000);
 
     const fireDt = 1 / FIRE_TICK_RATE;
@@ -1669,7 +2117,8 @@ export class Room {
       if (damage > 0) {
         // Round to an integer so HP/score stay whole numbers.
         const dmgInt = Math.max(1, Math.round(damage));
-        const entry = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        const entry: import('@shared/types/index').DamageHit = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        if (tank.shieldActive) entry.shielded = true;
         if (owner === undefined) {
           orphaned.push(entry);
         } else {
@@ -1684,7 +2133,7 @@ export class Room {
     // Clone entries for the popup broadcast before applyResolvedDamage
     // might mutate them, then retroactively flag killed by re-reading
     // victim.alive post-damage.
-    const allHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    const allHits: import('@shared/types/index').DamageHit[] = [];
     for (const list of byOwner.values()) for (const h of list) allHits.push({ ...h });
     for (const h of orphaned) allHits.push({ ...h });
 
@@ -1758,7 +2207,15 @@ export class Room {
         // masked so a player who held it from the prev match doesn't carry
         // momentum into the new map.
         if (this.phase === MatchPhase.Countdown) {
-          effectiveInput = { ...effectiveInput, forward: false, backward: false, turbo: false };
+          effectiveInput = { ...effectiveInput, forward: false, backward: false, left: false, right: false, turbo: false };
+        }
+        // Predator: while the player is piloting a steerable missile,
+        // their MovementInput is consumed by the missile (yaw/pitch
+        // steering) and the tank body is held in place. Turbo also
+        // masked so it can't drain in the background. Tank stays
+        // vulnerable on purpose — that's the whole risk/reward.
+        if (player.activeMissileId) {
+          effectiveInput = EMPTY;
         }
         this.physics.setTankInput(pid, effectiveInput);
       } else {
@@ -1778,19 +2235,101 @@ export class Room {
     // freeze the body, and short-circuit the drown / airborne checks in
     // the readback loop. The player digs out by shooting.
     const buriedIds = this.computeBuriedTanks();
-    this.physics.applyTankInputs(dt, buriedIds);
+    // Parachuting tanks (start-of-match Countdown OR per-player respawn
+    // descent) bypass KCC drive — Y is overridden below from a
+    // deterministic linear lerp. resetTank is called only at transition
+    // out so the body lands in a single teleport. The previous
+    // implementation paid resetTank+readbackTank 60 Hz × N tanks which
+    // dominated the Countdown CPU profile.
+    const inCountdown = this.phase === MatchPhase.Countdown;
+    const parachutingIds = new Set<PlayerId>();
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      if (inCountdown) {
+        parachutingIds.add(pid);
+        continue;
+      }
+      const player = this.players.get(pid);
+      if (player && nowSec < player.parachuteUntil) parachutingIds.add(pid);
+    }
+    let applySkipIds = buriedIds;
+    if (parachutingIds.size > 0) {
+      applySkipIds = new Set<PlayerId>(buriedIds);
+      for (const id of parachutingIds) applySkipIds.add(id);
+    }
+    this.physics.applyTankInputs(dt, applySkipIds);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
 
       const buried = buriedIds.has(pid);
+      const player = this.players.get(pid);
+      const wasParachute = tank.parachute === true;
+      const isParachuting = parachutingIds.has(pid);
+
+      if (isParachuting) {
+        // Linear lerp Y from peak → groundY. Two source-of-timing cases:
+        //  - Countdown match-start: time anchored to this.countdownEndsAt,
+        //    groundY sampled per tick (cheap voxel query).
+        //  - Per-player respawn: time anchored to player.parachuteUntil,
+        //    groundY cached on the player at respawn time.
+        let groundY: number;
+        let fraction: number;
+        if (inCountdown) {
+          const remain = Math.max(0, this.countdownEndsAt - Date.now());
+          fraction = Math.min(1, remain / MATCH_COUNTDOWN_MS);
+          groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+        } else {
+          // player must exist — parachutingIds entries below the inCountdown
+          // branch were filtered on player.parachuteUntil.
+          const remainSec = Math.max(0, player!.parachuteUntil - nowSec);
+          fraction = Math.min(1, remainSec / (MATCH_COUNTDOWN_MS / 1000));
+          groundY = player!.parachuteGroundY;
+        }
+        tank.position.y = groundY + PARACHUTE_DROP_HEIGHT * fraction;
+        tank.parachute = true;
+        tank.airborne = false;
+        tank.bodyPitch = 0;
+        tank.bodyRoll = 0;
+        tank.linVel.x = 0;
+        tank.linVel.y = -(PARACHUTE_DROP_HEIGHT * 1000) / MATCH_COUNTDOWN_MS;
+        tank.linVel.z = 0;
+        tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
+        tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
+        if (player) tank.lastAppliedSeq = player.input.seq;
+        continue;
+      }
+
+      // Parachute just ended this tick: snap the body to the sampled
+      // ground in one resetTank call so the next tick's KCC has a
+      // grounded contact, then apply spawn-protection if this was a
+      // respawn descent (the start-of-match Countdown case is already
+      // covered by beginCountdown's setTimeout). Skip the rest of this
+      // iteration so normal physics resumes from the following tick.
+      if (wasParachute && !buried) {
+        const cachedGround = player && player.parachuteUntil > 0
+          ? player.parachuteGroundY
+          : this.voxels.getHeight(tank.position.x, tank.position.z);
+        tank.position.y = cachedGround;
+        this.physics.resetTank(pid, tank.position, tank.bodyRotation);
+        tank.parachute = false;
+        tank.airborne = false;
+        if (player) {
+          if (player.parachuteUntil > 0) {
+            this.applySpawnProtection(tank, player);
+            player.parachuteUntil = 0;
+          }
+          tank.lastAppliedSeq = player.input.seq;
+        }
+        continue;
+      }
+
       if (!buried) this.physics.readbackTank(pid, tank);
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
       // physics tick consumed.
-      const player = this.players.get(pid);
       if (player) tank.lastAppliedSeq = player.input.seq;
       // Airborne is now a pure readout of the body's contact state —
       // broadcast to clients for HUD / mesh effects, not used as a
@@ -1798,6 +2337,7 @@ export class Room {
       // their body is pinned, so any airborne flag would trigger a ragdoll
       // render on the client that's not actually happening.
       tank.airborne = buried ? false : !this.physics.isGrounded(pid);
+
 
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
@@ -1827,6 +2367,7 @@ export class Room {
           tank.alive = false;
           if (player) {
             player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+            if (player.activeMissileId) player.activeMissileId = null;
           }
           this.io.to(this.id).emit('match_event', {
             kind: 'suicide',
@@ -1866,6 +2407,10 @@ export class Room {
 
   private tickProjectiles(dt: number): void {
     for (const [projectileId, projectile] of this.activeProjectiles) {
+      // Predator missiles steer from MovementInput rather than chasing a
+      // target — they get a dedicated tick so seeker logic doesn't mangle
+      // their velocity.
+      if (projectile.visualStyle === 'predator_missile') continue;
       projectile.age += dt;
 
       if (!projectile.targetId || !isTargetValidFn(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position, this.tanks)) {
@@ -1983,38 +2528,449 @@ export class Room {
     }
   }
 
-  private tickHazards(dt: number): void {
-    for (const [hazardId, hazard] of this.activeHazards) {
-      hazard.timeRemaining -= dt;
-      hazard.wire.timeRemaining = hazard.timeRemaining;
+  /** Steerable Predator missiles. Each one's owner is locked into piloting
+   *  mode (their tank can't translate) and their MovementInput is consumed
+   *  here as steering: A/D rotate yaw at predatorTurnRate, W/S rotate pitch
+   *  at predatorPitchRate. Cruise speed is constant. Detonation conditions:
+   *  terrain hit, tank hit (any tank including the owner — fly carefully),
+   *  out-of-bounds, lifetime expiry, owner disconnect/death. On any of
+   *  those we apply the impact like a regular shell and clear the owner's
+   *  activeMissileId so the camera (client) returns to the tank. */
+  private tickPredatorMissiles(dt: number): void {
+    for (const [projectileId, missile] of this.activeProjectiles) {
+      if (missile.visualStyle !== 'predator_missile') continue;
+      missile.age += dt;
 
-      if (hazard.type === 'mine') {
-        if (!hazard.armed) {
-          hazard.tickTimer -= dt;
-          if (hazard.tickTimer <= 0) {
-            hazard.armed = true;
-            hazard.wire.armed = true;
-          }
-        } else {
-          const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
-          if (triggered) {
-            const damageTotals: DamageTotals = new Map();
-            const carveTerrain = applyImpact({
-              point: hazard.position,
-              blastRadius: hazard.blastRadius,
-              damage: hazard.damage,
-              terrainDamage: hazard.terrainDamage,
-            }, this.getTankList(), damageTotals);
-            const result = buildImpactResult(hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', carveTerrain, damageTotals);
-            this.unregisterHazard(hazardId);
-            this.emitShotResultNow(result, hazard.ownerId, hazard.weaponId);
-            continue;
+      const owner = this.tanks.get(missile.ownerId);
+      const ownerPlayer = this.players.get(missile.ownerId);
+      // Owner died, disconnected, or somehow lost their handle on this
+      // missile — detonate at the current position so the world doesn't
+      // hold an orphaned ghost projectile.
+      const ownerLost = !owner || !owner.alive || !ownerPlayer || ownerPlayer.activeMissileId !== projectileId;
+
+      const yawRate = missile.predatorTurnRate ?? 1.6;
+      const pitchRate = missile.predatorPitchRate ?? 1.2;
+      const speed = missile.predatorSpeed ?? 22;
+      let yaw = missile.predatorYaw ?? Math.atan2(missile.velocity.x, missile.velocity.z);
+      let pitch = missile.predatorPitch ?? 0;
+
+      if (!ownerLost && ownerPlayer) {
+        const inp = ownerPlayer.input;
+        // Arcade convention (matches user playtest feedback): W = climb,
+        // S = dive ("W is up"); A = turn left, D = turn right. The yaw
+        // signs look reversed vs the tank because the chase-cam viewer
+        // sits behind the missile looking down its velocity, not above
+        // it like the tank's third-person follow.
+        if (inp.left) yaw += yawRate * dt;
+        if (inp.right) yaw -= yawRate * dt;
+        if (inp.forward) pitch += pitchRate * dt;
+        if (inp.backward) pitch -= pitchRate * dt;
+        // Clamp pitch so the player can't roll the missile past vertical
+        // (looks awful + inverts yaw control).
+        const PITCH_LIMIT = Math.PI * 0.45;
+        if (pitch > PITCH_LIMIT) pitch = PITCH_LIMIT;
+        if (pitch < -PITCH_LIMIT) pitch = -PITCH_LIMIT;
+      }
+      missile.predatorYaw = yaw;
+      missile.predatorPitch = pitch;
+
+      const cosP = Math.cos(pitch);
+      const sinP = Math.sin(pitch);
+      const sinY = Math.sin(yaw);
+      const cosY = Math.cos(yaw);
+      // Convention: pitch > 0 = climb (matches tank.barrelPitch semantics
+      // elsewhere in the codebase). W decreases pitch (dive), S increases
+      // it (climb), so velocity.y = +sin(pitch)*speed.
+      missile.velocity.x = sinY * cosP * speed;
+      missile.velocity.y = sinP * speed;
+      missile.velocity.z = cosY * cosP * speed;
+
+      const prevPos = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+      missile.position.x += missile.velocity.x * dt;
+      missile.position.y += missile.velocity.y * dt;
+      missile.position.z += missile.velocity.z * dt;
+
+      missile.wire.position = missile.position;
+      missile.wire.velocity = missile.velocity;
+
+      // Detonation tests: terrain, any tank hull, out-of-bounds, or
+      // lifetime/owner-loss timeout. directHitTankId is set when the
+      // missile collides with a tank's hull mid-flight so applyImpact
+      // can apply the standard direct-hit damage multiplier (1.6×) +
+      // guaranteed-airborne impulse — same semantics as a shell that
+      // physically struck the body.
+      let impactPoint: Vec3 | null = null;
+      let directHitTankId: PlayerId | null = null;
+      const terrainY = this.voxels.getHeight(missile.position.x, missile.position.z);
+      if (missile.position.y <= terrainY) {
+        impactPoint = { x: missile.position.x, y: terrainY, z: missile.position.z };
+      }
+      if (!impactPoint) {
+        for (const t of this.tanks.values()) {
+          if (!t.alive) continue;
+          // Owner can self-detonate on their own hull — gameplay choice
+          // matching the Little Boy / mine philosophy: if you steer it
+          // back into yourself, that's on you.
+          const dx = t.position.x - missile.position.x;
+          const dy = t.position.y + 0.8 - missile.position.y;
+          const dz = t.position.z - missile.position.z;
+          if (dx * dx + dy * dy + dz * dz <= 1.4 * 1.4) {
+            impactPoint = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+            directHitTankId = t.playerId;
+            break;
           }
         }
       }
+      if (!impactPoint) {
+        const outOfBounds =
+          missile.position.x < -10 || missile.position.x > this.voxels.sizeX * this.voxels.cellSize + 10 ||
+          missile.position.z < -10 || missile.position.z > this.voxels.sizeZ * this.voxels.cellSize + 10 ||
+          missile.position.y < -20;
+        if (outOfBounds || missile.age >= missile.lifetime || ownerLost) {
+          // Detonate where we are so the player still gets feedback (and
+          // any tanks underneath catch the splash). Even an owner-loss
+          // detonation feels better than a silent vanish.
+          impactPoint = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+        }
+      }
 
-      if (hazard.timeRemaining <= 0) {
+      if (impactPoint) {
+        this.detonatePredatorMissile(missile, impactPoint, prevPos, directHitTankId);
+      }
+    }
+  }
+
+  /** Force-detonate a Predator missile at the given impact point. Same
+   *  applyImpact + emitShotResultNow flow as the natural detonation
+   *  branch in tickPredatorMissiles, factored out so the manual
+   *  spacebar self-destruct (predator_detonate event) and the
+   *  collision/timeout path share one code path. `prevPos` is the
+   *  segment start used by the visual shot animation — typically the
+   *  pre-tick position when called from the natural path, or the
+   *  current position itself for manual detonation. `directHitTankId`
+   *  is set only when the missile physically collided with a tank's
+   *  hull mid-flight; passing it triggers applyImpact's 1.6× direct
+   *  damage multiplier + guaranteed-airborne impulse, so a player who
+   *  steers the warhead onto a target gets the kill they earned. */
+  private detonatePredatorMissile(missile: ActiveProjectileRuntime, impactPoint: Vec3, prevPos: Vec3, directHitTankId: PlayerId | null): void {
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: impactPoint,
+      blastRadius: missile.blastRadius,
+      damage: missile.damage,
+      terrainDamage: missile.terrainDamage,
+      flatCoreRadius: missile.predatorFlatCoreRadius,
+      directHitTankId,
+    }, this.getTankList(), damageTotals);
+
+    const result = createShotResult(missile.ownerId, missile.weaponId, [
+      makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', carveTerrain, missile.blastRadius, 'predator_missile'),
+    ], damageTotals);
+    this.unregisterProjectile(missile.projectileId);
+    const ownerPlayer = this.players.get(missile.ownerId);
+    if (ownerPlayer && ownerPlayer.activeMissileId === missile.projectileId) {
+      ownerPlayer.activeMissileId = null;
+    }
+    this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
+  }
+
+  /** Soldiers AI tick. Per unit:
+   *   - Decrement lifetime; despawn (expired) when it hits 0.
+   *   - If the owner is dead/missing, despawn (expired).
+   *   - Detect run-over by an enemy hull (XZ distance < HULL_RADIUS+0.4) →
+   *     instant-kill.
+   *   - Find the nearest enemy tank within shotRange.
+   *   - If an enemy is in range: face it, count down `fireTimer`, fire a
+   *     hitscan rifle shot when it expires (apply damage via the standard
+   *     resolved-damage path so kill feed / score / popups all work).
+   *   - Otherwise (no enemy in range): walk toward the owner if outside
+   *     followDistance, otherwise idle.
+   *   - Sit on the terrain surface every tick — no physics body needed,
+   *     soldiers ignore mid-air states. */
+  private tickSoldiers(dt: number): void {
+    const dead: string[] = [];
+    const expired: string[] = [];
+    // Group damage by owner (the tank that fired the Soldiers weapon) so
+    // applyResolvedDamage attributes kills correctly per-shot.
+    const damageByOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
+    const popupHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+
+    // Lead time before natural lifetime expiry at which the surviving
+    // squad turns and walks back to the tank to "re-board". They reach
+    // the hull and despawn cleanly inside this window — no death
+    // splatter — visually selling that the unit climbed back into the
+    // turret instead of evaporating in place.
+    const RETREAT_LEAD_SECONDS = 3;
+    const REBOARD_RADIUS = HULL_RADIUS + 0.4;
+    const reboardR2 = REBOARD_RADIUS * REBOARD_RADIUS;
+
+    for (const [sid, soldier] of this.activeSoldiers) {
+      soldier.lifetime -= dt;
+      if (soldier.lifetime <= 0) {
+        expired.push(sid);
+        continue;
+      }
+      const owner = this.tanks.get(soldier.ownerId);
+      if (!owner || !owner.alive) {
+        expired.push(sid);
+        continue;
+      }
+
+      // Trip the retreat latch with `RETREAT_LEAD_SECONDS` of lifetime
+      // remaining — only if the owner is still alive (we already
+      // expired-out above otherwise). Once latched it never resets.
+      if (!soldier.retreating && soldier.lifetime <= RETREAT_LEAD_SECONDS) {
+        soldier.retreating = true;
+      }
+
+      // Already inside reboard radius while retreating? Disappear cleanly
+      // (expired = no blood splatter — they made it home).
+      if (soldier.retreating) {
+        const ddx = owner.position.x - soldier.position.x;
+        const ddz = owner.position.z - soldier.position.z;
+        if (ddx * ddx + ddz * ddz <= reboardR2) {
+          expired.push(sid);
+          continue;
+        }
+      }
+
+      // Run-over: any alive *enemy* hull whose XZ centre is within hull
+      // radius + a small grace margin instakills the soldier. Y is ignored
+      // (close enough on-foot range that a tank one floor up still counts
+      // as the same encounter).
+      const RUN_OVER_RADIUS = HULL_RADIUS + 0.4;
+      const ro2 = RUN_OVER_RADIUS * RUN_OVER_RADIUS;
+      let runOver = false;
+      for (const t of this.tanks.values()) {
+        if (!t.alive || t.playerId === soldier.ownerId) continue;
+        const dx = t.position.x - soldier.position.x;
+        const dz = t.position.z - soldier.position.z;
+        if (dx * dx + dz * dz <= ro2) { runOver = true; break; }
+      }
+      if (runOver || soldier.hp <= 0) {
+        dead.push(sid);
+        continue;
+      }
+
+      // Walk target depends on phase: while retreating, head straight
+      // for the tank to re-board (no formation slot — the squad
+      // collapses inward). Otherwise hold the formation ring at the
+      // soldier's fixed angular slot offset from the owner.
+      let targetX: number;
+      let targetZ: number;
+      let deadZone: number;
+      if (soldier.retreating) {
+        targetX = owner.position.x;
+        targetZ = owner.position.z;
+        deadZone = 0; // walk all the way in until the reboard radius hits
+      } else {
+        targetX = owner.position.x + Math.cos(soldier.formationAngle) * soldier.followDistance;
+        targetZ = owner.position.z + Math.sin(soldier.formationAngle) * soldier.followDistance;
+        deadZone = 0.4;
+      }
+      const dxS = targetX - soldier.position.x;
+      const dzS = targetZ - soldier.position.z;
+      const distS = Math.sqrt(dxS * dxS + dzS * dzS);
+      let walkedX = 0;
+      let walkedZ = 0;
+      if (distS > deadZone) {
+        const step = Math.min(distS, soldier.moveSpeed * dt);
+        walkedX = (dxS / distS) * step;
+        walkedZ = (dzS / distS) * step;
+        soldier.position.x += walkedX;
+        soldier.position.z += walkedZ;
+        soldier.walkPhase += step;
+      }
+
+      // Separation: tiny push away from any allied soldier within 0.6 m.
+      // Belt-and-braces against intersecting meshes when the formation
+      // ring shrinks (e.g. squad cut in half — the survivors converge
+      // toward each other's slot diametrically opposite). Cheap: at most
+      // soldierCount² distance checks per tick, count is small (5).
+      const SEP_RADIUS = 0.6;
+      const sep2 = SEP_RADIUS * SEP_RADIUS;
+      let pushX = 0;
+      let pushZ = 0;
+      for (const other of this.activeSoldiers.values()) {
+        if (other === soldier || other.ownerId !== soldier.ownerId) continue;
+        const ddx = soldier.position.x - other.position.x;
+        const ddz = soldier.position.z - other.position.z;
+        const d2 = ddx * ddx + ddz * ddz;
+        if (d2 <= 1e-6 || d2 >= sep2) continue;
+        const d = Math.sqrt(d2);
+        // Stronger push the closer they are (1 → 0 over [0, SEP_RADIUS]).
+        const strength = (1 - d / SEP_RADIUS) * soldier.moveSpeed * dt * 0.6;
+        pushX += (ddx / d) * strength;
+        pushZ += (ddz / d) * strength;
+      }
+      soldier.position.x += pushX;
+      soldier.position.z += pushZ;
+
+      // Engagement: pick nearest enemy tank within shotRange (XYZ).
+      const targetId = findNearestEnemyFn(
+        soldier.position,
+        soldier.ownerId,
+        soldier.shotRange,
+        this.tanks.values(),
+      );
+
+      // Facing priority: target if engaging, else direction of motion,
+      // else owner. Stand-still soldiers face the squad leader so the
+      // group has a coherent silhouette.
+      if (targetId) {
+        const target = this.tanks.get(targetId)!;
+        const dxT = target.position.x - soldier.position.x;
+        const dzT = target.position.z - soldier.position.z;
+        soldier.rotation = Math.atan2(dxT, dzT);
+        soldier.fireTimer -= dt;
+        if (soldier.fireTimer <= 0) {
+          soldier.fireTimer = soldier.shotInterval;
+          const fromY = soldier.position.y + 1.0;
+          const toY = target.position.y + 0.8;
+          this.io.to(this.id).emit('soldier_fire', {
+            soldierId: soldier.soldierId,
+            ownerId: soldier.ownerId,
+            color: soldier.color,
+            from: { x: soldier.position.x, y: fromY, z: soldier.position.z },
+            to: { x: target.position.x, y: toY, z: target.position.z },
+            targetId: target.playerId,
+          });
+          const killed = target.hp - soldier.shotDamage <= 0;
+          const hit = { playerId: target.playerId, damage: soldier.shotDamage, killed };
+          const list = damageByOwner.get(soldier.ownerId);
+          if (list) list.push(hit);
+          else damageByOwner.set(soldier.ownerId, [hit]);
+          popupHits.push({ ...hit });
+        }
+      } else if (walkedX !== 0 || walkedZ !== 0) {
+        soldier.rotation = Math.atan2(walkedX, walkedZ);
+      } else {
+        // Idle on the slot — face outward from the owner so the squad
+        // keeps eyes on the perimeter, not all staring at the leader.
+        // Slot offset uses (cos·sin) of formationAngle, and Three.js
+        // body yaw via atan2(dx, dz) maps that pair to π/2 - angle.
+        soldier.rotation = Math.atan2(
+          Math.cos(soldier.formationAngle),
+          Math.sin(soldier.formationAngle),
+        );
+      }
+
+      // Stick to the ground every tick — terrain may have been carved
+      // beneath them, or they may have walked off a ledge.
+      soldier.position.y = this.voxels.getHeight(soldier.position.x, soldier.position.z);
+
+      // Sync wire view.
+      soldier.wire.position = soldier.position;
+      soldier.wire.rotation = soldier.rotation;
+      soldier.wire.hp = soldier.hp;
+      soldier.wire.walkPhase = soldier.walkPhase;
+    }
+
+    for (const sid of dead) this.unregisterSoldier(sid, false);
+    for (const sid of expired) this.unregisterSoldier(sid, true);
+
+    // Commit accumulated rifle damage in one batch per owner so kills
+    // / score updates roll up cleanly.
+    for (const [ownerId, hits] of damageByOwner) {
+      this.applyResolvedDamage(ownerId, 'soldiers', hits);
+    }
+    if (popupHits.length > 0) {
+      // Re-flag killed flags from post-damage tank state so the popup
+      // matches the authoritative outcome.
+      for (const h of popupHits) {
+        const victim = this.tanks.get(h.playerId);
+        if (!victim || !victim.alive) h.killed = true;
+      }
+      this.io.to(this.id).emit('damage_applied', { weaponId: 'soldiers', hits: popupHits });
+    }
+  }
+
+  private tickHazards(dt: number): void {
+    for (const [hazardId, hazard] of this.activeHazards) {
+      // Mines persist for the whole match — they only disappear when they
+      // detonate (proximity trigger or chain reaction) or on match reset.
+      // All other hazards keep their lifetime decay.
+      if (hazard.type !== 'mine') {
+        hazard.timeRemaining -= dt;
+        hazard.wire.timeRemaining = hazard.timeRemaining;
+        if (hazard.timeRemaining <= 0) {
+          this.unregisterHazard(hazardId);
+          continue;
+        }
+        continue;
+      }
+
+      if (!hazard.armed) {
+        hazard.tickTimer -= dt;
+        if (hazard.tickTimer <= 0) {
+          hazard.armed = true;
+          hazard.wire.armed = true;
+        }
+      } else {
+        const triggered = findTankInRadiusFn(hazard.position, hazard.triggerRadius, hazard.ownerId, this.tanks.values());
+        if (triggered) {
+          this.unregisterHazard(hazardId);
+          this.detonateMine(hazard);
+          // Walking on one mine also chains nearby mines — the player
+          // who tripped the wire may be inside another mine's splash.
+          this.triggerMinesInBlast(hazard.position, hazard.blastRadius);
+        }
+      }
+    }
+  }
+
+  /** Detonate a single mine: emit shot_resolved, commit carve, apply
+   *  damage to every alive tank in blast (owner included — chain or
+   *  proximity, the splash doesn't discriminate). Caller is responsible
+   *  for unregisterHazard before calling so the mine can't double-trigger
+   *  inside applyResolvedDamage's spawn-protection branch. */
+  private detonateMine(hazard: ActiveHazardRuntime): void {
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: hazard.position,
+      blastRadius: hazard.blastRadius,
+      damage: hazard.damage,
+      terrainDamage: hazard.terrainDamage,
+    }, this.getTankList(), damageTotals);
+    const result = buildImpactResult(
+      hazard.ownerId, hazard.weaponId, hazard.position, hazard.blastRadius, 'mine_burst', carveTerrain, damageTotals,
+    );
+    this.io.to(this.id).emit('shot_resolved', result);
+    let appliedCarve = false;
+    for (const step of result.steps) {
+      if (!step.carveTerrain) continue;
+      this.applyTerrainStep(step);
+      appliedCarve = true;
+    }
+    if (appliedCarve) this.regroundAliveTanks();
+    this.applyResolvedDamage(hazard.ownerId, hazard.weaponId, result.damageDealt, result.impulses);
+  }
+
+  /** Worklist-based chain trigger: any active mine whose centre lies inside
+   *  a blast (point + blastRadius) detonates, and the resulting blast is
+   *  queued back so subsequent mines in its splash chain too. Owner of a
+   *  chained mine is damaged like everyone else — a careless shot at your
+   *  own minefield is supposed to hurt. */
+  private triggerMinesInBlast(point: Vec3, blastRadius: number): void {
+    if (blastRadius <= 0) return;
+    const queue: { center: Vec3; radius: number }[] = [
+      { center: { x: point.x, y: point.y, z: point.z }, radius: blastRadius },
+    ];
+    while (queue.length > 0) {
+      const { center, radius } = queue.shift()!;
+      const r2 = radius * radius;
+      for (const [hazardId, hazard] of this.activeHazards) {
+        if (hazard.type !== 'mine') continue;
+        const dx = hazard.position.x - center.x;
+        const dy = hazard.position.y - center.y;
+        const dz = hazard.position.z - center.z;
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
         this.unregisterHazard(hazardId);
+        this.detonateMine(hazard);
+        queue.push({
+          center: { x: hazard.position.x, y: hazard.position.y, z: hazard.position.z },
+          radius: hazard.blastRadius,
+        });
       }
     }
   }
@@ -2024,6 +2980,15 @@ export class Room {
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.triggerAt > this.simTime);
 
     for (const strike of ready) {
+      // Nuke is on a deferred-damage path: 3.5 s descent is too long
+      // to lock damage in at strike-trigger time — players who turbo
+      // away should actually escape. We emit the visual immediately
+      // and recompute damage against live positions at impact.
+      if (strike.kind === 'nuke') {
+        this.fireNukeStrike(strike);
+        continue;
+      }
+
       const damageTotals: DamageTotals = new Map();
       const carveTerrain = applyImpact({
         point: strike.position,
@@ -2033,12 +2998,13 @@ export class Room {
       }, this.getTankList(), damageTotals);
 
       if (strike.kind === 'mortar') {
+        const fallDuration = strike.fallDuration ?? 0.8;
         const start = {
           x: strike.position.x,
           y: strike.position.y + strike.spawnHeight,
           z: strike.position.z,
         };
-        const trajectory = createLinearTrajectory(start, strike.position, 0.8);
+        const trajectory = createLinearTrajectory(start, strike.position, fallDuration);
         const result = createShotResult(strike.ownerId, strike.weaponId, [
           makeStep(0, trajectory, strike.position, 'impact', carveTerrain, strike.blastRadius, 'mortar_shell'),
         ], damageTotals);
@@ -2049,6 +3015,91 @@ export class Room {
       const result = buildImpactResult(strike.ownerId, strike.weaponId, strike.position, strike.blastRadius, strike.visualStyle, carveTerrain, damageTotals);
       this.emitShotResultNow(result, strike.ownerId, strike.weaponId);
     }
+  }
+
+  /** Nuke strike: emit the descending shell immediately so the client
+   *  starts the MOAB klaxon + falling-bomb visual, then schedule a
+   *  setTimeout for the impact moment that:
+   *    1. Carves the crater against the authoritative voxel grid.
+   *    2. Computes damage from the current tank positions (so a turbo
+   *       escape during the fall actually pulls you out of range).
+   *    3. Applies HP/score via applyResolvedDamage and emits
+   *       damage_applied so the client pops floating numbers.
+   *    4. Triggers nearby mines via the standard chain helper. */
+  private fireNukeStrike(strike: ScheduledStrike): void {
+    const fallDuration = strike.fallDuration ?? 3.5;
+    const start = {
+      x: strike.position.x,
+      y: strike.position.y + strike.spawnHeight,
+      z: strike.position.z,
+    };
+    const trajectory = createLinearTrajectory(start, strike.position, fallDuration);
+    const visualStep = makeStep(0, trajectory, strike.position, 'impact', true, strike.blastRadius, 'nuke_falling');
+    const visualResult = createShotResult(strike.ownerId, strike.weaponId, [visualStep]);
+    // Empty damageDealt — the impact handler emits damage_applied.
+    this.io.to(this.id).emit('shot_resolved', visualResult);
+
+    const ownerId = strike.ownerId;
+    const weaponId = strike.weaponId;
+    const impactTimeout = setTimeout(() => {
+      this.pendingShotTimeouts.delete(impactTimeout);
+
+      // 1. Carve.
+      this.applyTerrainStep(visualStep);
+      this.regroundAliveTanks();
+
+      // 2. Damage from live positions.
+      const damageTotals: DamageTotals = new Map();
+      applyImpact({
+        point: strike.position,
+        blastRadius: strike.blastRadius,
+        damage: strike.damage,
+        terrainDamage: strike.terrainDamage,
+        flatCoreRadius: strike.blastRadius * 0.33,
+        impulseScale: 5,
+      }, this.getTankList(), damageTotals);
+
+      // 3. Pack damageDealt + impulses, apply, broadcast popups.
+      const damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+      const impulses: { playerId: PlayerId; impulse: Vec3 }[] = [];
+      for (const [pid, val] of damageTotals) {
+        const victim = this.tanks.get(pid);
+        const killed = !!victim && val.damage >= victim.hp;
+        damageDealt.push({ playerId: pid, damage: val.damage, killed });
+        const impLen2 = val.impulse.x ** 2 + val.impulse.y ** 2 + val.impulse.z ** 2;
+        if (impLen2 > 1e-4) impulses.push({ playerId: pid, impulse: val.impulse });
+      }
+      this.applyResolvedDamage(ownerId, weaponId, damageDealt, impulses);
+      if (damageDealt.length > 0) {
+        this.io.to(this.id).emit('damage_applied', { weaponId, hits: damageDealt });
+      }
+
+      // 4. Napalm corolla — one big central patch + 6 rim patches at
+      //    the visible crater edge. Active-cell budget caps total fire
+      //    coverage so the FireGrid CA stays cheap even with several
+      //    nukes burning concurrently.
+      const centerFuel = Math.min(255, Math.round(36 * 6));
+      const rimFuel = Math.min(255, Math.round(36 * 4));
+      this.fire.ignite(
+        { x: strike.position.x, z: strike.position.z },
+        Math.max(6, strike.blastRadius * 0.32),
+        centerFuel,
+        ownerId,
+      );
+      const rimRadius = strike.blastRadius * 0.85;
+      const rimPatchCount = 6;
+      for (let i = 0; i < rimPatchCount; i++) {
+        const angle = (i / rimPatchCount) * Math.PI * 2 + Math.random() * 0.4;
+        const x = strike.position.x + Math.cos(angle) * rimRadius;
+        const z = strike.position.z + Math.sin(angle) * rimRadius;
+        this.fire.ignite({ x, z }, 4, rimFuel, ownerId);
+      }
+
+      // 5. Mine chain reactions.
+      this.triggerMinesInBlast(strike.position, strike.blastRadius);
+      this.damageSoldiersInBlast(strike.position, strike.blastRadius, ownerId);
+    }, fallDuration * 1000);
+    this.pendingShotTimeouts.add(impactTimeout);
   }
 
   /** Set of alive tanks whose hull-centre voxel is solid — i.e. they've been
@@ -2097,6 +3148,11 @@ export class Room {
         if (now >= player.respawnAllowedAt) this.respawnTank(pid);
         continue;
       }
+
+      // Bots stay passive while parachuting in after respawn — no aim,
+      // no fire, no movement input. The integrator pins their hull and
+      // the tank drops in visually identical to a human respawn.
+      if (now < player.parachuteUntil) continue;
 
       // TARGETING - very large radius to ensure they always find an enemy
       const targetId = findNearestEnemyFn(tank.position, pid, 5000, allTanks);
@@ -2159,15 +3215,25 @@ export class Room {
           continue;
         }
 
-        // Only run simulation if cooldown is ready to save performance
+        // Only run simulation if cooldown is ready to save performance.
+        // Predator is excluded from the bot pool — it requires the
+        // pilot-camera client takeover, which bots have no concept of;
+        // letting them fire it would just freeze them in place for
+        // 9 s while a missile flew straight ahead.
         const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
-        if (now - prevBotFire >= weapon.cooldown) {
+        if (weapon.behavior === 'predator') {
+          player.botWeaponIndex = (slotIdx + 1) % player.inventory.length;
+          continue;
+        }
+        if (now - prevBotFire >= weapon.cooldown
+          && !(weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now))) {
           // Dry-run simulation using the current (jittered) aim
           const result = simulateShot(tank, weapon, this.voxels, allTanks);
 
           // Fire! The jitter ensures they only hit 40-60% of the time.
           this.consumeAmmo(player, weapon.id);
           player.lastFireByWeapon.set(weapon.id, now);
+          if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
           this.performFire(tank, player, weapon, targetTank.position, result);
           // Reshuffle slot index against the (possibly shrunken) inventory.
           player.botWeaponIndex = player.inventory.length > 0
@@ -2243,13 +3309,80 @@ export class Room {
     if (idx >= 0) this.wireHazards.splice(idx, 1);
   }
 
+  private registerSoldier(soldier: Omit<ActiveSoldierRuntime, 'wire'>): ActiveSoldierRuntime {
+    const wire: SoldierState = {
+      soldierId: soldier.soldierId,
+      ownerId: soldier.ownerId,
+      position: soldier.position,
+      rotation: soldier.rotation,
+      hp: soldier.hp,
+      maxHp: soldier.maxHp,
+      walkPhase: soldier.walkPhase,
+      color: soldier.color,
+    };
+    const runtime = soldier as ActiveSoldierRuntime;
+    runtime.wire = wire;
+    this.activeSoldiers.set(runtime.soldierId, runtime);
+    this.wireSoldiers.push(wire);
+    return runtime;
+  }
+
+  private unregisterSoldier(soldierId: string, expired: boolean): void {
+    const runtime = this.activeSoldiers.get(soldierId);
+    if (!runtime) return;
+    this.activeSoldiers.delete(soldierId);
+    const idx = this.wireSoldiers.indexOf(runtime.wire);
+    if (idx >= 0) this.wireSoldiers.splice(idx, 1);
+    this.io.to(this.id).emit('soldier_killed', {
+      soldierId: runtime.soldierId,
+      ownerId: runtime.ownerId,
+      position: { x: runtime.position.x, y: runtime.position.y, z: runtime.position.z },
+      color: runtime.color,
+      expired,
+    });
+  }
+
+  /** Drop every soldier owned by the given player, used when the owner dies
+   *  or disconnects. Marks the cleanup as `expired` so the client doesn't
+   *  splatter blood for tanks that already exploded. */
+  private clearOwnerSoldiers(ownerId: PlayerId): void {
+    const ids: string[] = [];
+    for (const [sid, soldier] of this.activeSoldiers) {
+      if (soldier.ownerId === ownerId) ids.push(sid);
+    }
+    for (const sid of ids) this.unregisterSoldier(sid, true);
+  }
+
+  /** Splash damage from a blast against any soldier within `radius`
+   *  (excluding soldiers that belong to `ownerId` — no friendly fire on
+   *  your own squad). Soldiers have only 10 HP, so a single blast in
+   *  range usually wipes them; we use the full damage figure rather than
+   *  a falloff so an air-burst over the squad lands a clean kill instead
+   *  of leaving 1 HP wounded units running around. */
+  private damageSoldiersInBlast(point: Vec3, radius: number, ownerId: PlayerId): void {
+    if (radius <= 0) return;
+    const r2 = radius * radius;
+    const dead: string[] = [];
+    for (const [sid, soldier] of this.activeSoldiers) {
+      if (soldier.ownerId === ownerId) continue;
+      const dx = soldier.position.x - point.x;
+      const dy = soldier.position.y - point.y;
+      const dz = soldier.position.z - point.z;
+      if (dx * dx + dy * dy + dz * dz > r2) continue;
+      dead.push(sid);
+    }
+    for (const sid of dead) this.unregisterSoldier(sid, false);
+  }
+
   private clearCombatState(): void {
     this.activeProjectiles.clear();
     this.activeHazards.clear();
     this.activePickups.clear();
+    this.activeSoldiers.clear();
     this.wireProjectiles.length = 0;
     this.wireHazards.length = 0;
     this.wirePickups.length = 0;
+    this.wireSoldiers.length = 0;
     this.nextPickupSpawnAt = this.simTime + PICKUP_SPAWN_INTERVAL;
   }
 
@@ -2259,6 +3392,39 @@ export class Room {
       projectiles: this.wireProjectiles,
       hazards: this.wireHazards,
       pickups: this.wirePickups,
+      soldiers: this.wireSoldiers,
+    };
+  }
+
+  /** Recipient-aware variant of getStateUpdate. Enemy mines are filtered
+   *  out unless the recipient's tank is within the mine's trigger radius
+   *  + a small grace margin — the "preavviso minimo" model: stealth at
+   *  range, brief warning the moment you're already inside the kill box.
+   *  Owner always sees their own mines for placement awareness. */
+  private getStateUpdateFor(recipientId: PlayerId): RoomStateUpdate {
+    const tank = this.tanks.get(recipientId);
+    const px = tank?.position.x ?? 0;
+    const pz = tank?.position.z ?? 0;
+    const alive = !!(tank && tank.alive);
+
+    const filteredHazards: HazardState[] = [];
+    for (const [, runtime] of this.activeHazards) {
+      if (runtime.type === 'mine' && runtime.ownerId !== recipientId) {
+        if (!alive) continue;
+        const dx = runtime.position.x - px;
+        const dz = runtime.position.z - pz;
+        const reveal = runtime.triggerRadius + MINE_STEALTH_REVEAL_MARGIN;
+        if (dx * dx + dz * dz > reveal * reveal) continue;
+      }
+      filteredHazards.push(runtime.wire);
+    }
+
+    return {
+      tanks: this.tankList,
+      projectiles: this.wireProjectiles,
+      hazards: filteredHazards,
+      pickups: this.wirePickups,
+      soldiers: this.wireSoldiers,
     };
   }
 
@@ -2273,9 +3439,12 @@ export class Room {
       projectiles: state.projectiles,
       hazards: state.hazards,
       pickups: state.pickups,
-      resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
+      soldiers: state.soldiers,
+      resetsInSeconds: (this.phase === MatchPhase.InProgress || this.phase === MatchPhase.Leaderboard)
+        ? Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000))
+        : MATCH_DURATION_SECONDS,
       countdownEndsInMs: this.phase === MatchPhase.Countdown
-        ? Math.max(0, this.countdownEndsAt - Date.now())
+        ? Math.max(0, this.countdownEndsAt - 1000 - Date.now())
         : 0,
       inviteCode: this.inviteCode,
     };

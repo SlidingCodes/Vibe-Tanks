@@ -433,6 +433,33 @@
       box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
     }
 
+    #parachute-swatches,
+    #parachute-swatches-secondary {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .parachute-swatch {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.08s;
+      background: repeating-linear-gradient(90deg, #f0f0f0 0px, #f0f0f0 6px, var(--p-color) 6px, var(--p-color) 12px);
+    }
+
+    .parachute-swatch:hover {
+      transform: scale(1.08);
+    }
+
+    .parachute-swatch.selected {
+      border-color: #d8b058;
+      box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
+    }
+
     #flag-swatches {
       display: grid;
       grid-template-columns: repeat(7, 1fr);
@@ -525,7 +552,8 @@
     }
 
     /* Subtle text-link affordance to open the create-private side panel. */
-    #open-create-link {
+    #open-create-link,
+    #open-advanced-link {
       display: block;
       width: 100%;
       margin-top: 12px;
@@ -540,7 +568,12 @@
       text-transform: uppercase;
     }
 
-    #open-create-link:hover {
+    #open-advanced-link {
+      margin-top: 8px;
+    }
+
+    #open-create-link:hover,
+    #open-advanced-link:hover {
       color: #e8d8a0;
     }
 
@@ -631,6 +664,92 @@
 
     #create-submit:hover {
       background: linear-gradient(180deg, #d8b058 0%, #a08038 100%);
+    }
+
+    /* Advanced customization panel — flag picker + parachute palette. Lives
+       to the LEFT of the main login panel, mirrors the create panel slot
+       (mutually exclusive with create — opening either closes the other). */
+    #login-advanced-panel {
+      position: absolute;
+      right: 414px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(20, 22, 16, 0.78);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      padding: 24px 28px;
+      border-radius: 3px;
+      border: 1px solid rgba(120, 130, 100, 0.5);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 10px 40px rgba(0, 0, 0, 0.7);
+      width: 280px;
+      z-index: 2;
+      display: none;
+    }
+
+    #login-overlay.advanced-open #login-advanced-panel {
+      display: block;
+    }
+
+    #login-advanced-panel h3 {
+      margin: 0 0 16px;
+      font-size: 13px;
+      letter-spacing: 4px;
+      color: #d8b058;
+      text-align: center;
+      font-weight: bold;
+    }
+
+    #login-advanced-panel label {
+      font-size: 12px;
+      opacity: 0.85;
+      display: block;
+      margin: 14px 0 4px;
+      letter-spacing: 2px;
+      color: #c0b890;
+    }
+
+    #login-advanced-panel label:first-of-type {
+      margin-top: 0;
+    }
+
+    #login-advanced-panel input[type=text] {
+      width: 100%;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      background: rgba(8, 10, 6, 0.85);
+      border: 1px solid rgba(120, 130, 100, 0.45);
+      border-radius: 2px;
+      color: #e8e0c8;
+      outline: none;
+    }
+
+    #login-advanced-panel input[type=text]:focus {
+      border-color: rgba(216, 176, 88, 0.75);
+    }
+
+    #advanced-actions {
+      margin-top: 16px;
+    }
+
+    #advanced-actions button {
+      width: 100%;
+      padding: 11px 0;
+      font-family: monospace;
+      font-size: 12px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 2px;
+      font-weight: bold;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+    }
+
+    #advanced-actions button:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
     }
 
     /* Per-room settings — sliders + weapon toggles. */
@@ -879,16 +998,18 @@
         padding: 10px;
       }
 
-      /* Mobile create flow: both panels stacked + overlay scrolls. The
-         pilot panel un-anchors from the bottom so the create panel can
-         sit above it inside the scroll container. */
-      #login-overlay.creating {
+      /* Mobile create / advanced flows: both panels stacked + overlay
+         scrolls. The pilot panel un-anchors from the bottom so the
+         secondary panel can sit above it inside the scroll container. */
+      #login-overlay.creating,
+      #login-overlay.advanced-open {
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         padding: 60px 0 12px;
       }
 
-      #login-overlay.creating #login-panel {
+      #login-overlay.creating #login-panel,
+      #login-overlay.advanced-open #login-panel {
         position: relative;
         right: auto;
         left: auto;
@@ -896,7 +1017,8 @@
         margin: 0 12px;
       }
 
-      #login-create-panel {
+      #login-create-panel,
+      #login-advanced-panel {
         right: auto;
         left: auto;
         transform: none;
@@ -1000,21 +1122,21 @@
       }
     }
 
-    .damage-popup-fire {
+    .damage-popup-skull {
       display: inline-block;
-      animation: dmg-fire-flicker 0.18s ease-in-out infinite alternate;
-      filter: drop-shadow(0 0 6px #ff7722);
+      animation: dmg-skull-pulse 0.25s ease-in-out infinite alternate;
+      filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 8px #fff);
     }
 
-    @keyframes dmg-fire-flicker {
+    @keyframes dmg-skull-pulse {
       0% {
-        transform: translateY(0) scale(1) rotate(-6deg);
-        opacity: 0.85;
+        transform: scale(1) rotate(-3deg);
+        filter: drop-shadow(0 0 4px #fff);
       }
 
       100% {
-        transform: translateY(-2px) scale(1.15) rotate(8deg);
-        opacity: 1;
+        transform: scale(1.2) rotate(3deg);
+        filter: drop-shadow(0 0 8px #fff);
       }
     }
 
@@ -1895,6 +2017,49 @@
       font-weight: bold;
     }
 
+    /* Predator missile pilot mode banner. Shown while the local player is
+       steering a Predator missile — the camera is on the warhead and the
+       tank is frozen + vulnerable, so we make that visible without
+       blocking the chase view. Sits high-centre, keeps its peripheral. */
+    #predator-overlay {
+      position: fixed;
+      top: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 22px;
+      font-family: monospace;
+      font-size: 13px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      background: rgba(58, 53, 38, 0.86);
+      color: #e8d8a0;
+      border: 1px solid rgba(216, 176, 88, 0.65);
+      border-radius: 2px;
+      z-index: 36;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+      display: none;
+      pointer-events: none;
+    }
+
+    #predator-overlay.visible {
+      display: block;
+    }
+
+    #predator-overlay .label {
+      color: #ffb060;
+      font-weight: bold;
+      letter-spacing: 5px;
+    }
+
+    #predator-overlay .hint {
+      display: block;
+      margin-top: 4px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #c0b890;
+      opacity: 0.8;
+    }
+
     /* Inline iOS fullscreen hint inside the settings dialog. Shown only
        when the browser exposes no FS API but the UA looks like iPhone
        Safari running in-browser (i.e. not Add-to-Home-Screen mode), so
@@ -2092,41 +2257,16 @@
       user-select: none;
     }
 
-    /* Hitmarker & Hit Flash */
-    #hit-flash {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 9998;
-      background: white;
-      opacity: 0;
-    }
-
-    #hit-flash.active {
-      animation: hit-flash-anim 0.15s ease-out;
-    }
-
-    @keyframes hit-flash-anim {
-      0% {
-        opacity: 0.8;
-        background: rgba(255, 255, 255, 1);
-        filter: brightness(2) contrast(1.5);
-      }
-
-      100% {
-        opacity: 0;
-        background: transparent;
-      }
-    }
-
-
+    /* Hitmarker — Call of Duty style: 4 short diagonal segments in the
+       NW/NE/SW/SE quadrants, each tilted 45° toward the centre, with a
+       clear empty gap in the middle. No screen flash. */
     #hit-marker {
       position: fixed;
       top: 50%;
       left: 50%;
-      width: 80px;
-      height: 80px;
-      transform: translate(-50%, -50%) scale(0.5);
+      width: 28px;
+      height: 28px;
+      transform: translate(-50%, -50%);
       pointer-events: none;
       opacity: 0;
       z-index: 9999;
@@ -2134,66 +2274,82 @@
 
 
     #hit-marker.active {
-      animation: hit-marker-anim 0.5s cubic-bezier(0.19, 1, 0.22, 1) forwards;
+      animation: hit-marker-anim 0.45s cubic-bezier(0.19, 1, 0.22, 1) forwards;
     }
 
     @keyframes hit-marker-anim {
       0% {
-        transform: translate(-50%, -50%) scale(0.4) rotate(-15deg);
+        transform: translate(-50%, -50%) scale(0.7);
         opacity: 1;
       }
 
       20% {
-        transform: translate(-50%, -50%) scale(1.5) rotate(10deg);
+        transform: translate(-50%, -50%) scale(1.3);
         opacity: 1;
       }
 
       100% {
-        transform: translate(-50%, -50%) scale(1.2) rotate(0deg);
+        transform: translate(-50%, -50%) scale(1);
         opacity: 0;
       }
     }
 
 
+    /* Each hit-line is a thin vertical bar 2×10 px, anchored at one of
+       four points (25%/75% of the marker box) and rotated ±45° so its
+       long axis lies along that quadrant's diagonal. The 25%/75%
+       anchors leave ~5 px of empty space at the centre — the
+       characteristic COD gap that distinguishes it from a closed X. */
     .hit-line {
       position: absolute;
       background: #fff;
-      width: 3px;
-      height: 18px;
-      box-shadow: 0 0 8px rgba(255, 255, 255, 1);
+      width: 2px;
+      height: 10px;
+      margin-left: -1px;
+      margin-top: -5px;
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.85);
     }
 
+    /* Each bar must be RADIAL (parallel to the line from its quadrant to
+       the centre), not perpendicular — perpendicular bars draw the 4
+       sides of a rhombus, which is exactly the wrong shape.
+       For a vertical 2×10 bar:
+        rotate(-45deg) → long axis along NW–SE diagonal
+        rotate( 45deg) → long axis along NE–SW diagonal
+       The NW & SE quadrants lie on the NW–SE radial line; the NE & SW
+       quadrants lie on the NE–SW radial line, so they pair up. */
+
+    /* NW segment — radial NW→centre, along NW–SE */
     .hit-line:nth-child(1) {
-      top: 0;
-      left: 0;
-      transform: rotate(45deg);
-      transform-origin: top left;
+      top: 25%;
+      left: 25%;
+      transform: rotate(-45deg);
     }
 
+    /* NE segment — radial NE→centre, along NE–SW */
     .hit-line:nth-child(2) {
-      top: 0;
-      right: 0;
-      transform: rotate(-45deg);
-      transform-origin: top right;
-    }
-
-    .hit-line:nth-child(3) {
-      bottom: 0;
-      left: 0;
-      transform: rotate(-45deg);
-      transform-origin: bottom left;
-    }
-
-    .hit-line:nth-child(4) {
-      bottom: 0;
-      right: 0;
+      top: 25%;
+      left: 75%;
       transform: rotate(45deg);
-      transform-origin: bottom right;
+    }
+
+    /* SW segment — radial SW→centre, along NE–SW */
+    .hit-line:nth-child(3) {
+      top: 75%;
+      left: 25%;
+      transform: rotate(45deg);
+    }
+
+    /* SE segment — radial SE→centre, along NW–SE */
+    .hit-line:nth-child(4) {
+      top: 75%;
+      left: 75%;
+      transform: rotate(-45deg);
     }
 
     #hit-marker.kill .hit-line {
       background: #ff3333;
-      box-shadow: 0 0 6px rgba(255, 51, 51, 0.9);
+      box-shadow: 0 0 3px rgba(0, 0, 0, 0.85);
     }
 
     .hit-particle {
@@ -2363,15 +2519,26 @@
       <input id="login-name" type="text" maxlength="16" autocomplete="off" />
       <label>COLOR</label>
       <div id="color-swatches"></div>
-      <label>FLAG</label>
-      <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
-      <div id="flag-swatches"></div>
       <label for="invite-code-input">MATCH CODE</label>
       <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
         placeholder="optional — leave blank to quick-join" />
       <div id="login-error" style="display:none"></div>
       <button id="login-submit">QUICK JOIN</button>
+      <button id="open-advanced-link" type="button">advanced customization &rarr;</button>
       <button id="open-create-link" type="button">or create a private match &rarr;</button>
+    </div>
+    <div id="login-advanced-panel">
+      <h3>CUSTOMIZATION</h3>
+      <label>FLAG</label>
+      <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
+      <div id="flag-swatches"></div>
+      <label>PARACHUTE PRIMARY</label>
+      <div id="parachute-swatches"></div>
+      <label>PARACHUTE SECONDARY</label>
+      <div id="parachute-swatches-secondary"></div>
+      <div id="advanced-actions">
+        <button id="advanced-back" type="button">Back</button>
+      </div>
     </div>
     <div id="login-create-panel">
       <h3>PRIVATE ROOM</h3>
@@ -2415,8 +2582,11 @@
     </div>
   </div>
   <div id="idle-warning">Inactive — kick in <span class="count" id="idle-warning-count">15</span>s</div>
+  <div id="predator-overlay">
+    <span class="label">PILOTING MISSILE</span>
+    <span class="hint">WASD steer · SPACE detonate · <span id="predator-overlay-time">7.0</span>s</span>
+  </div>
   <div id="turbo-vfx"></div>
-  <div id="hit-flash"></div>
   <div id="hit-marker">
     <div class="hit-line"></div>
     <div class="hit-line"></div>

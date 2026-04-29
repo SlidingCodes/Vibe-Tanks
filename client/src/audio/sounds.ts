@@ -77,6 +77,70 @@ export function playShoot(): void {
   noise.stop(now + 0.1);
 }
 
+// ── Minigun bullet ("tac") ──
+// Short, snappy bullet pop. Designed to be replayable at ~13 rps without
+// stacking into mush — total duration is ~70 ms, with a sharp envelope
+// and a thin lowpass-filtered noise burst on top of a quick pitch
+// drop. No sustained body, so back-to-back triggers stay punchy.
+
+export function playMinigunShot(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Pitched click: square wave 700→180 Hz over 50 ms, very short.
+  const osc = ac.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(700, now);
+  osc.frequency.exponentialRampToValueAtTime(180, now + 0.05);
+  const oscGain = ac.createGain();
+  ramp(oscGain.gain, 0.28, 0, now, now + 0.06);
+  osc.connect(oscGain).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.07);
+
+  // Crack: highpassed noise burst, even shorter.
+  const noise = createNoise(ac, 0.06);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'highpass';
+  nf.frequency.value = 1400;
+  const ng = ac.createGain();
+  ramp(ng.gain, 0.22, 0, now, now + 0.04);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.05);
+}
+
+// ── Soldier rifle (single shot) ──
+// Drier and slightly lower than the minigun — soldiers fire at ~0.5 rps
+// so the click can afford to ring a touch longer without blurring.
+
+export function playSoldierShot(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  const osc = ac.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(520, now);
+  osc.frequency.exponentialRampToValueAtTime(140, now + 0.07);
+  const oscGain = ac.createGain();
+  ramp(oscGain.gain, 0.2, 0, now, now + 0.09);
+  osc.connect(oscGain).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.1);
+
+  const noise = createNoise(ac, 0.09);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'highpass';
+  nf.frequency.value = 1200;
+  const ng = ac.createGain();
+  ramp(ng.gain, 0.16, 0, now, now + 0.06);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.07);
+}
+
 // ── Explosion (shell impact) ──
 // Scale 0–1 controls size: bigger = longer + lower.
 
@@ -523,6 +587,57 @@ export function playShieldBreak(): void {
   sub.stop(now + 0.31);
 }
 
+// ── Predator missile launch ──
+// Single-shot rocket-motor ignition: bandpass-swept noise rising from
+// thudding low-end into a bright jet-roar, layered with a sawtooth
+// "burner" that climbs an octave. Lasts ~1 s; the chase camera takes
+// over within the first frame so the audio frames the transition.
+export function playPredatorLaunch(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Booster ignition rumble: noise through bandpass climbing low→high
+  const noise = createNoise(ac, 1.0);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.Q.value = 1.0;
+  nf.frequency.setValueAtTime(180, now);
+  nf.frequency.exponentialRampToValueAtTime(2400, now + 0.7);
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0, now);
+  ng.gain.linearRampToValueAtTime(0.55, now + 0.08);
+  ng.gain.linearRampToValueAtTime(0.32, now + 0.7);
+  ng.gain.linearRampToValueAtTime(0, now + 1.0);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 1.05);
+
+  // Rising sawtooth burner: 80 → 320 Hz over ~0.6 s
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(80, now);
+  osc.frequency.exponentialRampToValueAtTime(320, now + 0.6);
+  const og = ac.createGain();
+  og.gain.setValueAtTime(0, now);
+  og.gain.linearRampToValueAtTime(0.32, now + 0.1);
+  og.gain.linearRampToValueAtTime(0, now + 0.7);
+  osc.connect(og).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.75);
+
+  // Initial chuff transient: quick bandpass thump on ignition
+  const thump = ac.createOscillator();
+  thump.type = 'sine';
+  thump.frequency.setValueAtTime(60, now);
+  thump.frequency.exponentialRampToValueAtTime(28, now + 0.18);
+  const tg = ac.createGain();
+  ramp(tg.gain, 0.5, 0, now, now + 0.2);
+  thump.connect(tg).connect(out);
+  thump.start(now);
+  thump.stop(now + 0.22);
+}
+
 // ── Hit marker (your shot hit someone) ──
 // Quick metallic "ting".
 
@@ -556,6 +671,102 @@ export function playHitMarker(): void {
 // Short blip on each second tick during the last 10 seconds. The "final"
 // variant (the very last tick before reset) is a touch higher and louder so
 // the run-out moment is unmistakable.
+
+/** Air-raid nuclear warning siren: a continuous wailing sawtooth that
+ *  oscillates between a low and high pitch on a slow LFO cycle, layered
+ *  over a deep menacing rumble. No friendly beeps — this is the
+ *  "everyone in the bunker" tone. Caller passes the descent duration
+ *  so the wail fits exactly inside the fall window. */
+export function playNukeWarning(durationSec: number): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Layer 1 — sub-bass rumble: 45 Hz sine + 65 Hz detuned harmonic.
+  // Fades up across the first second, swells across the descent, peaks
+  // just before impact, then cuts cleanly so the explosion lands fresh.
+  for (const [freq, gain] of [[45, 0.22], [65, 0.13]] as const) {
+    const osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(gain, now + 0.8);
+    g.gain.linearRampToValueAtTime(gain * 1.6, now + durationSec - 0.15);
+    g.gain.linearRampToValueAtTime(0, now + durationSec);
+    osc.connect(g).connect(out);
+    osc.start(now);
+    osc.stop(now + durationSec + 0.05);
+  }
+
+  // Layer 2 — wailing siren: sawtooth that ramps between two pitches
+  // on a slow triangle cycle. Approximates the classic "two-tone air
+  // raid" wail by stacking linearRampToValueAtTime up the timeline.
+  // CYCLE_SEC tuned so a 3.5 s descent gets ~3 full wails.
+  const CYCLE_SEC = 1.1;
+  const LO_HZ = 360;
+  const HI_HZ = 760;
+  const siren = ac.createOscillator();
+  siren.type = 'sawtooth';
+  siren.frequency.setValueAtTime(LO_HZ, now);
+  // Mild distortion via a waveshaper so the saw doesn't read as a
+  // synth bass — it sounds like a stressed metal horn.
+  const shaper = ac.createWaveShaper();
+  const curve = new Float32Array(2048);
+  for (let i = 0; i < curve.length; i++) {
+    const x = (i / 2047) * 2 - 1;
+    // Soft clip: tanh-ish curve, clamps the peaks without ringing.
+    curve[i] = Math.tanh(x * 2.5);
+  }
+  shaper.curve = curve;
+  // Bandpass to carve a horn-like resonance, kills the high harmonics.
+  const bp = ac.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 700;
+  bp.Q.value = 1.4;
+
+  const sirenG = ac.createGain();
+  sirenG.gain.setValueAtTime(0, now);
+  sirenG.gain.linearRampToValueAtTime(0.18, now + 0.4);
+
+  // Schedule the wail: alternate ramps up to HI then down to LO across
+  // the duration. Final cycle tightens to drive urgency on impact.
+  let t = 0;
+  let toHigh = true;
+  while (t < durationSec - 0.05) {
+    // Last ~1.5 s: shorten cycle so the wail accelerates.
+    const accel = t > durationSec - 1.6 ? 0.55 : 1;
+    const half = (CYCLE_SEC * 0.5) * accel;
+    const next = Math.min(t + half, durationSec);
+    const target = toHigh ? HI_HZ : LO_HZ;
+    siren.frequency.linearRampToValueAtTime(target, now + next);
+    t = next;
+    toHigh = !toHigh;
+  }
+  // Volume swell across the descent so the wail builds.
+  sirenG.gain.linearRampToValueAtTime(0.32, now + durationSec - 0.2);
+  sirenG.gain.linearRampToValueAtTime(0, now + durationSec);
+
+  siren.connect(shaper).connect(bp).connect(sirenG).connect(out);
+  siren.start(now);
+  siren.stop(now + durationSec + 0.05);
+
+  // Layer 3 — pink-ish noise wash under the wail for "metal stress"
+  // texture. Filtered narrow-band, very low gain.
+  const noise = createNoise(ac, durationSec + 0.05);
+  const noiseFilter = ac.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.value = 480;
+  noiseFilter.Q.value = 0.8;
+  const noiseG = ac.createGain();
+  noiseG.gain.setValueAtTime(0, now);
+  noiseG.gain.linearRampToValueAtTime(0.05, now + 0.6);
+  noiseG.gain.linearRampToValueAtTime(0.12, now + durationSec - 0.2);
+  noiseG.gain.linearRampToValueAtTime(0, now + durationSec);
+  noise.connect(noiseFilter).connect(noiseG).connect(out);
+  noise.start(now);
+  noise.stop(now + durationSec + 0.05);
+}
 
 export function playMatchTickBeep(final: boolean = false): void {
   const ac = getCtx();

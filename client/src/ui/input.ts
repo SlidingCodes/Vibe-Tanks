@@ -6,6 +6,11 @@ const keys: Record<string, boolean> = {};
 let pendingWeaponSlot: number | null = null;
 let currentWeaponSlot = 0;
 let weaponCount = 1;
+/** Edge-triggered Space press flag. Latched on the rising edge in the
+ *  keydown handler, cleared by `consumeSpace()`. Used by the Predator
+ *  pilot mode for manual self-detonation so a held key produces one
+ *  detonation, not a stream of events. */
+let spaceJustPressed = false;
 
 export function setWeaponCount(count: number): void {
   weaponCount = count;
@@ -19,6 +24,12 @@ window.addEventListener('keydown', (e) => {
       pendingWeaponSlot = slot;
       currentWeaponSlot = slot;
     }
+  }
+  if (!keys[e.code] && e.code === 'Space') {
+    spaceJustPressed = true;
+    // Stop the page scrolling on spacebar — the canvas takes the full
+    // viewport but body scroll is still possible on some layouts.
+    e.preventDefault();
   }
 
   keys[e.code] = true;
@@ -102,6 +113,14 @@ export function consumeClick(): boolean {
 export function consumeRightClick(): boolean {
   if (rightMousePressed) {
     rightMousePressed = false;
+    return true;
+  }
+  return false;
+}
+
+export function consumeSpace(): boolean {
+  if (spaceJustPressed) {
+    spaceJustPressed = false;
     return true;
   }
   return false;

@@ -15,11 +15,12 @@ import {
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
 } from './entities/tank';
-import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginFollowMissile, beginSpectate, createCamera, followMissile, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
@@ -36,21 +37,21 @@ import { triggerHitFeedback } from './ui/hud';
 import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
 import { showLogin } from './ui/login';
 import {
-  getMovementInput, getAimTarget, consumeClick, consumeWeaponSlot,
+  getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
 import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
-import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
+import { setupMatchCountdown, setMatchCountdown, isMatchCountdownActive } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
-import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
+import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning, playPredatorLaunch, playSoldierShot as playSoldierShotAudio } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponInventorySlot } from '@shared/types/index';
+import { ActiveProjectileState, FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -146,6 +147,51 @@ let latestTanks: TankState[] = [];
  *  PlayerState.lastFireByWeapon map. */
 const lastFireByWeapon = new Map<string, number>();
 
+/** Local mirror of the server's heat gauge for hold-to-fire weapons
+ *  (currently the minigun). Predicted with the same formula so the HUD
+ *  stays responsive without waiting for a server round trip. Slight
+ *  divergence is harmless: server gates the actual shots, the gauge is
+ *  HUD feedback only. */
+interface LocalHeatState { value: number; lastShotAt: number; lockedUntil: number; }
+const weaponHeat = new Map<string, LocalHeatState>();
+
+/** Derived heat at `now`. Pure read — no mutation. Mirrors the server's
+ *  heatValueAt formula so the HUD bar predicts overheat without
+ *  waiting for a network round trip. Cooling only counts *idle* time
+ *  beyond the weapon's nominal cooldown; sustained fire at the natural
+ *  rate accumulates net-positive. */
+function heatValueAt(weaponId: string, weapon: WeaponDefinition, now: number): number {
+  const entry = weaponHeat.get(weaponId);
+  if (!entry) return 0;
+  const idle = Math.max(0, (now - entry.lastShotAt) - weapon.cooldown);
+  if (idle <= 0) return entry.value;
+  const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
+  return Math.max(0, entry.value - coolRate * idle);
+}
+
+function isWeaponOverheatedLocal(weaponId: string, now: number): boolean {
+  const entry = weaponHeat.get(weaponId);
+  return !!entry && entry.lockedUntil > now;
+}
+
+function bumpWeaponHeatLocal(weapon: WeaponDefinition, now: number): void {
+  let entry = weaponHeat.get(weapon.id);
+  if (!entry) {
+    entry = { value: 0, lastShotAt: now, lockedUntil: 0 };
+    weaponHeat.set(weapon.id, entry);
+  } else {
+    entry.value = heatValueAt(weapon.id, weapon, now);
+  }
+  const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
+  entry.value = Math.min(1, entry.value + heatPerShot);
+  if (entry.value >= 1) {
+    const lockout = weapon.behaviorConfig?.overheatLockout ?? 2.5;
+    entry.lockedUntil = now + lockout;
+    entry.value = 1;
+  }
+  entry.lastShotAt = now;
+}
+
 /** Last shot info per tank, used to drive the barrel-heat glow on every
  *  visible tank (local + remotes). Updated for the local player the
  *  instant fire_request is emitted (optimistic), for remotes via
@@ -153,6 +199,42 @@ const lastFireByWeapon = new Map<string, number>();
  *  glow fades over. */
 interface LastShotInfo { weaponId: string; firedAt: number; }
 const lastShotByTank = new Map<PlayerId, LastShotInfo>();
+/** Predator piloting state: when the local player has a steerable missile
+ *  in flight, the camera takes over the warhead, WASD drives steering on
+ *  the server, and fire / aim / tank prediction are suppressed. Refreshed
+ *  from the projectiles list on every state_update / room_snapshot. */
+let pilotingMissile: ActiveProjectileState | null = null;
+/** Local clock time (seconds, from THREE.Clock) at which the current
+ *  Predator launch was first observed. Used to drive the cooldown bar
+ *  as a flight-time-remaining indicator. Null when not piloting. */
+let pilotingMissileStartTime: number | null = null;
+const PREDATOR_LIFETIME = (WEAPONS.find((w) => w.id === 'predator')?.behaviorConfig?.predatorLifetime ?? 7);
+function refreshPilotingMissile(projectiles: ActiveProjectileState[] | undefined): void {
+  const next = projectiles?.find(
+    (p) => p.ownerId === myId && p.visualStyle === 'predator_missile',
+  ) ?? null;
+  const wasPiloting = !!pilotingMissile;
+  const isPiloting = !!next;
+  if (isPiloting && !wasPiloting) {
+    // Entering pilot mode — seed the chase camera state, mark the
+    // launch instant for the flight-time bar, and surface the HUD
+    // overlay. Audio fires here too, once per launch.
+    beginFollowMissile();
+    pilotingMissileStartTime = clock.getElapsedTime();
+    showPilotingOverlay(true);
+    playPredatorLaunch();
+  } else if (!isPiloting && wasPiloting) {
+    showPilotingOverlay(false);
+    pilotingMissileStartTime = null;
+  }
+  pilotingMissile = next;
+}
+function showPilotingOverlay(on: boolean): void {
+  const el = document.getElementById('predator-overlay');
+  if (!el) return;
+  if (on) el.classList.add('visible');
+  else el.classList.remove('visible');
+}
 let selectedWeaponId = 'standard';
 /** Local mirror of the server-authoritative inventory for the local tank.
  *  Rebuilt on each room_snapshot / state_update; drives the HUD chips and
@@ -282,6 +364,7 @@ const sendJoin = (): void => {
     playerName: login.name,
     color: login.color,
     flagId: login.flagId,
+    parachuteId: login.parachuteId,
     mode: login.mode,
     inviteCode: login.inviteCode,
     settings: login.settings,
@@ -443,6 +526,8 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
+  syncSoldiers(scene, snap.soldiers ?? []);
+  refreshPilotingMissile(snap.projectiles);
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -569,6 +654,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   // traffic and no late-joiner replay (trails start from connect time).
   trackDecal = createTrackDecal(voxelGrid);
   lastTreadPosByPlayer.clear();
+  // Soldier visuals are scene meshes — drop them on every voxel snapshot
+  // so a match reset / rejoin doesn't leave stale infantry frozen on
+  // the old terrain.
+  clearAllSoldierVisuals(scene);
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
   } else {
@@ -658,7 +747,7 @@ socket.on('fire_update', (update: FireUpdate) => {
 socket.on('damage_applied', (data) => {
   for (const hit of data.hits) {
     const mesh = getAllTankMeshes().get(hit.playerId);
-    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed);
+    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed, hit.shielded);
   }
   if (myId && data.hits.some((h) => h.playerId !== myId)) {
     // At least one non-self hit — play hit marker for the local shooter
@@ -679,6 +768,20 @@ socket.on('state_update', (state: RoomStateUpdate) => {
     } else if (existing.state.alive && !tankState.alive) {
       spawnTankExplosion(existing.group.position, tankState.color, scene);
       playTankExplosion();
+      // Permanent dark "deformed star" scorch where the tank died —
+      // sampled by the surface-nets shader on the next chunk rebuild.
+      // Drives a one-shot mesh refresh in a slightly larger radius so
+      // the arm tips still fall inside an invalidated chunk.
+      if (voxelScorch && surfaceNets) {
+        const deathPos = {
+          x: tankState.position.x,
+          y: tankState.position.y,
+          z: tankState.position.z,
+        };
+        const starBaseRadius = 3.4;
+        voxelScorch.addScorchStar(deathPos, starBaseRadius);
+        surfaceNets.invalidateSphere(deathPos, starBaseRadius * 2.4);
+      }
       // Prevent re-triggering on subsequent state_updates while dead.
       // (For the local tank, updateLocalTankMesh is skipped once dead, so
       // existing.state would otherwise keep reporting alive=true.)
@@ -698,6 +801,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
         predictedState.airborne = tankState.airborne;
+        predictedState.parachute = tankState.parachute;
         predictedState.linVel.x = tankState.linVel.x;
         predictedState.linVel.y = tankState.linVel.y;
         predictedState.linVel.z = tankState.linVel.z;
@@ -708,7 +812,11 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.angVel.y = tankState.angVel.y;
         predictedState.angVel.z = tankState.angVel.z;
 
-        if (justRespawned) {
+        const inParachuteServer = tankState.parachute === true;
+        if (justRespawned || inParachuteServer) {
+          // Snap to server position. justRespawned covers the dead→alive
+          // teleport; inParachuteServer covers every state_update during
+          // the descent (server-authoritative deterministic Y lerp).
           predictedState.position.x = tankState.position.x;
           predictedState.position.y = tankState.position.y;
           predictedState.position.z = tankState.position.z;
@@ -719,16 +827,39 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
-          // Re-baseline the reconciliation clocks to match the server's
-          // post-respawn ACK (also 0). Buffer entries from the previous
-          // life are harmless because the circular index's seq check in
-          // the replay loop skips any whose stored seq != requested seq.
-          clientSeq = 0;
-          lastReconciledSeq = 0;
-          triggerRespawnAnim(myId);
-          if (clientPhysics) {
-            clientPhysics.addTank(predictedState);
-            localTankRegistered = true;
+          if (justRespawned) {
+            // The new loadout may not even include a hold-to-fire weapon,
+            // and any heat carried over from the previous life would mis-
+            // gate the first burst — wipe it.
+            weaponHeat.clear();
+            // Re-baseline the reconciliation clocks to match the server's
+            // post-respawn ACK (also 0). Buffer entries from the previous
+            // life are harmless because the circular index's seq check in
+            // the replay loop skips any whose stored seq != requested seq.
+            clientSeq = 0;
+            lastReconciledSeq = 0;
+            // Skip the scale-in fade if the player is entering by
+            // parachute — the descent is already the entrance animation,
+            // shrinking-and-growing on top of it looks like a bug.
+            if (!inParachuteServer) triggerRespawnAnim(myId);
+            if (clientPhysics) {
+              clientPhysics.addTank(predictedState);
+              localTankRegistered = true;
+            }
+          } else if (clientPhysics && localTankRegistered) {
+            // Mid-parachute snap: re-anchor the client physics body each
+            // broadcast so when the descent ends the body is already at
+            // the broadcast position. Without this, the body would sit
+            // at its pre-parachute Y and the first post-parachute reconcile
+            // would hard-resync.
+            clientPhysics.restoreTankState(
+              myId,
+              tankState.position,
+              tankState.bodyRotation,
+              tankState.linVel,
+              tankState.extraVel,
+              tankState.angVel,
+            );
           }
         } else {
           // Unified grounded + airborne reconciliation via rewind-and-
@@ -831,6 +962,8 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   }
 
   syncActiveCombatState(scene, projectiles, hazards);
+  syncSoldiers(scene, state.soldiers ?? []);
+  refreshPilotingMissile(projectiles);
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -890,6 +1023,15 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
 socket.on('shot_resolved', (result: ShotResult) => {
   triggerRecoil(result.shooterId);
+  // Nuke descent: the strike emits a single step with visualStyle
+  // 'nuke_falling' and a long trajectory; play the MOAB-style klaxon
+  // for exactly the descent duration so it lands with the explosion.
+  for (const step of result.steps) {
+    if (step.visualStyle !== 'nuke_falling') continue;
+    const flightSecs = step.startDelay + Math.max(0, step.trajectory.length - 1) * (4 / 60);
+    if (flightSecs > 0.2) playNukeWarning(flightSecs);
+    break;
+  }
   // Remote shooters: seed their last-shot entry so their barrel glows
   // during the cooldown window. Local player is set optimistically at
   // emit time — overwriting here with a slightly-later timestamp would
@@ -1022,12 +1164,21 @@ socket.on('shot_resolved', (result: ShotResult) => {
       const dy = myMesh.group.position.y - step.endPoint.y;
       const dz = myMesh.group.position.z - step.endPoint.z;
       const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const range = Math.max(6, step.blastRadius * 5.5);
+      const isNuke = step.visualStyle === 'nuke_falling' || step.visualStyle === 'nuke';
+      // Nuke is map-wide; everything else cuts off at ~5.5× blast.
+      const range = isNuke ? 9999 : Math.max(6, step.blastRadius * 5.5);
       if (distance > range) return;
 
-      const proximity = 1 - distance / range;
-      const intensity = (0.26 + step.blastRadius * 0.05) * proximity;
-      addImpactCameraShake(intensity, 0.32);
+      const proximity = isNuke ? Math.max(0.25, 1 - distance / 200) : 1 - distance / range;
+      // Nuke gets a sustained map-wide shake — even far players should
+      // feel the bomb. A floor of 0.5 keeps the rumble visible past the
+      // standard proximity range so survivors at the edge of the map
+      // still get the moment.
+      const intensity = isNuke
+        ? Math.max(0.6, 3.0 * proximity)
+        : (0.26 + step.blastRadius * 0.05) * proximity;
+      const duration = isNuke ? 1.4 : 0.32;
+      addImpactCameraShake(intensity, duration);
     }, delay * 1000);
   }
 
@@ -1044,7 +1195,7 @@ socket.on('shot_resolved', (result: ShotResult) => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
       if (mesh) {
-        spawnDamagePopup(mesh.group, d.damage, d.killed);
+        spawnDamagePopup(mesh.group, d.damage, d.killed, d.shielded);
         if (atmosphere) {
           atmosphere.spawnImpactSparks(mesh.group.position);
         }
@@ -1111,6 +1262,24 @@ socket.on('pickup_collected', (data) => {
 
 socket.on('player_left', ({ playerId }) => {
   removeTankMesh(playerId, scene);
+});
+
+socket.on('soldier_fire', (data) => {
+  playSoldierShot(scene, data.soldierId, data.from, data.to);
+  // Only play SFX for nearby gunfire so a 5-strong squad on the far side
+  // of the map doesn't drown the player's own audio mix.
+  if (predictedState) {
+    const dx = predictedState.position.x - data.from.x;
+    const dz = predictedState.position.z - data.from.z;
+    if (dx * dx + dz * dz < 60 * 60) playSoldierShotAudio();
+  }
+});
+
+socket.on('soldier_killed', (data) => {
+  // Skip the splatter for non-violent despawns (lifetime expiry / owner
+  // death) — only blood up the terrain when the unit was actually
+  // shot down or run over.
+  if (!data.expired) spawnBloodSplatter(scene, data.position);
 });
 
 socket.on('match_event', (ev) => {
@@ -1267,7 +1436,13 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    // Input freeze covers the start-of-match countdown, the FIGHT! tail
+    // (covered by isMatchCountdownActive), AND the per-player respawn
+    // parachute descent. All three keep the carro on rails while the
+    // server is the sole authority on the body's position.
+    const inParachute = predictedState.parachute === true;
+    const inCountdown = (snapshot?.phase === MatchPhase.Countdown) || isMatchCountdownActive() || inParachute;
+    const isPiloting = !!pilotingMissile;
     const baseInput = getMovementInput();
     // Match the server-side mask in tickMovement: during Countdown the tank
     // can still yaw on the spot (left/right) and aim, but forward/backward
@@ -1277,8 +1452,21 @@ function animate(): void {
       ...baseInput,
       forward: inCountdown ? false : baseInput.forward,
       backward: inCountdown ? false : baseInput.backward,
+      left: inCountdown ? false : baseInput.left,
+      right: inCountdown ? false : baseInput.right,
       turbo: inCountdown ? false : turboActive,
     };
+    // Predator: while piloting a steerable missile the tank body is
+    // frozen on the server, so the local Rapier prediction must use an
+    // empty input or it'll drift forward and the next state_update will
+    // snap it back. The *raw* WASD still goes to the server, where it's
+    // consumed as missile yaw/pitch steering.
+    const predictionInput = isPiloting
+      ? { forward: false, backward: false, left: false, right: false, turbo: false }
+      : rawInput;
+    const networkInput = isPiloting
+      ? { ...baseInput, turbo: false }
+      : rawInput;
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1300,33 +1488,54 @@ function animate(): void {
       );
       while (physicsAccumulator >= CLIENT_PHYSICS_STEP) {
         clientSeq += 1;
-        const tickInput: MovementInput = { ...rawInput, seq: clientSeq };
-        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickInput;
-        socket.emit('movement_input', tickInput);
-        clientPhysics.setTankInput(myId, tickInput);
-        clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
-        clientPhysics.step(CLIENT_PHYSICS_STEP);
-        // Snapshot the predicted transform (position + yaw) AFTER this
-        // tick's physics step so reconciliation can compare
-        // server-state(seq) against our prediction(seq) — same tick,
-        // lag cancels. Yaw included because small yaw drift rotates the
-        // drive vector and regenerates position drift every frame.
-        const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
-        sample.seq = clientSeq;
-        clientPhysics.getTankPosition(myId, sample);
-        sample.yaw = clientPhysics.getTankYaw(myId);
+        // Tank prediction uses predictionInput (empty while piloting);
+        // the network ships networkInput (the player's actual WASD,
+        // which the server reroutes to the missile when piloting).
+        const tickPredictInput: MovementInput = { ...predictionInput, seq: clientSeq };
+        const tickNetInput: MovementInput = { ...networkInput, seq: clientSeq };
+        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickPredictInput;
+        socket.emit('movement_input', tickNetInput);
+        if (inParachute) {
+          // Server is authoritative during the parachute descent (Y is a
+          // pure linear lerp on its side). Skip applyTankInputs/step
+          // entirely; the state_update handler restoreTankStates the
+          // client body to the broadcast position so the body is already
+          // on the ground when the descent ends. Still emit input + bump
+          // clientSeq so the server's lastAppliedSeq stays in lockstep.
+          const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
+          sample.seq = clientSeq;
+          sample.x = predictedState.position.x;
+          sample.y = predictedState.position.y;
+          sample.z = predictedState.position.z;
+          sample.yaw = predictedState.bodyRotation;
+        } else {
+          clientPhysics.setTankInput(myId, tickPredictInput);
+          clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+          clientPhysics.step(CLIENT_PHYSICS_STEP);
+          // Snapshot the predicted transform (position + yaw) AFTER this
+          // tick's physics step so reconciliation can compare
+          // server-state(seq) against our prediction(seq) — same tick,
+          // lag cancels. Yaw included because small yaw drift rotates the
+          // drive vector and regenerates position drift every frame.
+          const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
+          sample.seq = clientSeq;
+          clientPhysics.getTankPosition(myId, sample);
+          sample.yaw = clientPhysics.getTankYaw(myId);
+        }
         physicsAccumulator -= CLIENT_PHYSICS_STEP;
       }
-      clientPhysics.readbackTank(myId, predictedState);
+      if (!inParachute) {
+        clientPhysics.readbackTank(myId, predictedState);
+      }
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
       // Fallback: shared pure-function physics while Rapier WASM is still
       // loading. A few hundred ms of degraded prediction at match start.
       // seq: 0 here is fine — no reconciliation happens in this window.
-      const fallbackInput: MovementInput = { ...rawInput, seq: 0 };
+      const fallbackInput: MovementInput = { ...predictionInput, seq: 0 };
       stepTankPhysics(predictedState, fallbackInput, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
-      socket.emit('movement_input', fallbackInput);
+      socket.emit('movement_input', { ...networkInput, seq: 0 });
     }
 
     // Render-side error smoother: `predictedState` is the authoritative
@@ -1445,7 +1654,19 @@ function animate(): void {
       };
     }
 
-    const aimDirect = buriedAimOverride ?? getVirtualAimDirect();
+    // While piloting a Predator missile, hide the trajectory preview and
+    // skip aim_update / fire_request entirely — the cursor and WASD
+    // belong to the missile camera, not the dormant cannon. Spacebar
+    // self-destructs the warhead in flight: server applies the same
+    // applyImpact at the missile's current position, so any tank inside
+    // the blast sphere takes damage exactly like a ground hit.
+    if (isPiloting) {
+      hideTrajectoryPreview();
+      if (consumeSpace()) {
+        socket.emit('predator_detonate');
+      }
+    }
+    const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
       const v = selectedWeapon.projectileSpeed;
@@ -1463,6 +1684,8 @@ function animate(): void {
         muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
         selectedWeapon,
       );
+    } else if (isPiloting) {
+      // Already handled above — nothing to do for the world-aim path.
     } else {
       const aimTarget = getAimTarget(camera, surfaceNets?.group ?? null, predictedState.position.y);
       if (aimTarget) {
@@ -1480,10 +1703,27 @@ function animate(): void {
         let barrelPitch: number;
         let railEndPoint: { x: number; y: number; z: number } | null = null;
         let railStartPoint: { x: number; y: number; z: number } | null = null;
-        if (selectedWeapon.behavior === 'rail') {
-          const railAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
-          nextTurretRotation = railAim.turretRotation;
-          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, railAim.barrelPitch));
+        // Direct-aim weapons need to point the barrel straight at the
+        // cursor: rail + minigun (hitscan) and predator (the missile
+        // launches toward the reticle and then takes over via WASD —
+        // a parabolic ballistic arc would let it climb away from the
+        // intended cursor target the first time you let go of the
+        // sticks).
+        const isHitscanAim = selectedWeapon.behavior === 'rail'
+          || selectedWeapon.behavior === 'minigun'
+          || selectedWeapon.behavior === 'predator';
+        if (isHitscanAim) {
+          const directAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
+          nextTurretRotation = directAim.turretRotation;
+          if (selectedWeapon.behavior === 'predator') {
+            // Predator always launches at a fixed 45° up so the missile
+            // clears nearby terrain and gives the pilot time to take
+            // over before it cratered itself into a hill 5 m away. Yaw
+            // tracks the cursor so the player picks the launch direction.
+            barrelPitch = Math.PI / 4;
+          } else {
+            barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, directAim.barrelPitch));
+          }
         } else {
           const a = (g * dist * dist) / (2 * v * v);
           const disc = dist * dist - 4 * a * (dy + a);
@@ -1510,10 +1750,14 @@ function animate(): void {
 
         const muzzle = computeMuzzle(predictedState);
         const previewStart = railStartPoint ?? muzzle.origin;
+        // Hitscan weapons have projectileSpeed 0, which would zero out the
+        // direction vector the trajectory preview normalises. Use a unit
+        // direction in that case so the preview line still extends.
+        const previewSpeed = v > 0 ? v : 1;
         updateTrajectoryPreview(
           scene,
           previewStart.x, previewStart.y, previewStart.z,
-          muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
+          muzzle.direction.x * previewSpeed, muzzle.direction.y * previewSpeed, muzzle.direction.z * previewSpeed,
           selectedWeapon,
           { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z },
           railEndPoint,
@@ -1524,13 +1768,25 @@ function animate(): void {
     }
 
     const selLastFire = lastFireByWeapon.get(selectedWeapon.id) ?? 0;
-    if (consumeClick()) {
+    // Minigun (and any future hold-to-fire weapon) uses the raw mouse
+    // state so each frame the cooldown is up while the button is held
+    // produces a new fire_request. Single-shot weapons keep the
+    // edge-triggered consumeClick() so a tap = one round.
+    const isHoldFire = selectedWeapon.behavior === 'minigun';
+    // Drain the click queue while piloting so a fire-on-release doesn't
+    // leak into the cannon the moment the missile detonates.
+    if (isPiloting) {
+      consumeClick();
+    }
+    const fireRequested = !isPiloting && (isHoldFire ? isMouseDown() : consumeClick());
+    if (fireRequested) {
       // Suppress fire entirely during the start-of-match countdown so the
       // input is consumed (no queued click leaking into the match start)
       // but no animation, sound, or fire_request is produced.
       if (inCountdown) {
-        // intentionally no-op
-      } else if (now - selLastFire >= selectedWeapon.cooldown) {
+        if (isHoldFire) consumeClick();
+      } else if (now - selLastFire >= selectedWeapon.cooldown
+        && !(isHoldFire && isWeaponOverheatedLocal(selectedWeapon.id, now))) {
         // Ammo guard — the server re-checks, but rejecting client-side
         // keeps the player's "oh I'm out" feedback snappy (no dry-click
         // noise, no fake fire animation).
@@ -1543,7 +1799,22 @@ function animate(): void {
           });
           lastFireByWeapon.set(selectedWeapon.id, now);
           lastShotByTank.set(myId, { weaponId: selectedWeapon.id, firedAt: now });
-          playShoot();
+          if (isHoldFire) bumpWeaponHeatLocal(selectedWeapon, now);
+          // Cannon-shot SFX is wrong for the nuke (it falls from a bomber,
+          // not the barrel) — its MOAB warning klaxon is triggered by the
+          // shot_resolved handler instead. The minigun has its own snappy
+          // bullet pop instead of the heavy cannon shot.
+          if (selectedWeapon.behavior === 'nuke') {
+            // no-op
+          } else if (selectedWeapon.behavior === 'soldiers') {
+            // Deploy doesn't actually fire a shell — silence the
+            // cannon SFX. The squad's own rifle pops are emitted
+            // from the soldier_fire path once they engage.
+          } else if (isHoldFire) {
+            playMinigunShot();
+          } else {
+            playShoot();
+          }
           // Client-side jump prediction: mirror the server's launchTank
           // on the predicted Rapier body so the local tank lifts off
           // immediately, no rubberband while waiting for the next
@@ -1563,19 +1834,53 @@ function animate(): void {
       }
     }
 
-    const cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
+    // Drive the cooldown bar from heat for hold-to-fire weapons (1 = cool
+    // / ready, 0 = locked) so it visibly empties as sustained fire heats
+    // the gun and refills while the player lays off the trigger.
+    let cooldownProgress: number;
+    if (isPiloting && pilotingMissileStartTime !== null) {
+      // While piloting, the cooldown bar doubles as a flight-time
+      // indicator: full at launch, drains linearly to 0 at the
+      // server-side lifetime cutoff. Server is authoritative for the
+      // actual auto-detonation; this is purely a player-facing read of
+      // "how much time do I have left to find a target". The overlay
+      // text echoes the same number with one-decimal precision.
+      const elapsed = now - pilotingMissileStartTime;
+      const remaining = Math.max(0, PREDATOR_LIFETIME - elapsed);
+      cooldownProgress = remaining / PREDATOR_LIFETIME;
+      const timeEl = document.getElementById('predator-overlay-time');
+      if (timeEl) timeEl.textContent = remaining.toFixed(1);
+    } else if (isHoldFire) {
+      const heatValue = heatValueAt(selectedWeapon.id, selectedWeapon, now);
+      cooldownProgress = isWeaponOverheatedLocal(selectedWeapon.id, now) ? 0 : Math.max(0, 1 - heatValue);
+    } else {
+      cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);
+    }
     hud.setCooldown(cooldownProgress);
     hud.updateWeaponCooldowns(lastFireByWeapon, now);
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
 
-    followTank(
-      myTankMesh.group.position,
-      predictedState.bodyRotation,
-      dt,
-      predictedState.turretRotation,
-      predictedState.barrelPitch,
-    );
+    if (isPiloting && pilotingMissile) {
+      // Chase camera on the warhead. The replicatedProjectile visual
+      // lerps from the last broadcast (20 Hz) to the current snap each
+      // frame; reading that smoothed position keeps the chase eye from
+      // strobing in lockstep with the broadcast tick.
+      const m = pilotingMissile;
+      const lerpedPos = new THREE.Vector3();
+      const ok = getReplicatedProjectilePosition(m.projectileId, lerpedPos);
+      const pos = ok ? lerpedPos : new THREE.Vector3(m.position.x, m.position.y, m.position.z);
+      const vel = getReplicatedProjectileVelocity(m.projectileId) ?? m.velocity;
+      followMissile(pos, vel, dt);
+    } else {
+      followTank(
+        myTankMesh.group.position,
+        predictedState.bodyRotation,
+        dt,
+        predictedState.turretRotation,
+        predictedState.barrelPitch,
+      );
+    }
   } else {
     hideTrajectoryPreview();
     // Dead / no predicted tank: drop the outline and revert camera state
@@ -1616,6 +1921,7 @@ function animate(): void {
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
   updateProjectileAnimation(scene, dt);
+  updateSoldiers(dt);
 
   if (snapshot) {
     const myPos = predictedState ? predictedState.position : null;

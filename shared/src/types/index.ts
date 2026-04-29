@@ -52,6 +52,7 @@ export interface TankState {
   deaths: number;
   color: string;
   flagId?: string;
+  parachuteId?: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the
    *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
@@ -93,6 +94,8 @@ export interface TankState {
   /** Current weapon loadout for this tank. Slot 0 is always the default
    *  infinite weapon. Consumable slots are removed when ammo hits 0. */
   inventory: WeaponInventorySlot[];
+  /** True when the tank is in the parachute drop intro sequence. */
+  parachute?: boolean;
 }
 
 // ── Weapons ──
@@ -110,7 +113,11 @@ export type WeaponBehavior =
   | 'digger'
   | 'wall'
   | 'ramp'
-  | 'jump';
+  | 'jump'
+  | 'nuke'
+  | 'minigun'
+  | 'predator'
+  | 'soldiers';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -132,7 +139,11 @@ export type ShotVisualStyle =
   | 'digger_shell'
   | 'wall_shell'
   | 'ramp_shell'
-  | 'jump_launch';
+  | 'jump_launch'
+  | 'nuke'
+  | 'nuke_falling'
+  | 'minigun_tracer'
+  | 'predator_missile';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -196,6 +207,58 @@ export interface WeaponBehaviorConfig {
    *  aim-solver assumes, <1 reads as a lobby hop, >1 overshoots the
    *  reticle. */
   jumpSpeedScale?: number;
+  /** Nuke: altitude (m) above the aim point at which the bomb spawns. */
+  nukeFallHeight?: number;
+  /** Nuke: descent duration in seconds. The MOAB warning klaxon plays
+   *  for the full window. */
+  nukeFallDuration?: number;
+  /** Minigun: hitscan range (m). */
+  minigunRange?: number;
+  /** Minigun: hit radius around the beam (m). Tank centres within this
+   *  distance to the ray count as struck. */
+  minigunRadius?: number;
+  /** Minigun: heat added per shot (0..1). Once heat reaches 1 the gun
+   *  locks for `overheatLockout` seconds. */
+  heatPerShot?: number;
+  /** Minigun: heat cool rate per second when not firing (0..1). */
+  heatCoolRate?: number;
+  /** Minigun: cooldown (s) applied when the heat gauge fills. */
+  overheatLockout?: number;
+  /** Predator: cruise speed (m/s) of the steerable missile. */
+  predatorSpeed?: number;
+  /** Predator: yaw turn rate (rad/s) driven by A/D. */
+  predatorTurnRate?: number;
+  /** Predator: pitch turn rate (rad/s) driven by W/S. */
+  predatorPitchRate?: number;
+  /** Predator: max flight time (s) before auto-detonation. */
+  predatorLifetime?: number;
+  /** Predator: blast radius applied at the impact point. */
+  predatorBlastRadius?: number;
+  /** Predator: peak damage at the impact centre. */
+  predatorDamage?: number;
+  /** Predator: terrain damage scalar at the impact. */
+  predatorTerrainDamage?: number;
+  /** Predator: inner radius around the impact in which damage stays
+   *  flat at the full value before the quadratic falloff kicks in.
+   *  Lets a near-miss still feel decisive. */
+  predatorFlatCoreRadius?: number;
+  /** Soldiers: number of infantry spawned per fire. */
+  soldierCount?: number;
+  /** Soldiers: HP per infantry unit. */
+  soldierHp?: number;
+  /** Soldiers: lifetime (s) before auto-despawn. */
+  soldierLifetime?: number;
+  /** Soldiers: minimum interval (s) between consecutive shots from a unit. */
+  soldierShotInterval?: number;
+  /** Soldiers: damage per rifle shot. */
+  soldierShotDamage?: number;
+  /** Soldiers: max engagement range (m) for hitscan rifle shots. */
+  soldierShotRange?: number;
+  /** Soldiers: walking speed (m/s) when repositioning toward owner. */
+  soldierMoveSpeed?: number;
+  /** Soldiers: distance (m) the unit tries to keep from its owner —
+   *  closer than this they idle / engage, farther and they walk back. */
+  soldierFollowDistance?: number;
 }
 
 export interface WeaponDefinition {
@@ -218,6 +281,10 @@ export interface WeaponDefinition {
   /** Cap applied when refilling ammo via pickups. Undefined when
    *  startAmmo === 'infinite'. */
   maxAmmo?: number;
+  /** Relative weight for weapon-pickup spawns. 1.0 = normal frequency,
+   *  values <1 make the weapon rarer (e.g. nuke at 0.05 ≈ 1 in 20 rolls
+   *  among 5 normal weapons). Undefined defaults to 1. */
+  pickupWeight?: number;
   behaviorConfig?: WeaponBehaviorConfig;
 }
 
@@ -318,11 +385,32 @@ export type PickupCollectOutcome =
   | { kind: 'weapon_refilled'; weaponId: string; amount: number }
   | { kind: 'ammo_refilled'; weaponId: string; amount: number };
 
+/** A single infantry unit spawned by the Soldiers weapon. Soldiers walk near
+ *  their owner, fire hitscan rifle shots at the nearest enemy tank, and
+ *  despawn after a fixed lifetime or when run over by an enemy hull. */
+export interface SoldierState {
+  soldierId: string;
+  ownerId: PlayerId;
+  position: Vec3;
+  /** Facing yaw (rad) in world space — drives the body/rifle orientation. */
+  rotation: number;
+  hp: number;
+  maxHp: number;
+  /** Walk-cycle phase accumulated from forward motion; client uses it to
+   *  drive a simple 4-frame leg/arm swing without needing a separate
+   *  animation channel. */
+  walkPhase: number;
+  /** Owner's tank colour, copied at spawn so the client can tint each
+   *  soldier without looking up the owner tank state every frame. */
+  color: string;
+}
+
 export interface RoomStateUpdate {
   tanks: TankState[];
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
   pickups: PickupState[];
+  soldiers: SoldierState[];
 }
 
 // ── Tread track history ──
@@ -366,6 +454,7 @@ export interface MatchSnapshot {
   projectiles: ActiveProjectileState[];
   hazards: HazardState[];
   pickups: PickupState[];
+  soldiers: SoldierState[];
   /** Seconds until the next match reset (terrain regen + score reset). */
   resetsInSeconds: number;
   /** Milliseconds remaining in the start-of-match Countdown phase. 0 outside Countdown. */
@@ -473,11 +562,18 @@ export interface ShotStep {
   terrainOp?: TerrainOp;
 }
 
+export interface DamageHit {
+  playerId: PlayerId;
+  damage: number;
+  killed: boolean;
+  shielded?: boolean;
+}
+
 export interface ShotResult {
   shooterId: PlayerId;
   weaponId: string;
   steps: ShotStep[];
-  damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
+  damageDealt: DamageHit[];
   /** Per-tank kinetic impulse (world-units / second velocity delta) to be
    *  applied at impact time. Populated by the simulator; the room applies
    *  it to the tank's linVel and flips airborne if |delta| exceeds the
@@ -491,6 +587,7 @@ export interface ClientEvents {
     playerName: string;
     color?: string;
     flagId?: string;
+    parachuteId?: string;
     /** Routing mode. Omitted = 'quick'. */
     mode?: JoinMode;
     /** Required when mode === 'join_private'. 4 letters from a no-confusables
@@ -505,6 +602,11 @@ export interface ClientEvents {
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   shield_activate: () => void;
+  /** Manual self-destruct of the player's currently-piloted Predator
+   *  missile. Server forces detonation at the missile's current
+   *  position with the standard blast radius / damage. No-op if the
+   *  player isn't currently piloting. */
+  predator_detonate: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
@@ -542,7 +644,7 @@ export interface ServerEvents {
    *  that don't ride on a shot_resolved. Each entry drives a floating
    *  damage-number popup and hit-marker on the client, mirroring the
    *  experience of direct-hit weapons. */
-  damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
+  damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
   /** Fired when a new pickup drops into the world. */
@@ -557,6 +659,31 @@ export interface ServerEvents {
   /** Server refused the join_room. Client surfaces the reason and
    *  re-shows the login overlay so the player can retry / fix the code. */
   join_error: (data: { reason: JoinErrorReason }) => void;
+  /** A soldier fired their rifle. The client uses this to draw a one-shot
+   *  tracer + muzzle flash without bloating state_update with per-shot
+   *  state. `targetId` is null when the soldier is firing into space (no
+   *  enemy in range at the moment of the trigger). */
+  soldier_fire: (data: {
+    soldierId: string;
+    ownerId: PlayerId;
+    color: string;
+    from: Vec3;
+    to: Vec3;
+    targetId: PlayerId | null;
+  }) => void;
+  /** A soldier was killed (run-over, splash, or natural lifetime expiry).
+   *  Drives the blood-splatter decal at the death position so late-arriving
+   *  state_updates that omit the soldier ID don't have to encode "why". */
+  soldier_killed: (data: {
+    soldierId: string;
+    ownerId: PlayerId;
+    position: Vec3;
+    color: string;
+    /** True when the soldier despawned of natural causes (lifetime or owner
+     *  death) rather than being killed — clients can skip the blood
+     *  splatter for non-violent despawns. */
+    expired: boolean;
+  }) => void;
   /** Sent on the transition into / out of the idle-kick warning window
    *  (75 s of no input). secondsRemaining is the seconds-until-kick when
    *  entering the window and 0 when activity has been detected and the

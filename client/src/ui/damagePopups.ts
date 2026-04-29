@@ -15,20 +15,23 @@ interface Tier {
   color: string;
   glow: boolean;
   shake: boolean;
-  fire: boolean;
+  skull: boolean;
 }
 
-function tierFor(amount: number, killed: boolean): Tier {
+function tierFor(amount: number, killed: boolean, shielded?: boolean): Tier {
+  if (shielded) {
+    return { fontSize: 24, durationMs: 1500, color: '#44aaff', glow: true, shake: false, skull: false };
+  }
   if (killed || amount >= 60) {
-    return { fontSize: 46, durationMs: 2200, color: '#ff2a14', glow: true, shake: true, fire: true };
+    return { fontSize: 46, durationMs: 2200, color: '#ff2a14', glow: true, shake: true, skull: true };
   }
   if (amount >= 35) {
-    return { fontSize: 36, durationMs: 1800, color: '#ff6622', glow: true, shake: true, fire: false };
+    return { fontSize: 36, durationMs: 1800, color: '#ff6622', glow: true, shake: true, skull: false };
   }
   if (amount >= 15) {
-    return { fontSize: 28, durationMs: 1500, color: '#ffaa22', glow: false, shake: false, fire: false };
+    return { fontSize: 28, durationMs: 1500, color: '#ffaa22', glow: false, shake: false, skull: false };
   }
-  return { fontSize: 20, durationMs: 1200, color: '#ffdd33', glow: false, shake: false, fire: false };
+  return { fontSize: 20, durationMs: 1200, color: '#ffdd33', glow: false, shake: false, skull: false };
 }
 
 /** Floating pickup confirmation: "+AMMO SEEKER ×2", "+WEAPON NAPALM" etc.
@@ -60,10 +63,10 @@ export function spawnPickupToast(tankGroup: THREE.Object3D, text: string, color:
   setTimeout(() => tankGroup.remove(obj), 1600);
 }
 
-export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, killed: boolean): void {
+export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, killed: boolean, shielded?: boolean): void {
   if (amount <= 0 && !killed) return;
 
-  const tier = tierFor(amount, killed);
+  const tier = tierFor(amount, killed, shielded);
 
   // Outer: positioned each frame by CSS2DRenderer (transform is owned by three).
   const outer = document.createElement('div');
@@ -90,12 +93,12 @@ export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, kill
 
   shake.appendChild(text);
 
-  if (tier.fire) {
-    const fire = document.createElement('span');
-    fire.className = 'damage-popup-fire';
-    fire.textContent = '🔥';
-    fire.style.fontSize = `${tier.fontSize * 0.9}px`;
-    shake.appendChild(fire);
+  if (tier.skull) {
+    const skull = document.createElement('span');
+    skull.className = 'damage-popup-skull';
+    skull.textContent = '💀';
+    skull.style.fontSize = `${tier.fontSize * 0.9}px`;
+    shake.appendChild(skull);
   }
 
   rise.appendChild(shake);
