@@ -1615,10 +1615,15 @@ function animate(): void {
         let barrelPitch: number;
         let railEndPoint: { x: number; y: number; z: number } | null = null;
         let railStartPoint: { x: number; y: number; z: number } | null = null;
-        // Hitscan weapons (rail + minigun) need to point the barrel
-        // straight at the cursor — the ballistic solver below would
-        // divide by projectileSpeed²=0 for the minigun and explode.
-        const isHitscanAim = selectedWeapon.behavior === 'rail' || selectedWeapon.behavior === 'minigun';
+        // Direct-aim weapons need to point the barrel straight at the
+        // cursor: rail + minigun (hitscan) and predator (the missile
+        // launches toward the reticle and then takes over via WASD —
+        // a parabolic ballistic arc would let it climb away from the
+        // intended cursor target the first time you let go of the
+        // sticks).
+        const isHitscanAim = selectedWeapon.behavior === 'rail'
+          || selectedWeapon.behavior === 'minigun'
+          || selectedWeapon.behavior === 'predator';
         if (isHitscanAim) {
           const directAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
           nextTurretRotation = directAim.turretRotation;

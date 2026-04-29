@@ -515,6 +515,33 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'predator') {
+    // Steerable cruise missile: launches straight along the muzzle
+    // direction and then the player takes over with WASD. Preview is a
+    // short straight tracer toward the cursor (or a forward projection
+    // if the cursor is over the sky), matching the rail/minigun style
+    // — a parabolic preview here would lie about the launch arc.
+    parentMat.color.setHex(0xc8a878);
+    const previewRange = 30;
+    let end: Vec3;
+    if (aimTarget) {
+      end = { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z };
+    } else {
+      const dir = normalize(startVel);
+      end = {
+        x: startPos.x + dir.x * previewRange,
+        y: startPos.y + dir.y * previewRange,
+        z: startPos.z + dir.z * previewRange,
+      };
+    }
+    placePoints(parentDots, makeLinePoints(startPos, end, 18));
+    placeMarker(end.x, end.y, end.z);
+    marker.group.scale.setScalar(0.55);
+    setMarkerColor(0xc8a878, 0xe8c898);
+    marker.group.visible = true;
+    return;
+  }
+
   if (weapon.behavior === 'seeker') {
     parentMat.color.setHex(0x7a9ab0);
     const dir = normalize(startVel);

@@ -369,7 +369,10 @@ export const WEAPONS: WeaponDefinition[] = [
       // moving tank without making the missile feel like a fighter jet.
       predatorTurnRate: 1.6,
       predatorPitchRate: 1.2,
-      predatorLifetime: 9,
+      // 7 s of flight max — enough to range across most of the map at
+      // 22 m/s (~150 m) without letting the player camp the camera
+      // forever / hide their tank from a flank push.
+      predatorLifetime: 7,
       predatorBlastRadius: 5,
       predatorDamage: 55,
       predatorTerrainDamage: 3.5,
