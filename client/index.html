@@ -1000,21 +1000,21 @@
       }
     }
 
-    .damage-popup-fire {
+    .damage-popup-skull {
       display: inline-block;
-      animation: dmg-fire-flicker 0.18s ease-in-out infinite alternate;
-      filter: drop-shadow(0 0 6px #ff7722);
+      animation: dmg-skull-pulse 0.25s ease-in-out infinite alternate;
+      filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 8px #fff);
     }
 
-    @keyframes dmg-fire-flicker {
+    @keyframes dmg-skull-pulse {
       0% {
-        transform: translateY(0) scale(1) rotate(-6deg);
-        opacity: 0.85;
+        transform: scale(1) rotate(-3deg);
+        filter: drop-shadow(0 0 4px #fff);
       }
 
       100% {
-        transform: translateY(-2px) scale(1.15) rotate(8deg);
-        opacity: 1;
+        transform: scale(1.2) rotate(3deg);
+        filter: drop-shadow(0 0 8px #fff);
       }
     }
 
