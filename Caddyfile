@@ -1,0 +1,11 @@
+{$DOMAIN:localhost} {
+	root * /srv
+	encode zstd gzip
+
+	route {
+		reverse_proxy /socket.io* server:3001
+		reverse_proxy /healthz server:3001
+		try_files {path} /index.html
+		file_server
+	}
+}
