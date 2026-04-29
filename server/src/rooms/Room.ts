@@ -45,6 +45,7 @@ import {
   PICKUP_FALL_SPEED,
   PICKUP_WEAPON_CHANCE,
   PARACHUTE_DROP_HEIGHT,
+  INVENTORY_SNAPSHOT_TTL_SECONDS,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -409,6 +410,18 @@ export class Room {
    *  can call shutdown() and drop the room. Bots alone never keep a room
    *  alive — they exist only to give a human someone to shoot at. */
   private readonly onEmpty?: () => void;
+  /** Snapshots of leaving players' inventories, keyed by sanitised
+   *  lowercase name. Allows a player who disconnects mid-match to rejoin
+   *  with the same loadout instead of getting a fresh random one. Each
+   *  entry is tagged with `matchGen` so a snapshot from the old match
+   *  never bleeds into the next; cleared on resetMatch alongside the
+   *  matchGen bump. Bots are never snapshotted — they keep the legacy
+   *  random-loadout behaviour. */
+  private inventoryByName: Map<string, { inventory: WeaponInventorySlot[]; leftAt: number; matchGen: number }> = new Map();
+  /** Bumped every match reset. Used as part of the inventory snapshot
+   *  key so a stale snapshot from the previous map can't survive into
+   *  the new one. */
+  private matchGen = 0;
 
   constructor(
     id: string,
@@ -464,6 +477,14 @@ export class Room {
   }
 
   private resetMatch(): void {
+    // Bump the inventory-snapshot generation and drop the cache before
+    // any new spawn happens. A snapshot taken in match N would otherwise
+    // be replayed onto a tank in match N+1 if the player rejoins fast,
+    // which feels broken — every match should start from a fresh
+    // random loadout.
+    this.matchGen++;
+    this.inventoryByName.clear();
+
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     // simTime MUST be reset before clearCombatState: the latter stamps
@@ -553,12 +574,45 @@ export class Room {
     // routes humans to non-full public rooms; this is a defensive cap.
     if (this.humanCount() >= MAX_PLAYERS) return;
 
+    // Reject duplicate names so the kill-feed / scoreboard / inventory-
+    // snapshot lookup remain unambiguous. The check is case-insensitive
+    // and runs against the post-sanitisation form so "  Foo  " collides
+    // with "foo". Bots draw from the same pool but have their own
+    // de-conflict logic in spawnBot, so we don't filter them out here.
+    const safeName = sanitizeName(playerName);
+    const nameKey = safeName.toLowerCase();
+    for (const t of this.tanks.values()) {
+      if (sanitizeName(t.playerName).toLowerCase() === nameKey) {
+        socket.emit('join_error', { reason: 'name_taken' });
+        return;
+      }
+    }
+
     const playerId = socket.id;
+
+    // Restore the inventory we snapshotted when this name last left, if
+    // the entry is still in the same match generation and within the
+    // TTL. One-shot consume so two concurrent rejoins of the same name
+    // (impossible thanks to the uniqueness gate above, but defensive)
+    // can't both inherit the loadout.
+    const nowSec = Date.now() / 1000;
+    const snap = this.inventoryByName.get(nameKey);
+    let inventory: WeaponInventorySlot[];
+    if (
+      snap
+      && snap.matchGen === this.matchGen
+      && nowSec - snap.leftAt <= INVENTORY_SNAPSHOT_TTL_SECONDS
+    ) {
+      inventory = snap.inventory;
+      this.inventoryByName.delete(nameKey);
+    } else {
+      inventory = createRandomLoadout(this.settings.weaponAllowed);
+    }
 
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
-      lastInputAt: Date.now() / 1000,
+      lastInputAt: nowSec,
       idleWarned: false,
       lastFireByWeapon: new Map(),
       weaponHeat: new Map(),
@@ -571,7 +625,7 @@ export class Room {
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(this.settings.weaponAllowed),
+      inventory,
       activeMissileId: null,
       parachuteUntil: 0,
       parachuteGroundY: 0,
@@ -606,6 +660,23 @@ export class Room {
 
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+
+    // Snapshot the leaving player's inventory by their (sanitised,
+    // lowercased) name so a quick reconnect from the same person picks
+    // up where they left off. Bots are excluded — their loadouts are
+    // ephemeral by design and reusing a bot's name pool through the
+    // snapshot map would only confuse rejoining humans. The TTL +
+    // matchGen gate on read-back prevents stale entries.
+    if (tank && player && !player.isBot) {
+      const key = sanitizeName(tank.playerName).toLowerCase();
+      this.inventoryByName.set(key, {
+        inventory: player.inventory,
+        leftAt: Date.now() / 1000,
+        matchGen: this.matchGen,
+      });
+    }
+
     this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);

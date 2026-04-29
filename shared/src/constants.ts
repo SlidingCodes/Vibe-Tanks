@@ -45,6 +45,15 @@ export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
 export const SERVER_PORT = 3001;
 
+// ── Identity persistence ──
+/** How long (seconds) a leaving player's inventory is held in case they
+ *  reconnect with the same name. After this window the snapshot is
+ *  treated as stale and a fresh random loadout is rolled. The snapshot
+ *  is also dropped on match reset regardless of TTL — so a player who
+ *  disconnects late in a match can't carry their loadout past the next
+ *  map regeneration. */
+export const INVENTORY_SNAPSHOT_TTL_SECONDS = 600;
+
 // ── Weapon pickups ────────────────────────────────────────────────────────
 /** Max concurrent pickups present in the world. */
 export const PICKUP_MAX_CONCURRENT = 6;
