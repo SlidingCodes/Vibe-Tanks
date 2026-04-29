@@ -387,6 +387,47 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
+    // Soldiers: drop 5 infantry units in a ring around the firing tank.
+    // They fan out, find the nearest enemy tank, and pop hitscan rifle
+    // shots at ~1 round / 2 s each. Each unit has 10 HP — a single
+    // splash blast clears them. Run them over with an enemy hull and
+    // they die on contact. They despawn after 30 s or when the owner
+    // dies; the trade-off for a low-cooldown swarm of pressure.
+    id: 'soldiers',
+    name: 'Soldiers',
+    description: 'Drops 5 riflemen — fragile, persistent, fan out and shoot the nearest enemy.',
+    // Spawn doesn't fire a shell — the units appear instantly around the
+    // tank, so projectileSpeed/blastRadius/damage are unused by the
+    // ballistic solver. The fire path is custom (`fireSoldiers`).
+    projectileSpeed: 0,
+    blastRadius: 0,
+    damage: 0,
+    terrainDamage: 0,
+    behavior: 'soldiers',
+    cooldown: 6,
+    startAmmo: 1,
+    maxAmmo: 2,
+    // Mid-rare: 5 units × 30 s of pressure is strong, but the units
+    // themselves are paper-thin so a single competent shell blast
+    // cleans them up. 0.5 weight keeps the pickup pool diverse.
+    pickupWeight: 0.5,
+    behaviorConfig: {
+      soldierCount: 5,
+      soldierHp: 10,
+      soldierLifetime: 30,
+      soldierShotInterval: 2.0,
+      // 8 dmg × 5 soldiers × 0.5 shots/s = 20 dps when all units have a
+      // line of fire. Most fights end before the full DPS lands; the
+      // weapon rewards the player who keeps their squad alive.
+      soldierShotDamage: 8,
+      // 22 m engagement range — a bit shorter than the rail's 50 m so
+      // soldiers don't dominate the long sightlines.
+      soldierShotRange: 22,
+      soldierMoveSpeed: 4.5,
+      soldierFollowDistance: 8,
+    },
+  },
+  {
     // Rocket jump: the tank itself becomes the projectile. Aim with the
     // normal reticle — the same ballistic solver used by standard weapons
     // picks a turret/barrel angle that would land a shell at the target,

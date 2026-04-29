@@ -16,6 +16,7 @@ import {
   setTankBuriedOutlineVisible,
 } from './entities/tank';
 import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
@@ -48,7 +49,7 @@ import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from '
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
-import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning, playPredatorLaunch } from './audio/sounds';
+import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning, playPredatorLaunch, playSoldierShot as playSoldierShotAudio } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
 import { ActiveProjectileState, FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
@@ -524,6 +525,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
+  syncSoldiers(scene, snap.soldiers ?? []);
   refreshPilotingMissile(snap.projectiles);
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
@@ -651,6 +653,10 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   // traffic and no late-joiner replay (trails start from connect time).
   trackDecal = createTrackDecal(voxelGrid);
   lastTreadPosByPlayer.clear();
+  // Soldier visuals are scene meshes — drop them on every voxel snapshot
+  // so a match reset / rejoin doesn't leave stale infantry frozen on
+  // the old terrain.
+  clearAllSoldierVisuals(scene);
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
   } else {
@@ -931,6 +937,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   }
 
   syncActiveCombatState(scene, projectiles, hazards);
+  syncSoldiers(scene, state.soldiers ?? []);
   refreshPilotingMissile(projectiles);
 
   const myTank = tanks.find((t) => t.playerId === myId);
@@ -1230,6 +1237,24 @@ socket.on('pickup_collected', (data) => {
 
 socket.on('player_left', ({ playerId }) => {
   removeTankMesh(playerId, scene);
+});
+
+socket.on('soldier_fire', (data) => {
+  playSoldierShot(scene, data.soldierId, data.from, data.to);
+  // Only play SFX for nearby gunfire so a 5-strong squad on the far side
+  // of the map doesn't drown the player's own audio mix.
+  if (predictedState) {
+    const dx = predictedState.position.x - data.from.x;
+    const dz = predictedState.position.z - data.from.z;
+    if (dx * dx + dz * dz < 60 * 60) playSoldierShotAudio();
+  }
+});
+
+socket.on('soldier_killed', (data) => {
+  // Skip the splatter for non-violent despawns (lifetime expiry / owner
+  // death) — only blood up the terrain when the unit was actually
+  // shot down or run over.
+  if (!data.expired) spawnBloodSplatter(scene, data.position);
 });
 
 socket.on('match_event', (ev) => {
@@ -1843,6 +1868,7 @@ function animate(): void {
   tickTankEffects(dt);
   updateTankExplosions(scene, dt);
   updateProjectileAnimation(scene, dt);
+  updateSoldiers(dt);
 
   if (snapshot) {
     const myPos = predictedState ? predictedState.position : null;

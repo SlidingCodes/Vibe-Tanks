@@ -16,6 +16,7 @@ import {
   ServerEvents,
   ShotResult,
   ShotStep,
+  SoldierState,
   TankState,
   TerrainOp,
   TerrainPresetId,
@@ -242,6 +243,25 @@ interface ScheduledStrike {
   fallDuration?: number;
 }
 
+interface ActiveSoldierRuntime extends SoldierState {
+  /** Seconds of life remaining before natural despawn. */
+  lifetime: number;
+  /** Seconds until the next shot is allowed (counts down to 0). */
+  fireTimer: number;
+  /** Cached weapon-config tuning — copied at spawn so repeated lookups
+   *  per tick (engagement range, movement speed, etc.) don't have to walk
+   *  the WEAPONS array. */
+  shotDamage: number;
+  shotRange: number;
+  shotInterval: number;
+  moveSpeed: number;
+  followDistance: number;
+  weaponId: string;
+  /** Pre-allocated wire view kept in sync with the mutable public fields,
+   *  same pattern as the projectile/hazard runtimes. */
+  wire: SoldierState;
+}
+
 interface ActivePickupRuntime extends PickupState {
   /** Ground y the crate settles on (terrain height at spawn). Used to
    *  clamp the parachute descent. */
@@ -296,6 +316,7 @@ export class Room {
   private activeProjectiles: Map<string, ActiveProjectileRuntime> = new Map();
   private activeHazards: Map<string, ActiveHazardRuntime> = new Map();
   private activePickups: Map<string, ActivePickupRuntime> = new Map();
+  private activeSoldiers: Map<string, ActiveSoldierRuntime> = new Map();
   /** Cached public views rebuilt only on insert/delete (not per tick). The
    *  broadcast path reuses these arrays as-is, and per-tick tank/projectile/
    *  hazard updates sync fields into the matching wire object in place. */
@@ -303,6 +324,7 @@ export class Room {
   private wireProjectiles: ActiveProjectileState[] = [];
   private wireHazards: HazardState[] = [];
   private wirePickups: PickupState[] = [];
+  private wireSoldiers: SoldierState[] = [];
   private scheduledStrikes: ScheduledStrike[] = [];
   private simInterval: ReturnType<typeof setInterval> | null = null;
   private broadcastInterval: ReturnType<typeof setInterval> | null = null;
@@ -317,6 +339,7 @@ export class Room {
   private nextHazardId = 1;
   private nextStrikeId = 1;
   private nextPickupId = 1;
+  private nextSoldierId = 1;
   /** Sim-time (seconds) at which the next pickup will spawn. */
   private nextPickupSpawnAt = 0;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -542,6 +565,8 @@ export class Room {
         this.unregisterHazard(hazardId);
       }
     }
+
+    this.clearOwnerSoldiers(playerId);
 
     this.scheduledStrikes = this.scheduledStrikes.filter((strike) => strike.ownerId !== playerId);
     this.io.to(this.id).emit('player_left', { playerId });
@@ -864,6 +889,9 @@ export class Room {
       case 'predator':
         this.firePredator(tank, player, weapon);
         break;
+      case 'soldiers':
+        this.fireSoldiers(tank, weapon);
+        break;
       default: {
         const result = precomputedResult || simulateShot(
           tank,
@@ -1082,7 +1110,12 @@ export class Room {
         // blast — fires whether or not the step actually carves, so a
         // direct-hit shell with a non-zero blastRadius still detonates
         // mines in the splash without needing a terrain crater.
-        if (step.blastRadius > 0) this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+        if (step.blastRadius > 0) {
+          this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+          // Soldiers within the blast die unless they belong to the
+          // shooter (no friendly fire on your own squad).
+          this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
+        }
       }, flightSeconds * 1000);
       this.pendingShotTimeouts.add(timeout);
     }
@@ -1115,6 +1148,7 @@ export class Room {
     for (const step of result.steps) {
       if (step.blastRadius <= 0) continue;
       this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+      this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
     }
   }
 
@@ -1442,6 +1476,71 @@ export class Room {
       predatorSpeed: speed,
     });
     player.activeMissileId = projectileId;
+  }
+
+  /** Soldiers: drop a small squad of infantry units in a ring around the
+   *  firing tank. Each unit is independent — its own HP, fire timer, and
+   *  AI loop in `tickSoldiers`. They do not carve terrain, do not collide
+   *  with each other, and are filtered out of friendly fire (the owner's
+   *  splash never kills their own soldiers). Lifetime expiry / owner death
+   *  cleans them up. */
+  private fireSoldiers(tank: TankState, weapon: WeaponDefinition): void {
+    const cfg = weapon.behaviorConfig;
+    const count = cfg?.soldierCount ?? 5;
+    const hp = cfg?.soldierHp ?? 10;
+    const lifetime = cfg?.soldierLifetime ?? 30;
+    const shotInterval = cfg?.soldierShotInterval ?? 2;
+    const shotDamage = cfg?.soldierShotDamage ?? 8;
+    const shotRange = cfg?.soldierShotRange ?? 22;
+    const moveSpeed = cfg?.soldierMoveSpeed ?? 4.5;
+    const followDistance = cfg?.soldierFollowDistance ?? 8;
+
+    // Visual hint for the client: emit a synthetic shot_resolved with no
+    // steps so the kill feed / sound system can register the deploy
+    // event the same way other weapons do.
+    this.io.to(this.id).emit('shot_resolved', {
+      shooterId: tank.playerId,
+      weaponId: weapon.id,
+      steps: [],
+      damageDealt: [],
+    });
+
+    const cx = tank.position.x;
+    const cz = tank.position.z;
+    // Ring spawn just outside the hull radius so soldiers don't appear
+    // intersecting the tank's own collider — they walk from there.
+    const ringRadius = HULL_RADIUS + 1.6;
+    const phaseOffset = Math.random() * Math.PI * 2;
+    for (let i = 0; i < count; i++) {
+      const ang = phaseOffset + (i / count) * Math.PI * 2;
+      const px = cx + Math.cos(ang) * ringRadius;
+      const pz = cz + Math.sin(ang) * ringRadius;
+      const py = this.voxels.getHeight(px, pz);
+      const soldierId = `sld_${this.nextSoldierId++}`;
+      // Slight per-soldier desync on the first shot so a 5-strong
+      // squad doesn't fire one synchronised volley every 2 s.
+      const initialFireDelay = 0.4 + Math.random() * 0.8;
+      this.registerSoldier({
+        soldierId,
+        ownerId: tank.playerId,
+        position: { x: px, y: py, z: pz },
+        // Start facing outward from the tank — they'll re-aim at the
+        // first valid enemy on the next tick.
+        rotation: ang,
+        hp,
+        maxHp: hp,
+        walkPhase: 0,
+        color: tank.color,
+        lifetime,
+        fireTimer: initialFireDelay,
+        shotDamage,
+        shotRange,
+        shotInterval,
+        moveSpeed,
+        followDistance,
+        weaponId: weapon.id,
+      });
+    }
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
@@ -1811,6 +1910,7 @@ export class Room {
       this.tickProjectiles(simDt);
       this.tickPredatorMissiles(simDt);
       this.tickHazards(simDt);
+      this.tickSoldiers(simDt);
       this.tickScheduledStrikes();
       this.tickPickups(simDt);
     }, targetTickMs);
@@ -2406,6 +2506,140 @@ export class Room {
     this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
   }
 
+  /** Soldiers AI tick. Per unit:
+   *   - Decrement lifetime; despawn (expired) when it hits 0.
+   *   - If the owner is dead/missing, despawn (expired).
+   *   - Detect run-over by an enemy hull (XZ distance < HULL_RADIUS+0.4) →
+   *     instant-kill.
+   *   - Find the nearest enemy tank within shotRange.
+   *   - If an enemy is in range: face it, count down `fireTimer`, fire a
+   *     hitscan rifle shot when it expires (apply damage via the standard
+   *     resolved-damage path so kill feed / score / popups all work).
+   *   - Otherwise (no enemy in range): walk toward the owner if outside
+   *     followDistance, otherwise idle.
+   *   - Sit on the terrain surface every tick — no physics body needed,
+   *     soldiers ignore mid-air states. */
+  private tickSoldiers(dt: number): void {
+    const dead: string[] = [];
+    const expired: string[] = [];
+    // Group damage by owner (the tank that fired the Soldiers weapon) so
+    // applyResolvedDamage attributes kills correctly per-shot.
+    const damageByOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
+    const popupHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+
+    for (const [sid, soldier] of this.activeSoldiers) {
+      soldier.lifetime -= dt;
+      if (soldier.lifetime <= 0) {
+        expired.push(sid);
+        continue;
+      }
+      const owner = this.tanks.get(soldier.ownerId);
+      if (!owner || !owner.alive) {
+        expired.push(sid);
+        continue;
+      }
+
+      // Run-over: any alive *enemy* hull whose XZ centre is within hull
+      // radius + a small grace margin instakills the soldier. Y is ignored
+      // (close enough on-foot range that a tank one floor up still counts
+      // as the same encounter).
+      const RUN_OVER_RADIUS = HULL_RADIUS + 0.4;
+      const ro2 = RUN_OVER_RADIUS * RUN_OVER_RADIUS;
+      let runOver = false;
+      for (const t of this.tanks.values()) {
+        if (!t.alive || t.playerId === soldier.ownerId) continue;
+        const dx = t.position.x - soldier.position.x;
+        const dz = t.position.z - soldier.position.z;
+        if (dx * dx + dz * dz <= ro2) { runOver = true; break; }
+      }
+      if (runOver || soldier.hp <= 0) {
+        dead.push(sid);
+        continue;
+      }
+
+      // Engagement: pick nearest enemy tank within shotRange (XYZ to keep
+      // soldiers from shooting up at a tank perched on a cliff above —
+      // they should walk into line of sight first).
+      const targetId = findNearestEnemyFn(
+        soldier.position,
+        soldier.ownerId,
+        soldier.shotRange,
+        this.tanks.values(),
+      );
+
+      if (targetId) {
+        const target = this.tanks.get(targetId);
+        if (target) {
+          const dx = target.position.x - soldier.position.x;
+          const dz = target.position.z - soldier.position.z;
+          soldier.rotation = Math.atan2(dx, dz);
+          soldier.fireTimer -= dt;
+          if (soldier.fireTimer <= 0) {
+            soldier.fireTimer = soldier.shotInterval;
+            const fromY = soldier.position.y + 1.0;
+            const toY = target.position.y + 0.8;
+            this.io.to(this.id).emit('soldier_fire', {
+              soldierId: soldier.soldierId,
+              ownerId: soldier.ownerId,
+              color: soldier.color,
+              from: { x: soldier.position.x, y: fromY, z: soldier.position.z },
+              to: { x: target.position.x, y: toY, z: target.position.z },
+              targetId: target.playerId,
+            });
+            const killed = target.hp - soldier.shotDamage <= 0;
+            const hit = { playerId: target.playerId, damage: soldier.shotDamage, killed };
+            const list = damageByOwner.get(soldier.ownerId);
+            if (list) list.push(hit);
+            else damageByOwner.set(soldier.ownerId, [hit]);
+            popupHits.push({ ...hit });
+          }
+        }
+      } else {
+        // No target — walk back toward the owner if too far. Owners moving
+        // around the map should be able to bring their squad with them
+        // without leaving them stranded at the original drop site.
+        const dx = owner.position.x - soldier.position.x;
+        const dz = owner.position.z - soldier.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > soldier.followDistance) {
+          const step = Math.min(dist, soldier.moveSpeed * dt);
+          soldier.position.x += (dx / dist) * step;
+          soldier.position.z += (dz / dist) * step;
+          soldier.rotation = Math.atan2(dx, dz);
+          soldier.walkPhase += step;
+        }
+      }
+
+      // Stick to the ground every tick — terrain may have been carved
+      // beneath them, or they may have walked off a ledge.
+      soldier.position.y = this.voxels.getHeight(soldier.position.x, soldier.position.z);
+
+      // Sync wire view.
+      soldier.wire.position = soldier.position;
+      soldier.wire.rotation = soldier.rotation;
+      soldier.wire.hp = soldier.hp;
+      soldier.wire.walkPhase = soldier.walkPhase;
+    }
+
+    for (const sid of dead) this.unregisterSoldier(sid, false);
+    for (const sid of expired) this.unregisterSoldier(sid, true);
+
+    // Commit accumulated rifle damage in one batch per owner so kills
+    // / score updates roll up cleanly.
+    for (const [ownerId, hits] of damageByOwner) {
+      this.applyResolvedDamage(ownerId, 'soldiers', hits);
+    }
+    if (popupHits.length > 0) {
+      // Re-flag killed flags from post-damage tank state so the popup
+      // matches the authoritative outcome.
+      for (const h of popupHits) {
+        const victim = this.tanks.get(h.playerId);
+        if (!victim || !victim.alive) h.killed = true;
+      }
+      this.io.to(this.id).emit('damage_applied', { weaponId: 'soldiers', hits: popupHits });
+    }
+  }
+
   private tickHazards(dt: number): void {
     for (const [hazardId, hazard] of this.activeHazards) {
       // Mines persist for the whole match — they only disappear when they
@@ -2618,6 +2852,7 @@ export class Room {
 
       // 5. Mine chain reactions.
       this.triggerMinesInBlast(strike.position, strike.blastRadius);
+      this.damageSoldiersInBlast(strike.position, strike.blastRadius, ownerId);
     }, fallDuration * 1000);
     this.pendingShotTimeouts.add(impactTimeout);
   }
@@ -2824,13 +3059,80 @@ export class Room {
     if (idx >= 0) this.wireHazards.splice(idx, 1);
   }
 
+  private registerSoldier(soldier: Omit<ActiveSoldierRuntime, 'wire'>): ActiveSoldierRuntime {
+    const wire: SoldierState = {
+      soldierId: soldier.soldierId,
+      ownerId: soldier.ownerId,
+      position: soldier.position,
+      rotation: soldier.rotation,
+      hp: soldier.hp,
+      maxHp: soldier.maxHp,
+      walkPhase: soldier.walkPhase,
+      color: soldier.color,
+    };
+    const runtime = soldier as ActiveSoldierRuntime;
+    runtime.wire = wire;
+    this.activeSoldiers.set(runtime.soldierId, runtime);
+    this.wireSoldiers.push(wire);
+    return runtime;
+  }
+
+  private unregisterSoldier(soldierId: string, expired: boolean): void {
+    const runtime = this.activeSoldiers.get(soldierId);
+    if (!runtime) return;
+    this.activeSoldiers.delete(soldierId);
+    const idx = this.wireSoldiers.indexOf(runtime.wire);
+    if (idx >= 0) this.wireSoldiers.splice(idx, 1);
+    this.io.to(this.id).emit('soldier_killed', {
+      soldierId: runtime.soldierId,
+      ownerId: runtime.ownerId,
+      position: { x: runtime.position.x, y: runtime.position.y, z: runtime.position.z },
+      color: runtime.color,
+      expired,
+    });
+  }
+
+  /** Drop every soldier owned by the given player, used when the owner dies
+   *  or disconnects. Marks the cleanup as `expired` so the client doesn't
+   *  splatter blood for tanks that already exploded. */
+  private clearOwnerSoldiers(ownerId: PlayerId): void {
+    const ids: string[] = [];
+    for (const [sid, soldier] of this.activeSoldiers) {
+      if (soldier.ownerId === ownerId) ids.push(sid);
+    }
+    for (const sid of ids) this.unregisterSoldier(sid, true);
+  }
+
+  /** Splash damage from a blast against any soldier within `radius`
+   *  (excluding soldiers that belong to `ownerId` — no friendly fire on
+   *  your own squad). Soldiers have only 10 HP, so a single blast in
+   *  range usually wipes them; we use the full damage figure rather than
+   *  a falloff so an air-burst over the squad lands a clean kill instead
+   *  of leaving 1 HP wounded units running around. */
+  private damageSoldiersInBlast(point: Vec3, radius: number, ownerId: PlayerId): void {
+    if (radius <= 0) return;
+    const r2 = radius * radius;
+    const dead: string[] = [];
+    for (const [sid, soldier] of this.activeSoldiers) {
+      if (soldier.ownerId === ownerId) continue;
+      const dx = soldier.position.x - point.x;
+      const dy = soldier.position.y - point.y;
+      const dz = soldier.position.z - point.z;
+      if (dx * dx + dy * dy + dz * dz > r2) continue;
+      dead.push(sid);
+    }
+    for (const sid of dead) this.unregisterSoldier(sid, false);
+  }
+
   private clearCombatState(): void {
     this.activeProjectiles.clear();
     this.activeHazards.clear();
     this.activePickups.clear();
+    this.activeSoldiers.clear();
     this.wireProjectiles.length = 0;
     this.wireHazards.length = 0;
     this.wirePickups.length = 0;
+    this.wireSoldiers.length = 0;
     this.nextPickupSpawnAt = this.simTime + PICKUP_SPAWN_INTERVAL;
   }
 
@@ -2840,6 +3142,7 @@ export class Room {
       projectiles: this.wireProjectiles,
       hazards: this.wireHazards,
       pickups: this.wirePickups,
+      soldiers: this.wireSoldiers,
     };
   }
 
@@ -2871,6 +3174,7 @@ export class Room {
       projectiles: this.wireProjectiles,
       hazards: filteredHazards,
       pickups: this.wirePickups,
+      soldiers: this.wireSoldiers,
     };
   }
 
@@ -2885,6 +3189,7 @@ export class Room {
       projectiles: state.projectiles,
       hazards: state.hazards,
       pickups: state.pickups,
+      soldiers: state.soldiers,
       resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
       countdownEndsInMs: this.phase === MatchPhase.Countdown
         ? Math.max(0, this.countdownEndsAt - Date.now())

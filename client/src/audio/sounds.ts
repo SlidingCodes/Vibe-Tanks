@@ -111,6 +111,36 @@ export function playMinigunShot(): void {
   noise.stop(now + 0.05);
 }
 
+// ── Soldier rifle (single shot) ──
+// Drier and slightly lower than the minigun — soldiers fire at ~0.5 rps
+// so the click can afford to ring a touch longer without blurring.
+
+export function playSoldierShot(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  const osc = ac.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(520, now);
+  osc.frequency.exponentialRampToValueAtTime(140, now + 0.07);
+  const oscGain = ac.createGain();
+  ramp(oscGain.gain, 0.2, 0, now, now + 0.09);
+  osc.connect(oscGain).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.1);
+
+  const noise = createNoise(ac, 0.09);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'highpass';
+  nf.frequency.value = 1200;
+  const ng = ac.createGain();
+  ramp(ng.gain, 0.16, 0, now, now + 0.06);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 0.07);
+}
+
 // ── Explosion (shell impact) ──
 // Scale 0–1 controls size: bigger = longer + lower.
 
