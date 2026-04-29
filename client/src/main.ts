@@ -151,17 +151,21 @@ const lastFireByWeapon = new Map<string, number>();
  *  stays responsive without waiting for a server round trip. Slight
  *  divergence is harmless: server gates the actual shots, the gauge is
  *  HUD feedback only. */
-interface LocalHeatState { value: number; lastUpdate: number; lockedUntil: number; }
+interface LocalHeatState { value: number; lastShotAt: number; lockedUntil: number; }
 const weaponHeat = new Map<string, LocalHeatState>();
 
-function decayWeaponHeat(weaponId: string, weapon: WeaponDefinition, now: number): number {
+/** Derived heat at `now`. Pure read — no mutation. Mirrors the server's
+ *  heatValueAt formula so the HUD bar predicts overheat without
+ *  waiting for a network round trip. Cooling only counts *idle* time
+ *  beyond the weapon's nominal cooldown; sustained fire at the natural
+ *  rate accumulates net-positive. */
+function heatValueAt(weaponId: string, weapon: WeaponDefinition, now: number): number {
   const entry = weaponHeat.get(weaponId);
   if (!entry) return 0;
+  const idle = Math.max(0, (now - entry.lastShotAt) - weapon.cooldown);
+  if (idle <= 0) return entry.value;
   const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
-  const dt = Math.max(0, now - entry.lastUpdate);
-  entry.value = Math.max(0, entry.value - coolRate * dt);
-  entry.lastUpdate = now;
-  return entry.value;
+  return Math.max(0, entry.value - coolRate * idle);
 }
 
 function isWeaponOverheatedLocal(weaponId: string, now: number): boolean {
@@ -172,10 +176,10 @@ function isWeaponOverheatedLocal(weaponId: string, now: number): boolean {
 function bumpWeaponHeatLocal(weapon: WeaponDefinition, now: number): void {
   let entry = weaponHeat.get(weapon.id);
   if (!entry) {
-    entry = { value: 0, lastUpdate: now, lockedUntil: 0 };
+    entry = { value: 0, lastShotAt: now, lockedUntil: 0 };
     weaponHeat.set(weapon.id, entry);
   } else {
-    decayWeaponHeat(weapon.id, weapon, now);
+    entry.value = heatValueAt(weapon.id, weapon, now);
   }
   const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
   entry.value = Math.min(1, entry.value + heatPerShot);
@@ -184,6 +188,7 @@ function bumpWeaponHeatLocal(weapon: WeaponDefinition, now: number): void {
     entry.lockedUntil = now + lockout;
     entry.value = 1;
   }
+  entry.lastShotAt = now;
 }
 
 /** Last shot info per tank, used to drive the barrel-heat glow on every
@@ -1670,7 +1675,7 @@ function animate(): void {
     // the gun and refills while the player lays off the trigger.
     let cooldownProgress: number;
     if (isHoldFire) {
-      const heatValue = decayWeaponHeat(selectedWeapon.id, selectedWeapon, now);
+      const heatValue = heatValueAt(selectedWeapon.id, selectedWeapon, now);
       cooldownProgress = isWeaponOverheatedLocal(selectedWeapon.id, now) ? 0 : Math.max(0, 1 - heatValue);
     } else {
       cooldownProgress = Math.min(1, (now - (lastFireByWeapon.get(selectedWeapon.id) ?? 0)) / selectedWeapon.cooldown);

@@ -146,10 +146,11 @@ interface PlayerState {
    *  seeker that's been ready for minutes. Missing entry = never fired. */
   lastFireByWeapon: Map<string, number>;
   /** Heat gauge state for hold-to-fire weapons (currently the minigun).
-   *  `value` ∈ [0,1] decays at heatCoolRate when not firing; each shot
-   *  bumps it by heatPerShot. When it hits 1 the gun locks for
-   *  overheatLockout seconds and `lockedUntil` is set. */
-  weaponHeat: Map<string, { value: number; lastUpdate: number; lockedUntil: number }>;
+   *  `value` ∈ [0,1] decays at heatCoolRate during *idle* time only
+   *  (gap-since-last-shot minus the weapon's nominal inter-shot
+   *  cooldown). Each shot bumps it by heatPerShot. When it hits 1 the
+   *  gun locks for overheatLockout seconds and `lockedUntil` is set. */
+  weaponHeat: Map<string, { value: number; lastShotAt: number; lockedUntil: number }>;
   /** Epoch seconds until which damage is ignored (post-spawn invulnerability). */
   spawnProtectionUntil: number;
   /** Epoch seconds after which a respawn_request is honoured. */
@@ -743,18 +744,20 @@ export class Room {
     });
   }
 
-  /** Decay the player's heat for `weapon` to its current value at `now`,
-   *  in place. Returns the new value. Caller is responsible for the
-   *  lockedUntil check separately so we don't compound a decay step on
-   *  top of an active lockout. */
-  private decayWeaponHeat(player: PlayerState, weapon: WeaponDefinition, now: number): number {
+  /** Read the player's *derived* heat at `now` without mutating. The
+   *  stored value is anchored to `lastShotAt`; cooling only counts the
+   *  idle time beyond the weapon's nominal inter-shot cooldown — burst
+   *  fire at the natural rate must not net-cool, otherwise the gauge
+   *  can never fill (decay × cooldown ≈ heatPerShot was the case for
+   *  the minigun's first tuning, so the player just heard "click" at
+   *  500 rps with no overheat). */
+  private heatValueAt(player: PlayerState, weapon: WeaponDefinition, now: number): number {
     const entry = player.weaponHeat.get(weapon.id);
     if (!entry) return 0;
+    const idle = Math.max(0, (now - entry.lastShotAt) - weapon.cooldown);
+    if (idle <= 0) return entry.value;
     const coolRate = weapon.behaviorConfig?.heatCoolRate ?? 0.5;
-    const dt = Math.max(0, now - entry.lastUpdate);
-    entry.value = Math.max(0, entry.value - coolRate * dt);
-    entry.lastUpdate = now;
-    return entry.value;
+    return Math.max(0, entry.value - coolRate * idle);
   }
 
   /** True while the gun is in overheat lockout. */
@@ -763,24 +766,28 @@ export class Room {
     return !!entry && entry.lockedUntil > now;
   }
 
-  /** Add one shot's worth of heat. If the gauge fills, latch the lockout. */
+  /** Commit one shot's worth of heat. Re-derives the cooled value from
+   *  `lastShotAt`, adds `heatPerShot`, latches the lockout if the gauge
+   *  hits 1, and stamps `lastShotAt = now`. */
   private bumpWeaponHeat(player: PlayerState, weapon: WeaponDefinition, now: number): void {
     let entry = player.weaponHeat.get(weapon.id);
     if (!entry) {
-      entry = { value: 0, lastUpdate: now, lockedUntil: 0 };
+      entry = { value: 0, lastShotAt: now, lockedUntil: 0 };
       player.weaponHeat.set(weapon.id, entry);
     } else {
-      this.decayWeaponHeat(player, weapon, now);
+      entry.value = this.heatValueAt(player, weapon, now);
     }
     const heatPerShot = weapon.behaviorConfig?.heatPerShot ?? 0.04;
     entry.value = Math.min(1, entry.value + heatPerShot);
     if (entry.value >= 1) {
       const lockout = weapon.behaviorConfig?.overheatLockout ?? 2.5;
       entry.lockedUntil = now + lockout;
-      // Hold the gauge at full while the lockout runs so the HUD reads
-      // "still hot"; it drains on lockout expiry on the client side.
+      // Hold the gauge at full while the lockout runs; once the
+      // lockout expires the next bump's heatValueAt() drains it
+      // smoothly off the lockout-end timestamp.
       entry.value = 1;
     }
+    entry.lastShotAt = now;
   }
 
   private performFire(tank: TankState, player: PlayerState, weapon: WeaponDefinition, aimPoint: Vec3 | null, precomputedResult?: ShotResult): void {
