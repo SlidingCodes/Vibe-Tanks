@@ -429,24 +429,46 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     let selectedParachutePrimary = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
     let selectedParachuteSecondary = '#fff';
     let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
-    nameInput.value = pickRandomName();
-    nameInput.placeholder = pickRandomName();
+    let savedName = pickRandomName();
 
-    // Try to auto-detect country via IP with a 2s timeout
+    let hasSavedFlag = false;
     try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 2000);
-      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data && data.country_code) {
-        const detected = data.country_code.toLowerCase();
-        if (FLAGS.find((f) => f.id === detected)) {
-          selectedFlag = detected;
+      const saved = localStorage.getItem('vibe-tanks-prefs');
+      if (saved) {
+        const prefs = JSON.parse(saved);
+        if (prefs.color && PALETTE.includes(prefs.color)) selected = prefs.color;
+        if (prefs.parachutePrimary && PARACHUTE_PALETTE.includes(prefs.parachutePrimary)) selectedParachutePrimary = prefs.parachutePrimary;
+        if (prefs.parachuteSecondary && PARACHUTE_PALETTE.includes(prefs.parachuteSecondary)) selectedParachuteSecondary = prefs.parachuteSecondary;
+        if (prefs.flagId && FLAGS.find((f) => f.id === prefs.flagId)) {
+          selectedFlag = prefs.flagId;
+          hasSavedFlag = true;
         }
+        if (prefs.name) savedName = prefs.name;
       }
     } catch (e) {
-      // Fallback to random is already set
+      // ignore parse errors
+    }
+
+    nameInput.value = savedName;
+    nameInput.placeholder = pickRandomName();
+
+    // Try to auto-detect country via IP with a 2s timeout (only if no saved flag)
+    if (!hasSavedFlag) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 2000);
+        const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+        clearTimeout(tid);
+        const data = await res.json();
+        if (data && data.country_code) {
+          const detected = data.country_code.toLowerCase();
+          if (FLAGS.find((f) => f.id === detected)) {
+            selectedFlag = detected;
+          }
+        }
+      } catch (e) {
+        // Fallback to random is already set
+      }
     }
 
     const preview = createTankPreview(previewCanvas);
@@ -575,6 +597,16 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
+
+      const prefs = {
+        name: nameInput.value.trim(),
+        color: selected,
+        flagId: selectedFlag,
+        parachutePrimary: selectedParachutePrimary,
+        parachuteSecondary: selectedParachuteSecondary
+      };
+      localStorage.setItem('vibe-tanks-prefs', JSON.stringify(prefs));
+
       resolve({ name, color: selected, flagId: selectedFlag, parachuteId: `${selectedParachutePrimary},${selectedParachuteSecondary}`, mode, inviteCode, settings });
     };
     const onSubmitClick = (): void => done(false);
