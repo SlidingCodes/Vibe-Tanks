@@ -1627,7 +1627,15 @@ function animate(): void {
         if (isHitscanAim) {
           const directAim = solveAimAnglesForTarget(predictedState, { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z });
           nextTurretRotation = directAim.turretRotation;
-          barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, directAim.barrelPitch));
+          if (selectedWeapon.behavior === 'predator') {
+            // Predator always launches at a fixed 45° up so the missile
+            // clears nearby terrain and gives the pilot time to take
+            // over before it cratered itself into a hill 5 m away. Yaw
+            // tracks the cursor so the player picks the launch direction.
+            barrelPitch = Math.PI / 4;
+          } else {
+            barrelPitch = Math.max(-Math.PI / 7, Math.min(Math.PI / 3, directAim.barrelPitch));
+          }
         } else {
           const a = (g * dist * dist) / (2 * v * v);
           const disc = dist * dist - 4 * a * (dy + a);

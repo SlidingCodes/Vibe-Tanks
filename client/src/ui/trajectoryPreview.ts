@@ -516,27 +516,23 @@ export function updateTrajectoryPreview(
   }
 
   if (weapon.behavior === 'predator') {
-    // Steerable cruise missile: launches straight along the muzzle
-    // direction and then the player takes over with WASD. Preview is a
-    // short straight tracer toward the cursor (or a forward projection
-    // if the cursor is over the sky), matching the rail/minigun style
-    // — a parabolic preview here would lie about the launch arc.
+    // Steerable cruise missile: launches at a fixed 45° elevation along
+    // the muzzle direction, then the player steers with WASD. Preview
+    // is a short straight tracer along that exact launch vector — no
+    // cursor snap, since the missile climbs away from where the cursor
+    // landed and the player navigates to it manually. A parabolic
+    // preview or a cursor reticle would both lie about the trajectory.
     parentMat.color.setHex(0xc8a878);
-    const previewRange = 30;
-    let end: Vec3;
-    if (aimTarget) {
-      end = { x: aimTarget.x, y: aimTarget.y, z: aimTarget.z };
-    } else {
-      const dir = normalize(startVel);
-      end = {
-        x: startPos.x + dir.x * previewRange,
-        y: startPos.y + dir.y * previewRange,
-        z: startPos.z + dir.z * previewRange,
-      };
-    }
-    placePoints(parentDots, makeLinePoints(startPos, end, 18));
+    const dir = normalize(startVel);
+    const previewRange = 22;
+    const end = {
+      x: startPos.x + dir.x * previewRange,
+      y: startPos.y + dir.y * previewRange,
+      z: startPos.z + dir.z * previewRange,
+    };
+    placePoints(parentDots, makeLinePoints(startPos, end, 14));
     placeMarker(end.x, end.y, end.z);
-    marker.group.scale.setScalar(0.55);
+    marker.group.scale.setScalar(0.4);
     setMarkerColor(0xc8a878, 0xe8c898);
     marker.group.visible = true;
     return;
