@@ -324,17 +324,47 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
 
     // Build the weapon allow-list checkboxes once. All non-default
     // (consumable) weapons are listed; standard is implicit (always
-    // available regardless). All-checked is the same as the empty
-    // allow-list semantically and is the default.
+    // available regardless). Defaults: all-checked, unless the user has
+    // previously created a private room (in which case we restore their
+    // last selection from localStorage so a kick → reload → re-create
+    // doesn't make them re-uncheck 12 boxes).
     const consumables = WEAPONS.filter((w) => w.startAmmo !== 'infinite');
-    const checkedIds = new Set(consumables.map((w) => w.id));
+    let storedWeapons: string[] | null = null;
+    try {
+      const raw = localStorage.getItem('vt.privateWeapons');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+          storedWeapons = parsed;
+        }
+      }
+    } catch { /* no localStorage / malformed — fall back to all-checked */ }
+    const checkedIds = new Set<string>(
+      storedWeapons
+        // Filter out ids that no longer exist in WEAPONS (e.g. a
+        // consumable was removed between sessions) and ids that aren't
+        // actually consumables (defensive: reading from disk).
+        ? storedWeapons.filter((id) => consumables.some((w) => w.id === id))
+        : consumables.map((w) => w.id),
+    );
+    // Restore the bots slider from the same localStorage namespace.
+    try {
+      const raw = localStorage.getItem('vt.privateBots');
+      if (raw) {
+        const n = parseInt(raw, 10);
+        if (Number.isInteger(n) && n >= 0 && n <= 7) {
+          botsSlider.value = String(n);
+          botsValue.textContent = String(n);
+        }
+      }
+    } catch { /* ignore */ }
     weaponsGrid.innerHTML = '';
     consumables.forEach((w) => {
       const card = document.createElement('label');
       card.className = 'weapon-card';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = true;
+      cb.checked = checkedIds.has(w.id);
       cb.dataset.id = w.id;
       cb.addEventListener('change', () => {
         if (cb.checked) checkedIds.add(w.id);
@@ -487,6 +517,13 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           maxBots: parseInt(botsSlider.value, 10),
           weaponAllowed: Array.from(checkedIds),
         };
+        // Persist for the next time the player creates a private room
+        // (e.g. after exit-to-login, idle kick, or reload). Same
+        // localStorage namespace as the rest of the client preferences.
+        try {
+          localStorage.setItem('vt.privateBots', String(settings.maxBots));
+          localStorage.setItem('vt.privateWeapons', JSON.stringify(settings.weaponAllowed ?? []));
+        } catch { /* private mode / quota — silently skip */ }
       } else if (inviteInput.value.length === 4) {
         mode = 'join_private';
         inviteCode = inviteInput.value;
