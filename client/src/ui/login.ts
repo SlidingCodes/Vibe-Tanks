@@ -10,6 +10,7 @@ import {
 } from '../entities/tankGeometry';
 import { FLAGS, createFlagMesh } from '../entities/flag';
 import { WEAPONS } from '@shared/weapons';
+import { getParachuteTexture } from '../scene/pickups';
 import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
@@ -22,6 +23,7 @@ const PARACHUTE_PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a
 function createTankPreview(canvas: HTMLCanvasElement): {
   setColor: (hex: string) => void;
   setFlag: (id: string) => void;
+  setParachute: (primary: string, secondary: string) => void;
   stop: () => void;
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -161,6 +163,29 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     group.add(currentFlag);
   };
 
+  // Folded parachute pack on the ground (soft and rounded fabric bundle)
+  const parachuteGeom = new THREE.SphereGeometry(0.6, 24, 16);
+  const parachuteMat = new THREE.MeshStandardMaterial({
+    map: getParachuteTexture(),
+    roughness: 0.9,
+    metalness: 0.05,
+  });
+  const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
+  // Position it on the ground and squash it to look folded/deflated
+  // y = 0.21 is the scaled radius (0.6 * 0.35), so it sits perfectly on the ground.
+  // x = 0, z = 1.9 puts it exactly in front of the tank (tank front is +Z)
+  parachuteMesh.position.set(0, 0.21, 1.9);
+  parachuteMesh.scale.set(1.0, 0.35, 0.8);
+  parachuteMesh.rotation.y = Math.PI / 6;
+  parachuteMesh.rotation.z = Math.PI / 16; // Slight tilt for natural look
+  parachuteMesh.castShadow = true;
+  group.add(parachuteMesh);
+
+  const setParachute = (primary: string, secondary: string) => {
+    parachuteMat.map = getParachuteTexture(`${primary},${secondary}`);
+    parachuteMat.needsUpdate = true;
+  };
+
   group.add(turretGroup);
 
   // Tread textures are cloned so their `.offset.y` can advance without
@@ -230,6 +255,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       turretMat.color.set(hex);
     },
     setFlag,
+    setParachute,
     stop: () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
@@ -426,6 +452,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
     preview.setFlag(selectedFlag);
+    preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
 
     swatches.innerHTML = '';
     PALETTE.forEach((hex) => {
@@ -453,6 +480,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           selectedParachutePrimary = hex;
           parachuteSwatches.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
           el.classList.add('selected');
+          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
         });
         parachuteSwatches.appendChild(el);
       });
@@ -470,6 +498,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
           selectedParachuteSecondary = hex;
           parachuteSwatchesSecondary.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
           el.classList.add('selected');
+          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
         });
         parachuteSwatchesSecondary.appendChild(el);
       });
