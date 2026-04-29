@@ -1670,8 +1670,20 @@ export class Room {
     }
 
     if (player.inventory.length < INVENTORY_MAX_SLOTS) {
+      // Fallback: ammo crate with no refillable slot grants a brand-new
+      // consumable weapon. Honour the room's `weaponAllowed` allow-list
+      // so a private match locked to e.g. just `mine` + `napalm` doesn't
+      // leak the rest of the arsenal in via this path. Same 3-state
+      // semantics as elsewhere: undefined = unrestricted, [] = explicit
+      // "no consumables" (return null since the pool collapses), [ids]
+      // = whitelist.
+      const allowed = this.settings.weaponAllowed
+        ? new Set(this.settings.weaponAllowed)
+        : null;
       const poolDefs = WEAPONS.filter(
-        (w) => w.startAmmo !== 'infinite' && !player.inventory.some((s) => s.weaponId === w.id),
+        (w) => w.startAmmo !== 'infinite'
+          && !player.inventory.some((s) => s.weaponId === w.id)
+          && (!allowed || allowed.has(w.id)),
       );
       if (poolDefs.length === 0) return null;
       const pick = poolDefs[Math.floor(Math.random() * poolDefs.length)];
