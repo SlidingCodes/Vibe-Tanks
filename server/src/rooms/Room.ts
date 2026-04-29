@@ -2253,13 +2253,13 @@ export class Room {
 
       if (!ownerLost && ownerPlayer) {
         const inp = ownerPlayer.input;
-        // A turns left → yaw decreases (counter-clockwise around +Y looking
-        // down). D turns right → yaw increases. Mirror Y axis for a
-        // flight-sim-style stick: W = nose down (dive), S = nose up (climb).
+        // Arcade convention (matches the user's intuition reported in
+        // playtest): W = nose up / climb, S = nose down / dive — "W is
+        // up". Yaw stays natural: A = turn left, D = turn right.
         if (inp.left) yaw -= yawRate * dt;
         if (inp.right) yaw += yawRate * dt;
-        if (inp.forward) pitch -= pitchRate * dt;
-        if (inp.backward) pitch += pitchRate * dt;
+        if (inp.forward) pitch += pitchRate * dt;
+        if (inp.backward) pitch -= pitchRate * dt;
         // Clamp pitch so the player can't roll the missile past vertical
         // (looks awful + inverts yaw control).
         const PITCH_LIMIT = Math.PI * 0.45;
