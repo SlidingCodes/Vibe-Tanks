@@ -518,20 +518,45 @@ export function updateTrajectoryPreview(
   if (weapon.behavior === 'predator') {
     // Steerable cruise missile: launches at a fixed 45° elevation along
     // the muzzle direction, then the player steers with WASD. Preview
-    // is a short straight tracer along that exact launch vector — no
-    // cursor snap, since the missile climbs away from where the cursor
-    // landed and the player navigates to it manually. A parabolic
-    // preview or a cursor reticle would both lie about the trajectory.
+    // mirrors the server's straight-line tick (no gravity, constant
+    // speed) and clips at the first terrain hit — otherwise a muzzle
+    // pointing into a small hill draws a clean preview line through
+    // the rock, and the actual missile detonates at frame 0.
     parentMat.color.setHex(0xc8a878);
     const dir = normalize(startVel);
+    const speed = Math.hypot(startVel.x, startVel.y, startVel.z) || 22;
     const previewRange = 22;
-    const end = {
-      x: startPos.x + dir.x * previewRange,
-      y: startPos.y + dir.y * previewRange,
-      z: startPos.z + dir.z * previewRange,
-    };
-    placePoints(parentDots, makeLinePoints(startPos, end, 14));
-    placeMarker(end.x, end.y, end.z);
+    // Step in the same fixed dt the server uses; if the line punches
+    // through the surface before reaching the nominal range, end there
+    // and place the marker on the actual impact point.
+    const dt = SIM_DT;
+    const stepX = dir.x * speed * dt;
+    const stepY = dir.y * speed * dt;
+    const stepZ = dir.z * speed * dt;
+    const maxTicks = Math.ceil(previewRange / (speed * dt));
+    const samples: Vec3[] = [{ x: startPos.x, y: startPos.y, z: startPos.z }];
+    let endX = startPos.x;
+    let endY = startPos.y;
+    let endZ = startPos.z;
+    for (let i = 1; i <= maxTicks; i++) {
+      const px = startPos.x + stepX * i;
+      const py = startPos.y + stepY * i;
+      const pz = startPos.z + stepZ * i;
+      const terrainH = getTerrainHeight(px, pz);
+      if (py <= terrainH) {
+        endX = px; endY = terrainH; endZ = pz;
+        samples.push({ x: endX, y: endY, z: endZ });
+        break;
+      }
+      endX = px; endY = py; endZ = pz;
+      // Sub-sample dot density to ~14 dots over the line length —
+      // independent of the maxTicks count, which scales with speed.
+      if (i % Math.max(1, Math.floor(maxTicks / 14)) === 0) {
+        samples.push({ x: px, y: py, z: pz });
+      }
+    }
+    placePoints(parentDots, samples);
+    placeMarker(endX, endY, endZ);
     marker.group.scale.setScalar(0.4);
     setMarkerColor(0xc8a878, 0xe8c898);
     marker.group.visible = true;
