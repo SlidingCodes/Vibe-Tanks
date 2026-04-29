@@ -60,12 +60,17 @@ function createTankPreview(canvas: HTMLCanvasElement): {
   const refreshCamTargets = (): void => {
     const w = window.innerWidth;
     if (viewMode === 'advanced') {
+      // Canopy apex sits at y≈7 (parachuteMesh.position.y=4.5 + radius
+      // 2.5). With FOV 38° vertical we need ≥18 units of distance so
+      // both the tank base (y≈0) and the apex fit with a small margin.
+      // Look-at sits halfway up the canopy stem (y≈3.5) so both ends are
+      // roughly equidistant from the frame edges.
       if (w <= 720) {
-        camTargetPos.set(0, 5.0, 14.5);
-        camTargetLook.set(0, 2.6, 0);
+        camTargetPos.set(0, 6.5, 21);
+        camTargetLook.set(0, 4, 0);
       } else {
-        camTargetPos.set(2.6, 4.4, 11.5);
-        camTargetLook.set(1, 2.2, 0);
+        camTargetPos.set(3.5, 5.5, 18);
+        camTargetLook.set(1, 3.5, 0);
       }
     } else {
       if (w <= 720) {
