@@ -1495,15 +1495,11 @@ export class Room {
     const moveSpeed = cfg?.soldierMoveSpeed ?? 4.5;
     const followDistance = cfg?.soldierFollowDistance ?? 8;
 
-    // Visual hint for the client: emit a synthetic shot_resolved with no
-    // steps so the kill feed / sound system can register the deploy
-    // event the same way other weapons do.
-    this.io.to(this.id).emit('shot_resolved', {
-      shooterId: tank.playerId,
-      weaponId: weapon.id,
-      steps: [],
-      damageDealt: [],
-    });
+    // No synthetic shot_resolved — the cannon doesn't actually fire a
+    // shell; the squad just appears. Routing this through shot_resolved
+    // would trigger the standard chassis-tilt recoil + barrel-glow
+    // animation, which look wrong for a deploy. The local client plays
+    // the deploy SFX off the fire_request directly.
 
     const cx = tank.position.x;
     const cz = tank.position.z;

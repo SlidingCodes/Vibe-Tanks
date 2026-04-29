@@ -1757,6 +1757,10 @@ function animate(): void {
           // bullet pop instead of the heavy cannon shot.
           if (selectedWeapon.behavior === 'nuke') {
             // no-op
+          } else if (selectedWeapon.behavior === 'soldiers') {
+            // Deploy doesn't actually fire a shell — silence the
+            // cannon SFX. The squad's own rifle pops are emitted
+            // from the soldier_fire path once they engage.
           } else if (isHoldFire) {
             playMinigunShot();
           } else {

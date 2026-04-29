@@ -677,6 +677,15 @@ export function updateTrajectoryPreview(
     return;
   }
 
+  if (weapon.behavior === 'soldiers') {
+    // Soldiers fire individually after deploy — there's no shell trajectory
+    // to preview, and a marker at the muzzle position would just obscure
+    // the player's own tank. Hide every dot/marker until the next
+    // weapon swap. Aim is still sent to the server so the deploy ring
+    // orientation tracks the cursor.
+    return;
+  }
+
   if (weapon.behavior === 'jump') {
     // The jump weapon launches the tank along the same ballistic arc the
     // aim-solver picked for a would-be shell, so the preview is just the

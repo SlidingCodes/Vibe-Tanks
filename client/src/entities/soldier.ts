@@ -38,8 +38,15 @@ const bloodSplatters: BloodSplatter[] = [];
 const TRACER_LIFETIME = 0.12;
 const FLASH_LIFETIME = 0.06;
 
+// User feedback: ship at least 1/3 smaller than the first cut. The
+// pre-scale mesh tops out at ~1.7 m; 0.55 brings it to ~0.95 m — well
+// under the tank hull (~1.6 m diameter) so the squad reads as foot
+// soldiers, not a second row of mini-tanks.
+const SOLDIER_SCALE = 0.55;
+
 function buildSoldier(color: number): SoldierVisual {
   const group = new THREE.Group();
+  group.scale.setScalar(SOLDIER_SCALE);
 
   const bodyGeom = new THREE.BoxGeometry(0.5, 0.7, 0.35);
   const bodyMat = new THREE.MeshStandardMaterial({
@@ -127,7 +134,15 @@ function buildSoldier(color: number): SoldierVisual {
 }
 
 function colorFromHex(hex: string): number {
-  return parseInt(hex.replace('#', '0x'), 16);
+  // Tank palette uses both 3-digit (#e44) and 6-digit (#ee4444) hex.
+  // parseInt('0xe44', 16) parses as zero (the '0x' prefix is invalid
+  // mid-hex), so the team tint went out as pitch black on every soldier.
+  // Expand 3-digit shorthand to 6-digit before parsing.
+  const stripped = hex.replace('#', '');
+  const expanded = stripped.length === 3
+    ? stripped.split('').map((c) => c + c).join('')
+    : stripped;
+  return parseInt(expanded, 16);
 }
 
 /** Sync the visible soldier list against the latest authoritative state.
