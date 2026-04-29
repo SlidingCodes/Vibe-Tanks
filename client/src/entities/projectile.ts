@@ -177,6 +177,10 @@ interface HazardVisual {
   timeRemaining: number;
   pulse: number;
   colorOverride: number | null;
+  // Mortar-specific tactical layers
+  mortarOuter?: THREE.Mesh;
+  mortarBrackets?: THREE.Mesh;
+  mortarBeam?: THREE.Mesh;
 }
 
 const shots: ActiveShotStep[] = [];
@@ -1069,6 +1073,9 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
 
   let ring: THREE.Mesh;
   let core: THREE.Mesh | null = null;
+  let mortarOuter: THREE.Mesh | undefined;
+  let mortarBrackets: THREE.Mesh | undefined;
+  let mortarBeam: THREE.Mesh | undefined;
 
   if (hazard.type === 'napalm') {
     // Napalm field: keep fire colors (orange/amber) but less neon.
@@ -1095,12 +1102,71 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
     );
     core.position.y = 0.14;
   } else {
-    // Mortar marker: amber tactical ring on the ground.
+    // Mortar marker: high-tech tactical target acquisition area.
+    const color = colorOverride !== null ? colorOverride : 0xd8a448; // team color or amber tactical
+    
+    // 1. Inner pulsing ring (the original ring)
     ring = new THREE.Mesh(
-      new THREE.RingGeometry(Math.max(0.8, hazard.radius * 0.72), hazard.radius, 28),
-      new THREE.MeshBasicMaterial({ color: 0xd8a448, transparent: true, opacity: 0.58, side: THREE.DoubleSide }),
+      new THREE.RingGeometry(hazard.radius * 0.85, hazard.radius * 0.92, 32),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
+
+    // 2. Outer dashed-style ring (rotating slowly)
+    mortarOuter = new THREE.Mesh(
+      new THREE.RingGeometry(hazard.radius * 0.96, hazard.radius, 32),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, side: THREE.DoubleSide }),
+    );
+    mortarOuter.rotation.x = -Math.PI / 2;
+    mortarOuter.position.y = 0.01;
+    group.add(mortarOuter);
+
+    // 3. Tactical brackets (L-shapes at the corners)
+    const bracketSize = hazard.radius * 0.3;
+    const bracketG = new THREE.BufferGeometry();
+    const r = hazard.radius;
+    const s = bracketSize;
+    const bPos = new Float32Array([
+      // Top-Left L (2 segments)
+      -r, r - s, 0,  -r, r, 0,
+      -r, r, 0,      -r + s, r, 0,
+      // Top-Right L
+      r - s, r, 0,   r, r, 0,
+      r, r, 0,       r, r - s, 0,
+      // Bottom-Right L
+      r, -r + s, 0,  r, -r, 0,
+      r, -r, 0,      r - s, -r, 0,
+      // Bottom-Left L
+      -r + s, -r, 0, -r, -r, 0,
+      -r, -r, 0,     -r, -r + s, 0,
+    ]);
+    bracketG.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
+    const bracketMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8, linewidth: 2 });
+    mortarBrackets = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.1), new THREE.MeshBasicMaterial({ visible: false })); // dummy for group tracking
+    
+    // Instead of a mesh, we'll use LineSegments for the brackets
+    const bracketLines = new THREE.LineSegments(bracketG, bracketMat);
+    bracketLines.rotation.x = -Math.PI / 2;
+    bracketLines.position.y = 0.02;
+    mortarBrackets = bracketLines as any;
+    group.add(bracketLines);
+
+    // 4. Vertical targeting beam
+    const beamG = new THREE.CylinderGeometry(hazard.radius * 0.05, hazard.radius * 0.05, 15, 8, 1, true);
+    mortarBeam = new THREE.Mesh(beamG, new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending, side: THREE.DoubleSide
+    }));
+    mortarBeam.position.y = 7.5;
+    group.add(mortarBeam);
+
+    // 5. Center crosshair (core)
+    core = new THREE.Mesh(
+      new THREE.RingGeometry(0, hazard.radius * 0.15, 4),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+    );
+    core.rotation.x = -Math.PI / 2;
+    core.rotation.z = Math.PI / 4; // rotate diamond
+    core.position.y = 0.03;
   }
 
   group.add(ring);
@@ -1117,6 +1183,9 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
     timeRemaining: hazard.timeRemaining,
     pulse: 0,
     colorOverride,
+    mortarOuter,
+    mortarBrackets,
+    mortarBeam,
   };
 }
 
@@ -1348,8 +1417,35 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         coreMat.opacity = visual.armed ? 0.92 : 0.75;
       }
     } else {
-      visual.group.rotation.y += dt * 0.9;
-      ringMat.opacity = 0.38 + Math.sin(visual.pulse * 5) * 0.14;
+      // Mortar marker animation: tactical rotations and pulses
+      const pulseSpeed = 5;
+      const baseOpacity = 0.38 + Math.sin(visual.pulse * pulseSpeed) * 0.14;
+      ringMat.opacity = baseOpacity;
+      
+      // Pulse scale of the inner ring slightly
+      const s = 1 + Math.sin(visual.pulse * pulseSpeed) * 0.03;
+      visual.ring.scale.set(s, s, 1);
+
+      if (visual.mortarOuter) {
+        visual.mortarOuter.rotation.z -= dt * 0.6;
+        (visual.mortarOuter.material as THREE.MeshBasicMaterial).opacity = baseOpacity * 0.7;
+      }
+      if (visual.mortarBrackets) {
+        visual.mortarBrackets.rotation.z += dt * 1.2;
+        // Brackets pulse more intensely
+        const bPulse = 0.5 + Math.sin(visual.pulse * pulseSpeed * 1.5) * 0.3;
+        (visual.mortarBrackets.material as THREE.LineBasicMaterial).opacity = bPulse;
+      }
+      if (visual.mortarBeam) {
+        // Beam "scans" up and down or just pulses
+        visual.mortarBeam.scale.x = visual.mortarBeam.scale.z = 1 + Math.sin(visual.pulse * 12) * 0.1;
+        (visual.mortarBeam.material as THREE.MeshBasicMaterial).opacity = 0.1 + Math.sin(visual.pulse * 8) * 0.08;
+      }
+      if (visual.core) {
+        // Center crosshair rotates in sync with brackets but slower
+        visual.core.rotation.z = Math.PI / 4 + visual.pulse * 0.3;
+        (visual.core.material as THREE.MeshBasicMaterial).opacity = 0.6 + Math.sin(visual.pulse * 10) * 0.2;
+      }
     }
   }
 }
