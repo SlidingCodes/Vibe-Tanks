@@ -256,6 +256,10 @@ interface ActiveSoldierRuntime extends SoldierState {
   shotInterval: number;
   moveSpeed: number;
   followDistance: number;
+  /** Fixed angle (rad) around the owner this soldier holds station at —
+   *  spread evenly across 2π at spawn so the squad forms a stable ring
+   *  instead of all collapsing onto the owner's centre while marching. */
+  formationAngle: number;
   weaponId: string;
   /** Pre-allocated wire view kept in sync with the mutable public fields,
    *  same pattern as the projectile/hazard runtimes. */
@@ -1536,6 +1540,7 @@ export class Room {
         shotInterval,
         moveSpeed,
         followDistance,
+        formationAngle: ang,
         weaponId: weapon.id,
       });
     }
@@ -2555,24 +2560,54 @@ export class Room {
         continue;
       }
 
-      // Always walk toward the owner if outside followDistance, even
-      // while engaging a target — the previous "freeze and shoot"
-      // branch left the squad stranded the moment any enemy came into
-      // range, so the owner driving past would shed soldiers in seconds.
-      // Real squads run-and-gun; ours do too.
-      const dxO = owner.position.x - soldier.position.x;
-      const dzO = owner.position.z - soldier.position.z;
-      const distO = Math.sqrt(dxO * dxO + dzO * dzO);
+      // Each soldier holds a unique angular slot around the owner so the
+      // squad walks as a stable ring instead of stacking onto the same
+      // point. Target = owner + (cos·sin) × followDistance at the
+      // soldier's formationAngle. Slot is fixed at spawn (evenly spread
+      // 2π across `count`) so the formation stays consistent even as
+      // some units die and the count drops.
+      const slotX = owner.position.x + Math.cos(soldier.formationAngle) * soldier.followDistance;
+      const slotZ = owner.position.z + Math.sin(soldier.formationAngle) * soldier.followDistance;
+      const dxS = slotX - soldier.position.x;
+      const dzS = slotZ - soldier.position.z;
+      const distS = Math.sqrt(dxS * dxS + dzS * dzS);
       let walkedX = 0;
       let walkedZ = 0;
-      if (distO > soldier.followDistance) {
-        const step = Math.min(distO, soldier.moveSpeed * dt);
-        walkedX = (dxO / distO) * step;
-        walkedZ = (dzO / distO) * step;
+      // Small dead-zone (0.4 m) around the slot so soldiers don't tic
+      // back and forth across their target as the owner moves at low
+      // speed. Outside the dead-zone they march at full moveSpeed.
+      if (distS > 0.4) {
+        const step = Math.min(distS, soldier.moveSpeed * dt);
+        walkedX = (dxS / distS) * step;
+        walkedZ = (dzS / distS) * step;
         soldier.position.x += walkedX;
         soldier.position.z += walkedZ;
         soldier.walkPhase += step;
       }
+
+      // Separation: tiny push away from any allied soldier within 0.6 m.
+      // Belt-and-braces against intersecting meshes when the formation
+      // ring shrinks (e.g. squad cut in half — the survivors converge
+      // toward each other's slot diametrically opposite). Cheap: at most
+      // soldierCount² distance checks per tick, count is small (5).
+      const SEP_RADIUS = 0.6;
+      const sep2 = SEP_RADIUS * SEP_RADIUS;
+      let pushX = 0;
+      let pushZ = 0;
+      for (const other of this.activeSoldiers.values()) {
+        if (other === soldier || other.ownerId !== soldier.ownerId) continue;
+        const ddx = soldier.position.x - other.position.x;
+        const ddz = soldier.position.z - other.position.z;
+        const d2 = ddx * ddx + ddz * ddz;
+        if (d2 <= 1e-6 || d2 >= sep2) continue;
+        const d = Math.sqrt(d2);
+        // Stronger push the closer they are (1 → 0 over [0, SEP_RADIUS]).
+        const strength = (1 - d / SEP_RADIUS) * soldier.moveSpeed * dt * 0.6;
+        pushX += (ddx / d) * strength;
+        pushZ += (ddz / d) * strength;
+      }
+      soldier.position.x += pushX;
+      soldier.position.z += pushZ;
 
       // Engagement: pick nearest enemy tank within shotRange (XYZ).
       const targetId = findNearestEnemyFn(
@@ -2613,7 +2648,14 @@ export class Room {
       } else if (walkedX !== 0 || walkedZ !== 0) {
         soldier.rotation = Math.atan2(walkedX, walkedZ);
       } else {
-        soldier.rotation = Math.atan2(dxO, dzO);
+        // Idle on the slot — face outward from the owner so the squad
+        // keeps eyes on the perimeter, not all staring at the leader.
+        // Slot offset uses (cos·sin) of formationAngle, and Three.js
+        // body yaw via atan2(dx, dz) maps that pair to π/2 - angle.
+        soldier.rotation = Math.atan2(
+          Math.cos(soldier.formationAngle),
+          Math.sin(soldier.formationAngle),
+        );
       }
 
       // Stick to the ground every tick — terrain may have been carved
