@@ -482,11 +482,15 @@ export function tickTankEffects(dt: number): void {
       const swing = Math.sin(performance.now() * 0.0024) * 0.05;
       tm.parachuteMesh.rotation.z = swing;
       tm.parachuteMesh.rotation.x = Math.cos(performance.now() * 0.002) * 0.035;
-      // Also apply a slight swing to the tank itself
-      tm.chassisGroup.rotation.z += swing * 0.3;
+      // Slight matching sway on the chassis itself. Must be a setter (not
+      // an accumulator) — chassisGroup.rotation.z is otherwise untouched
+      // each frame, so += would drift into a permanent ~0.5 rad tilt
+      // after a single 4-second countdown.
+      tm.chassisGroup.rotation.z = swing * 0.3;
     } else {
       tm.parachuteMesh.visible = false;
       tm.parachuteShrouds.visible = false;
+      tm.chassisGroup.rotation.z = 0;
     }
 
     // Burning VFX — 5 additive fire_burst sprites blanket the hull +

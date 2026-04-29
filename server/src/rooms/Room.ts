@@ -44,6 +44,7 @@ import {
   PICKUP_DROP_HEIGHT,
   PICKUP_FALL_SPEED,
   PICKUP_WEAPON_CHANCE,
+  PARACHUTE_DROP_HEIGHT,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -448,6 +449,11 @@ export class Room {
     for (const player of this.players.values()) player.lastTrackSampleAt = null;
     for (const [pid, tank] of this.tanks) {
       const pos = this.findSpawnPosition();
+      // Pre-lift Y so the room_snapshot emitted by resetMatch already shows
+      // every tank suspended with its parachute deployed — beginCountdown
+      // fires immediately after this loop, so no client should see a
+      // ground-level frame between the snapshot and the first tickMovement.
+      pos.y = pos.y + PARACHUTE_DROP_HEIGHT;
       tank.position = pos;
       tank.hp = TANK_MAX_HP;
       tank.alive = true;
@@ -460,6 +466,7 @@ export class Room {
       tank.turretRotation = 0;
       tank.barrelPitch = 0.2;
       tank.airborne = false;
+      tank.parachute = true;
       tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
       tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
@@ -661,6 +668,16 @@ export class Room {
     }
     const safeName = sanitizeName(playerName);
     const player = this.players.get(playerId);
+    // Pre-lift the spawn Y so the very first room_snapshot already shows the
+    // tank suspended in the air with the parachute deployed — otherwise the
+    // joiner sees a single frame of the tank at ground level before the next
+    // tickMovement broadcasts the elevated position. Only lift when a
+    // start-of-match countdown is upcoming or running; for late joins into
+    // an InProgress room there's no parachute window to land into.
+    const willParachute = this.phase !== MatchPhase.InProgress;
+    if (willParachute) {
+      pos.y = pos.y + PARACHUTE_DROP_HEIGHT;
+    }
     const tank: TankState = {
       playerId,
       playerName: safeName,
@@ -688,13 +705,14 @@ export class Room {
       flagId,
       parachuteId,
       burning: false,
+      parachute: willParachute,
       // Shared reference with PlayerState — one mutation, both sides see it.
       inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
     };
     this.tanks.set(playerId, tank);
     this.refreshTankList();
     this.physics.addTank(tank);
-    
+
     if (player && this.phase === MatchPhase.InProgress) {
       this.applySpawnProtection(tank, player);
     }
@@ -2189,32 +2207,71 @@ export class Room {
     // freeze the body, and short-circuit the drown / airborne checks in
     // the readback loop. The player digs out by shooting.
     const buriedIds = this.computeBuriedTanks();
-    this.physics.applyTankInputs(dt, buriedIds);
+    // During the start-of-match countdown every alive tank is pinned in
+    // its parachute drop: KCC drive is skipped (no input, no gravity
+    // integration on the body) and the broadcast Y is computed below from
+    // a deterministic linear lerp. resetTank is called only at the
+    // transition out so the body lands on the sampled ground in a single
+    // teleport — the previous implementation paid resetTank+readbackTank
+    // 60Hz × N tanks which dominated the Countdown CPU profile.
+    const inCountdown = this.phase === MatchPhase.Countdown;
+    let applySkipIds = buriedIds;
+    if (inCountdown) {
+      applySkipIds = new Set<PlayerId>(buriedIds);
+      for (const [pid, tank] of this.tanks) {
+        if (tank.alive) applySkipIds.add(pid);
+      }
+    }
+    this.physics.applyTankInputs(dt, applySkipIds);
     this.physics.step(dt);
 
     for (const [pid, tank] of this.tanks) {
       if (!tank.alive) continue;
 
       const buried = buriedIds.has(pid);
-      if (!buried) this.physics.readbackTank(pid, tank);
+      const player = this.players.get(pid);
+      const wasParachute = tank.parachute === true;
 
-      if (this.phase === MatchPhase.Countdown) {
+      if (inCountdown) {
+        // Linear lerp Y from peak → groundY over the countdown window. The
+        // body itself stays at the spawn-time elevated Y (set by spawnTank
+        // / resetMatch); we only update the broadcast state here.
         const remain = Math.max(0, this.countdownEndsAt - Date.now());
-        const fraction = remain / 6000; // MATCH_COUNTDOWN_MS is 4000
+        const fraction = Math.min(1, remain / MATCH_COUNTDOWN_MS);
         const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
-        const targetY = groundY + 100 * fraction;
-        this.physics.resetTank(pid, { x: tank.position.x, y: targetY, z: tank.position.z }, tank.bodyRotation);
-        this.physics.readbackTank(pid, tank);
+        tank.position.y = groundY + PARACHUTE_DROP_HEIGHT * fraction;
         tank.parachute = true;
-      } else {
-        tank.parachute = false;
+        tank.airborne = false;
+        tank.bodyPitch = 0;
+        tank.bodyRoll = 0;
+        tank.linVel.x = 0;
+        tank.linVel.y = -(PARACHUTE_DROP_HEIGHT * 1000) / MATCH_COUNTDOWN_MS;
+        tank.linVel.z = 0;
+        tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
+        tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
+        if (player) tank.lastAppliedSeq = player.input.seq;
+        continue;
       }
 
+      // Countdown just ended: snap the body to the sampled ground in one
+      // resetTank call so the next tick's KCC has a grounded contact, then
+      // skip the rest of this iteration to let normal physics run from the
+      // following tick.
+      if (wasParachute && !buried) {
+        const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+        tank.position.y = groundY;
+        this.physics.resetTank(pid, tank.position, tank.bodyRotation);
+        tank.parachute = false;
+        tank.airborne = false;
+        if (player) tank.lastAppliedSeq = player.input.seq;
+        continue;
+      }
+
+      if (!buried) this.physics.readbackTank(pid, tank);
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
       // physics tick consumed.
-      const player = this.players.get(pid);
       if (player) tank.lastAppliedSeq = player.input.seq;
       // Airborne is now a pure readout of the body's contact state —
       // broadcast to clients for HUD / mesh effects, not used as a

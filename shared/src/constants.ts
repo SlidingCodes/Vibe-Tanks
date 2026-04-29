@@ -63,6 +63,13 @@ export const PICKUP_FALL_SPEED = 4;
  *  opposed to a plain ammo pack. */
 export const PICKUP_WEAPON_CHANCE = 0.55;
 
+// ── Tank parachute drop ───────────────────────────────────────────────────
+/** Altitude (m) above the spawn ground at which a tank materialises before
+ *  drifting down under parachute during the start-of-match countdown. The
+ *  descent is a linear lerp from this peak to groundY over the countdown
+ *  window, so descent speed = PARACHUTE_DROP_HEIGHT / (MATCH_COUNTDOWN_MS/1000). */
+export const PARACHUTE_DROP_HEIGHT = 50;
+
 // ── Airborne / ragdoll tuning ─────────────────────────────────────────────
 /** Delta-v magnitude at which a blast impulse flips the tank from grounded
  *  to airborne. Below the threshold the impulse is absorbed by the tracks
