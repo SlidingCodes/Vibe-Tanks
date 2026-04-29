@@ -52,6 +52,7 @@ export interface TankState {
   deaths: number;
   color: string;
   flagId?: string;
+  parachuteId?: string;
   /** True when the tank is in free-flight ragdoll mode (blast-tossed, direct-hit
    *  tossed, or mid-fall after the ground was carved away). In this mode the
    *  server bypasses the KCC and integrates linVel/angVel manually; pitch/roll/
@@ -93,6 +94,8 @@ export interface TankState {
   /** Current weapon loadout for this tank. Slot 0 is always the default
    *  infinite weapon. Consumable slots are removed when ammo hits 0. */
   inventory: WeaponInventorySlot[];
+  /** True when the tank is in the parachute drop intro sequence. */
+  parachute?: boolean;
 }
 
 // ── Weapons ──
@@ -559,11 +562,18 @@ export interface ShotStep {
   terrainOp?: TerrainOp;
 }
 
+export interface DamageHit {
+  playerId: PlayerId;
+  damage: number;
+  killed: boolean;
+  shielded?: boolean;
+}
+
 export interface ShotResult {
   shooterId: PlayerId;
   weaponId: string;
   steps: ShotStep[];
-  damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
+  damageDealt: DamageHit[];
   /** Per-tank kinetic impulse (world-units / second velocity delta) to be
    *  applied at impact time. Populated by the simulator; the room applies
    *  it to the tank's linVel and flips airborne if |delta| exceeds the
@@ -577,6 +587,7 @@ export interface ClientEvents {
     playerName: string;
     color?: string;
     flagId?: string;
+    parachuteId?: string;
     /** Routing mode. Omitted = 'quick'. */
     mode?: JoinMode;
     /** Required when mode === 'join_private'. 4 letters from a no-confusables
@@ -633,7 +644,7 @@ export interface ServerEvents {
    *  that don't ride on a shot_resolved. Each entry drives a floating
    *  damage-number popup and hit-marker on the client, mirroring the
    *  experience of direct-hit weapons. */
-  damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
+  damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
   /** Fired when a new pickup drops into the world. */

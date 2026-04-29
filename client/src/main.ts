@@ -46,7 +46,7 @@ import { setupSettingsDialog } from './ui/settingsDialog';
 import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
-import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
+import { setupMatchCountdown, setMatchCountdown, isMatchCountdownActive } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning, playPredatorLaunch, playSoldierShot as playSoldierShotAudio } from './audio/sounds';
@@ -364,6 +364,7 @@ const sendJoin = (): void => {
     playerName: login.name,
     color: login.color,
     flagId: login.flagId,
+    parachuteId: login.parachuteId,
     mode: login.mode,
     inviteCode: login.inviteCode,
     settings: login.settings,
@@ -746,7 +747,7 @@ socket.on('fire_update', (update: FireUpdate) => {
 socket.on('damage_applied', (data) => {
   for (const hit of data.hits) {
     const mesh = getAllTankMeshes().get(hit.playerId);
-    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed);
+    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed, hit.shielded);
   }
   if (myId && data.hits.some((h) => h.playerId !== myId)) {
     // At least one non-self hit — play hit marker for the local shooter
@@ -800,6 +801,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.alive = tankState.alive;
         predictedState.score = tankState.score;
         predictedState.airborne = tankState.airborne;
+        predictedState.parachute = tankState.parachute;
         predictedState.linVel.x = tankState.linVel.x;
         predictedState.linVel.y = tankState.linVel.y;
         predictedState.linVel.z = tankState.linVel.z;
@@ -1170,7 +1172,7 @@ socket.on('shot_resolved', (result: ShotResult) => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
       if (mesh) {
-        spawnDamagePopup(mesh.group, d.damage, d.killed);
+        spawnDamagePopup(mesh.group, d.damage, d.killed, d.shielded);
         if (atmosphere) {
           atmosphere.spawnImpactSparks(mesh.group.position);
         }
@@ -1411,7 +1413,7 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    const inCountdown = (snapshot?.phase === MatchPhase.Countdown) || isMatchCountdownActive();
     const isPiloting = !!pilotingMissile;
     const baseInput = getMovementInput();
     // Match the server-side mask in tickMovement: during Countdown the tank
@@ -1422,6 +1424,8 @@ function animate(): void {
       ...baseInput,
       forward: inCountdown ? false : baseInput.forward,
       backward: inCountdown ? false : baseInput.backward,
+      left: inCountdown ? false : baseInput.left,
+      right: inCountdown ? false : baseInput.right,
       turbo: inCountdown ? false : turboActive,
     };
     // Predator: while piloting a steerable missile the tank body is

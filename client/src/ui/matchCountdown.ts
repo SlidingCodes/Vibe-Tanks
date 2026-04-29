@@ -128,3 +128,6 @@ export function hideMatchCountdown(): void {
   lastShown = null;
   el?.classList.remove('visible');
 }
+export function isMatchCountdownActive(): boolean {
+  return active && (endsAtMs - performance.now() > 0);
+}

@@ -433,6 +433,33 @@
       box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
     }
 
+    #parachute-swatches,
+    #parachute-swatches-secondary {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .parachute-swatch {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.08s;
+      background: repeating-linear-gradient(90deg, #f0f0f0 0px, #f0f0f0 6px, var(--p-color) 6px, var(--p-color) 12px);
+    }
+
+    .parachute-swatch:hover {
+      transform: scale(1.08);
+    }
+
+    .parachute-swatch.selected {
+      border-color: #d8b058;
+      box-shadow: 0 0 6px rgba(216, 176, 88, 0.5);
+    }
+
     #flag-swatches {
       display: grid;
       grid-template-columns: repeat(7, 1fr);
@@ -1000,21 +1027,21 @@
       }
     }
 
-    .damage-popup-fire {
+    .damage-popup-skull {
       display: inline-block;
-      animation: dmg-fire-flicker 0.18s ease-in-out infinite alternate;
-      filter: drop-shadow(0 0 6px #ff7722);
+      animation: dmg-skull-pulse 0.25s ease-in-out infinite alternate;
+      filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 8px #fff);
     }
 
-    @keyframes dmg-fire-flicker {
+    @keyframes dmg-skull-pulse {
       0% {
-        transform: translateY(0) scale(1) rotate(-6deg);
-        opacity: 0.85;
+        transform: scale(1) rotate(-3deg);
+        filter: drop-shadow(0 0 4px #fff);
       }
 
       100% {
-        transform: translateY(-2px) scale(1.15) rotate(8deg);
-        opacity: 1;
+        transform: scale(1.2) rotate(3deg);
+        filter: drop-shadow(0 0 8px #fff);
       }
     }
 
@@ -2400,6 +2427,10 @@
       <label>FLAG</label>
       <input id="flag-search" type="text" placeholder="Search country..." autocomplete="off" />
       <div id="flag-swatches"></div>
+      <label>PARACHUTE PRIMARY</label>
+      <div id="parachute-swatches"></div>
+      <label>PARACHUTE SECONDARY</label>
+      <div id="parachute-swatches-secondary"></div>
       <label for="invite-code-input">MATCH CODE</label>
       <input id="invite-code-input" type="text" maxlength="4" autocomplete="off"
         placeholder="optional — leave blank to quick-join" />

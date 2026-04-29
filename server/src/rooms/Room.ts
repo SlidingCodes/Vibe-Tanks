@@ -91,7 +91,7 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
-const MATCH_COUNTDOWN_MS = 3000; // freeze tanks for this long at the start of every match
+const MATCH_COUNTDOWN_MS = 4000; // 4s total (3s visual + 1s buffer)
 const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 /** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
@@ -398,7 +398,6 @@ export class Room {
     this.fire = new FireGrid(this.voxels);
 
     this.physics = new RapierVoxelWorld(this.voxels);
-    this.scheduleReset();
     this.ensureFourTanks();
   }
 
@@ -465,10 +464,14 @@ export class Room {
       tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
       tank.lastAppliedSeq = 0;
+      tank.shieldActive = false;
+      tank.shieldAvailable = true;
+      tank.shieldTimeRemaining = 0;
       tank.burning = false;
       const player = this.players.get(pid);
       if (player) {
-        player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+        player.spawnProtectionUntil = 0;
+        player.shieldExpiresAt = 0;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.input.seq = 0;
@@ -482,7 +485,6 @@ export class Room {
       this.physics.resetTank(pid, tank.position, 0);
     }
     this.ensureFourTanks();
-    this.scheduleReset();
     // If the reset timer fired on an empty server (no human ever joined
     // during the previous match), resetMatch flips phase to InProgress
     // without anyone having called startLoop. The first player to
@@ -500,7 +502,7 @@ export class Room {
     this.beginCountdown();
   }
 
-  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string): void {
+  addPlayer(socket: Socket<ClientEvents, ServerEvents>, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     // Count humans only — a room with 4 humans + 4 bots was hitting this
     // gate and refusing the 5th human even though ensureFourTanks would
     // immediately scrub the bots to free seats. The manager already
@@ -516,7 +518,7 @@ export class Room {
       idleWarned: false,
       lastFireByWeapon: new Map(),
       weaponHeat: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
@@ -529,7 +531,7 @@ export class Room {
       activeMissileId: null,
     });
 
-    this.spawnTank(playerId, playerName, color, flagId);
+    this.spawnTank(playerId, playerName, color, flagId, parachuteId);
     this.bindEvents(socket);
 
     socket.emit('room_snapshot', this.getSnapshot());
@@ -646,7 +648,7 @@ export class Room {
     this.physics.dispose();
   }
 
-  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string): void {
+  private spawnTank(playerId: PlayerId, playerName: string, color?: string, flagId?: string, parachuteId?: string): void {
     const pos = this.findSpawnPosition();
     let safeColor: string;
     if (isValidHex(color)) {
@@ -684,6 +686,7 @@ export class Room {
       shieldAvailable: true,
       shieldTimeRemaining: 0,
       flagId,
+      parachuteId,
       burning: false,
       // Shared reference with PlayerState — one mutation, both sides see it.
       inventory: player?.inventory ?? createRandomLoadout(this.settings.weaponAllowed),
@@ -691,6 +694,10 @@ export class Room {
     this.tanks.set(playerId, tank);
     this.refreshTankList();
     this.physics.addTank(tank);
+    
+    if (player && this.phase === MatchPhase.InProgress) {
+      this.applySpawnProtection(tank, player);
+    }
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -974,7 +981,7 @@ export class Room {
       idleWarned: false,
       lastFireByWeapon: new Map(),
       weaponHeat: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
@@ -991,8 +998,8 @@ export class Room {
     const usedFlags = Array.from(this.tanks.values()).map(t => t.flagId?.toLowerCase()).filter(Boolean);
     const countryCodes = Object.keys(countries).map(k => k.toLowerCase());
     const availableFlags = countryCodes.filter(f => !usedFlags.includes(f));
-    
-    const randomFlag = availableFlags.length > 0 
+
+    const randomFlag = availableFlags.length > 0
       ? availableFlags[Math.floor(Math.random() * availableFlags.length)]
       : countryCodes[Math.floor(Math.random() * countryCodes.length)];
 
@@ -1852,7 +1859,7 @@ export class Room {
     player.burningUntil = 0;
     player.burningOwner = null;
     player.input.seq = 0;
-    player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = 0;
     player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
     // Wipe any stale heat / lockout from the previous life — the new
@@ -1862,6 +1869,10 @@ export class Room {
     // leave the camera locked to a despawned missile across respawn.
     player.activeMissileId = null;
     this.physics.resetTank(playerId, tank.position, 0);
+
+    if (this.phase === MatchPhase.InProgress) {
+      this.applySpawnProtection(tank, player);
+    }
   }
 
   private startMatch(): void {
@@ -1869,6 +1880,16 @@ export class Room {
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
     this.beginCountdown();
+  }
+
+  private applySpawnProtection(tank: TankState, player: PlayerState): void {
+    if (this.phase !== MatchPhase.InProgress) return;
+    const nowSec = Date.now() / 1000;
+    tank.shieldActive = true;
+    tank.shieldAvailable = true;
+    tank.shieldTimeRemaining = SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = nowSec + SPAWN_PROTECTION_SECONDS;
+    player.shieldExpiresAt = nowSec + SPAWN_PROTECTION_SECONDS;
   }
 
   /** Freeze tanks for MATCH_COUNTDOWN_MS, then flip to InProgress.
@@ -1888,6 +1909,16 @@ export class Room {
       if (this.phase !== MatchPhase.Countdown) return;
       this.phase = MatchPhase.InProgress;
       this.countdownEndsAt = 0;
+      this.scheduleReset();
+
+      // Apply spawn protection exactly as the tank touches the ground and the match starts
+      for (const [pid, player] of this.players) {
+        const tank = this.tanks.get(pid);
+        if (tank && tank.alive) {
+          this.applySpawnProtection(tank, player);
+        }
+      }
+
       this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     }, MATCH_COUNTDOWN_MS);
   }
@@ -2040,7 +2071,8 @@ export class Room {
       if (damage > 0) {
         // Round to an integer so HP/score stay whole numbers.
         const dmgInt = Math.max(1, Math.round(damage));
-        const entry = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        const entry: import('@shared/types/index').DamageHit = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        if (tank.shieldActive) entry.shielded = true;
         if (owner === undefined) {
           orphaned.push(entry);
         } else {
@@ -2055,7 +2087,7 @@ export class Room {
     // Clone entries for the popup broadcast before applyResolvedDamage
     // might mutate them, then retroactively flag killed by re-reading
     // victim.alive post-damage.
-    const allHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    const allHits: import('@shared/types/index').DamageHit[] = [];
     for (const list of byOwner.values()) for (const h of list) allHits.push({ ...h });
     for (const h of orphaned) allHits.push({ ...h });
 
@@ -2129,7 +2161,7 @@ export class Room {
         // masked so a player who held it from the prev match doesn't carry
         // momentum into the new map.
         if (this.phase === MatchPhase.Countdown) {
-          effectiveInput = { ...effectiveInput, forward: false, backward: false, turbo: false };
+          effectiveInput = { ...effectiveInput, forward: false, backward: false, left: false, right: false, turbo: false };
         }
         // Predator: while the player is piloting a steerable missile,
         // their MovementInput is consumed by the missile (yaw/pitch
@@ -2165,6 +2197,19 @@ export class Room {
 
       const buried = buriedIds.has(pid);
       if (!buried) this.physics.readbackTank(pid, tank);
+
+      if (this.phase === MatchPhase.Countdown) {
+        const remain = Math.max(0, this.countdownEndsAt - Date.now());
+        const fraction = remain / 6000; // MATCH_COUNTDOWN_MS is 4000
+        const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+        const targetY = groundY + 100 * fraction;
+        this.physics.resetTank(pid, { x: tank.position.x, y: targetY, z: tank.position.z }, tank.bodyRotation);
+        this.physics.readbackTank(pid, tank);
+        tank.parachute = true;
+      } else {
+        tank.parachute = false;
+      }
+
       // Stamp the applied input seq so clients can do rewind-and-replay
       // reconciliation. For alive tanks the input we just applied was
       // set in the `setTankInput` loop above, so its seq is the one the
@@ -2177,6 +2222,7 @@ export class Room {
       // their body is pinned, so any airborne flag would trigger a ragdoll
       // render on the client that's not actually happening.
       tank.airborne = buried ? false : !this.physics.isGrounded(pid);
+
 
       // Allow tanks to drive a few meters into the water before being
       // hard-clamped or drowned.
@@ -3274,9 +3320,11 @@ export class Room {
       hazards: state.hazards,
       pickups: state.pickups,
       soldiers: state.soldiers,
-      resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
+      resetsInSeconds: (this.phase === MatchPhase.InProgress || this.phase === MatchPhase.Leaderboard)
+        ? Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000))
+        : MATCH_DURATION_SECONDS,
       countdownEndsInMs: this.phase === MatchPhase.Countdown
-        ? Math.max(0, this.countdownEndsAt - Date.now())
+        ? Math.max(0, this.countdownEndsAt - 1000 - Date.now())
         : 0,
       inviteCode: this.inviteCode,
     };

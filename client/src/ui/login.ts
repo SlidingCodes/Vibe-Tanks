@@ -10,9 +10,11 @@ import {
 } from '../entities/tankGeometry';
 import { FLAGS, createFlagMesh } from '../entities/flag';
 import { WEAPONS } from '@shared/weapons';
+import { getParachuteTexture } from '../scene/pickups';
 import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
+const PARACHUTE_PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4', '#222', '#fff'];
 
 /** Full-viewport login preview: bigger tank, camera pulled to the front-right
  *  so the tank sits on the left half of the screen, ground scrolling backward
@@ -21,6 +23,7 @@ const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4']
 function createTankPreview(canvas: HTMLCanvasElement): {
   setColor: (hex: string) => void;
   setFlag: (id: string) => void;
+  setParachute: (primary: string, secondary: string) => void;
   stop: () => void;
 } {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -160,6 +163,29 @@ function createTankPreview(canvas: HTMLCanvasElement): {
     group.add(currentFlag);
   };
 
+  // Folded parachute pack on the ground (soft and rounded fabric bundle)
+  const parachuteGeom = new THREE.SphereGeometry(0.6, 24, 16);
+  const parachuteMat = new THREE.MeshStandardMaterial({
+    map: getParachuteTexture(),
+    roughness: 0.9,
+    metalness: 0.05,
+  });
+  const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
+  // Position it on the ground and squash it to look folded/deflated
+  // y = 0.21 is the scaled radius (0.6 * 0.35), so it sits perfectly on the ground.
+  // x = 0, z = 1.9 puts it exactly in front of the tank (tank front is +Z)
+  parachuteMesh.position.set(0, 0.21, 1.9);
+  parachuteMesh.scale.set(1.0, 0.35, 0.8);
+  parachuteMesh.rotation.y = Math.PI / 6;
+  parachuteMesh.rotation.z = Math.PI / 16; // Slight tilt for natural look
+  parachuteMesh.castShadow = true;
+  group.add(parachuteMesh);
+
+  const setParachute = (primary: string, secondary: string) => {
+    parachuteMat.map = getParachuteTexture(`${primary},${secondary}`);
+    parachuteMat.needsUpdate = true;
+  };
+
   group.add(turretGroup);
 
   // Tread textures are cloned so their `.offset.y` can advance without
@@ -229,6 +255,7 @@ function createTankPreview(canvas: HTMLCanvasElement): {
       turretMat.color.set(hex);
     },
     setFlag,
+    setParachute,
     stop: () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
@@ -252,6 +279,7 @@ export interface LoginResult {
   name: string;
   color: string;
   flagId: string;
+  parachuteId: string;
   mode: JoinMode;
   /** Set only when mode === 'join_private'. Always 4 uppercase chars. */
   inviteCode?: string;
@@ -268,6 +296,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const nameInput = document.getElementById('login-name') as HTMLInputElement;
     const swatches = document.getElementById('color-swatches') as HTMLDivElement;
     const flagSwatches = document.getElementById('flag-swatches') as HTMLDivElement;
+    const parachuteSwatches = document.getElementById('parachute-swatches') as HTMLDivElement;
     const flagSearch = document.getElementById('flag-search') as HTMLInputElement;
     const submit = document.getElementById('login-submit') as HTMLButtonElement;
     const previewCanvas = document.getElementById('tank-preview') as HTMLCanvasElement;
@@ -427,30 +456,55 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    let selectedParachutePrimary = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
+    let selectedParachuteSecondary = '#fff';
     let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
-    nameInput.value = pickRandomName();
-    nameInput.placeholder = pickRandomName();
+    let savedName = pickRandomName();
 
-    // Try to auto-detect country via IP with a 2s timeout
+    let hasSavedFlag = false;
     try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 2000);
-      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
-      clearTimeout(tid);
-      const data = await res.json();
-      if (data && data.country_code) {
-        const detected = data.country_code.toLowerCase();
-        if (FLAGS.find((f) => f.id === detected)) {
-          selectedFlag = detected;
+      const saved = localStorage.getItem('vibe-tanks-prefs');
+      if (saved) {
+        const prefs = JSON.parse(saved);
+        if (prefs.color && PALETTE.includes(prefs.color)) selected = prefs.color;
+        if (prefs.parachutePrimary && PARACHUTE_PALETTE.includes(prefs.parachutePrimary)) selectedParachutePrimary = prefs.parachutePrimary;
+        if (prefs.parachuteSecondary && PARACHUTE_PALETTE.includes(prefs.parachuteSecondary)) selectedParachuteSecondary = prefs.parachuteSecondary;
+        if (prefs.flagId && FLAGS.find((f) => f.id === prefs.flagId)) {
+          selectedFlag = prefs.flagId;
+          hasSavedFlag = true;
         }
+        if (prefs.name) savedName = prefs.name;
       }
     } catch (e) {
-      // Fallback to random is already set
+      // ignore parse errors
+    }
+
+    nameInput.value = savedName;
+    nameInput.placeholder = pickRandomName();
+
+    // Try to auto-detect country via IP with a 2s timeout (only if no saved flag)
+    if (!hasSavedFlag) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 2000);
+        const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+        clearTimeout(tid);
+        const data = await res.json();
+        if (data && data.country_code) {
+          const detected = data.country_code.toLowerCase();
+          if (FLAGS.find((f) => f.id === detected)) {
+            selectedFlag = detected;
+          }
+        }
+      } catch (e) {
+        // Fallback to random is already set
+      }
     }
 
     const preview = createTankPreview(previewCanvas);
     preview.setColor(selected);
     preview.setFlag(selectedFlag);
+    preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
 
     swatches.innerHTML = '';
     PALETTE.forEach((hex) => {
@@ -466,6 +520,41 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       });
       swatches.appendChild(el);
     });
+
+    if (parachuteSwatches) {
+      parachuteSwatches.innerHTML = '';
+      PARACHUTE_PALETTE.forEach((hex) => {
+        const el = document.createElement('div');
+        el.className = 'parachute-swatch';
+        el.style.setProperty('--p-color', hex);
+        if (hex === selectedParachutePrimary) el.classList.add('selected');
+        el.addEventListener('click', () => {
+          selectedParachutePrimary = hex;
+          parachuteSwatches.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
+          el.classList.add('selected');
+          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
+        });
+        parachuteSwatches.appendChild(el);
+      });
+    }
+
+    const parachuteSwatchesSecondary = document.getElementById('parachute-swatches-secondary');
+    if (parachuteSwatchesSecondary) {
+      parachuteSwatchesSecondary.innerHTML = '';
+      PARACHUTE_PALETTE.forEach((hex) => {
+        const el = document.createElement('div');
+        el.className = 'parachute-swatch';
+        el.style.setProperty('--p-color', hex);
+        if (hex === selectedParachuteSecondary) el.classList.add('selected');
+        el.addEventListener('click', () => {
+          selectedParachuteSecondary = hex;
+          parachuteSwatchesSecondary.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
+          el.classList.add('selected');
+          preview.setParachute(selectedParachutePrimary, selectedParachuteSecondary);
+        });
+        parachuteSwatchesSecondary.appendChild(el);
+      });
+    }
 
     flagSwatches.innerHTML = '';
     FLAGS.forEach((f) => {
@@ -545,7 +634,17 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected, flagId: selectedFlag, mode, inviteCode, settings });
+
+      const prefs = {
+        name: nameInput.value.trim(),
+        color: selected,
+        flagId: selectedFlag,
+        parachutePrimary: selectedParachutePrimary,
+        parachuteSecondary: selectedParachuteSecondary
+      };
+      localStorage.setItem('vibe-tanks-prefs', JSON.stringify(prefs));
+
+      resolve({ name, color: selected, flagId: selectedFlag, parachuteId: `${selectedParachutePrimary},${selectedParachuteSecondary}`, mode, inviteCode, settings });
     };
     const onSubmitClick = (): void => done(false);
     const onCreateClick = (): void => done(true);
