@@ -234,6 +234,10 @@ export interface WeaponBehaviorConfig {
   predatorDamage?: number;
   /** Predator: terrain damage scalar at the impact. */
   predatorTerrainDamage?: number;
+  /** Predator: inner radius around the impact in which damage stays
+   *  flat at the full value before the quadratic falloff kicks in.
+   *  Lets a near-miss still feel decisive. */
+  predatorFlatCoreRadius?: number;
 }
 
 export interface WeaponDefinition {

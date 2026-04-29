@@ -204,6 +204,10 @@ interface ActiveProjectileRuntime extends ActiveProjectileState {
   predatorTurnRate?: number;
   predatorPitchRate?: number;
   predatorSpeed?: number;
+  /** Inner radius around the impact in which damage stays flat at the
+   *  full value before the quadratic falloff kicks in. Forwarded to
+   *  `applyImpact.flatCoreRadius`. */
+  predatorFlatCoreRadius?: number;
   /** Pre-allocated wire view kept in sync with the mutable public fields.
    *  Broadcast reuses this reference every tick instead of mapping a fresh
    *  object per projectile — critical on Pi where 20 Hz × N .map() allocs
@@ -767,7 +771,10 @@ export class Room {
       // too — the visual shot animation collapses to a one-frame burst
       // at the impact since there's no in-flight segment to travel.
       const here: Vec3 = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
-      this.detonatePredatorMissile(missile, here, here);
+      // No directHitTankId on a manual self-destruct — players inside
+      // the blast still take splash damage, with the flatCoreRadius
+      // making close targets eat the full base damage.
+      this.detonatePredatorMissile(missile, here, here, null);
       // Stamp activity so the manual self-destruct keeps the player
       // out of the idle-kick window.
       player.lastInputAt = Date.now() / 1000;
@@ -1429,6 +1436,7 @@ export class Room {
       terrainDamage: weapon.behaviorConfig?.predatorTerrainDamage ?? weapon.terrainDamage,
       predatorYaw: yaw,
       predatorPitch: pitch,
+      predatorFlatCoreRadius: weapon.behaviorConfig?.predatorFlatCoreRadius ?? 1.6,
       predatorTurnRate: weapon.behaviorConfig?.predatorTurnRate ?? 1.6,
       predatorPitchRate: weapon.behaviorConfig?.predatorPitchRate ?? 1.2,
       predatorSpeed: speed,
@@ -2318,8 +2326,13 @@ export class Room {
       missile.wire.velocity = missile.velocity;
 
       // Detonation tests: terrain, any tank hull, out-of-bounds, or
-      // lifetime/owner-loss timeout.
+      // lifetime/owner-loss timeout. directHitTankId is set when the
+      // missile collides with a tank's hull mid-flight so applyImpact
+      // can apply the standard direct-hit damage multiplier (1.6×) +
+      // guaranteed-airborne impulse — same semantics as a shell that
+      // physically struck the body.
       let impactPoint: Vec3 | null = null;
+      let directHitTankId: PlayerId | null = null;
       const terrainY = this.voxels.getHeight(missile.position.x, missile.position.z);
       if (missile.position.y <= terrainY) {
         impactPoint = { x: missile.position.x, y: terrainY, z: missile.position.z };
@@ -2335,6 +2348,7 @@ export class Room {
           const dz = t.position.z - missile.position.z;
           if (dx * dx + dy * dy + dz * dz <= 1.4 * 1.4) {
             impactPoint = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+            directHitTankId = t.playerId;
             break;
           }
         }
@@ -2353,7 +2367,7 @@ export class Room {
       }
 
       if (impactPoint) {
-        this.detonatePredatorMissile(missile, impactPoint, prevPos);
+        this.detonatePredatorMissile(missile, impactPoint, prevPos, directHitTankId);
       }
     }
   }
@@ -2365,14 +2379,20 @@ export class Room {
    *  collision/timeout path share one code path. `prevPos` is the
    *  segment start used by the visual shot animation — typically the
    *  pre-tick position when called from the natural path, or the
-   *  current position itself for manual detonation. */
-  private detonatePredatorMissile(missile: ActiveProjectileRuntime, impactPoint: Vec3, prevPos: Vec3): void {
+   *  current position itself for manual detonation. `directHitTankId`
+   *  is set only when the missile physically collided with a tank's
+   *  hull mid-flight; passing it triggers applyImpact's 1.6× direct
+   *  damage multiplier + guaranteed-airborne impulse, so a player who
+   *  steers the warhead onto a target gets the kill they earned. */
+  private detonatePredatorMissile(missile: ActiveProjectileRuntime, impactPoint: Vec3, prevPos: Vec3, directHitTankId: PlayerId | null): void {
     const damageTotals: DamageTotals = new Map();
     const carveTerrain = applyImpact({
       point: impactPoint,
       blastRadius: missile.blastRadius,
       damage: missile.damage,
       terrainDamage: missile.terrainDamage,
+      flatCoreRadius: missile.predatorFlatCoreRadius,
+      directHitTankId,
     }, this.getTankList(), damageTotals);
 
     const result = createShotResult(missile.ownerId, missile.weaponId, [

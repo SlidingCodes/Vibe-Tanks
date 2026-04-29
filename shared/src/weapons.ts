@@ -354,7 +354,11 @@ export const WEAPONS: WeaponDefinition[] = [
     // the round is in the air.
     projectileSpeed: 22,
     blastRadius: 5,
-    damage: 55,
+    // Direct hit gets 1.6× via DIRECT_HIT_DAMAGE_MULTIPLIER (see
+    // applyImpact). 65 × 1.6 = 104 → guaranteed kill on a full-HP tank,
+    // which is what "I literally guided this missile onto you" should
+    // feel like. Splash from outside the flat core falls off quadratic.
+    damage: 65,
     terrainDamage: 3.5,
     behavior: 'predator',
     cooldown: 7,
@@ -374,8 +378,12 @@ export const WEAPONS: WeaponDefinition[] = [
       // forever / hide their tank from a flank push.
       predatorLifetime: 7,
       predatorBlastRadius: 5,
-      predatorDamage: 55,
+      predatorDamage: 65,
       predatorTerrainDamage: 3.5,
+      // Splash flat core: anyone inside 1.6 m of the impact eats full
+      // damage even without a direct contact, so a near-miss on a
+      // moving tank still bites hard.
+      predatorFlatCoreRadius: 1.6,
     },
   },
   {
