@@ -2145,32 +2145,41 @@
       box-shadow: 0 0 2px rgba(0, 0, 0, 0.85);
     }
 
-    /* NW segment — bar lies along the NW→SE diagonal */
+    /* Each bar must be RADIAL (parallel to the line from its quadrant to
+       the centre), not perpendicular — perpendicular bars draw the 4
+       sides of a rhombus, which is exactly the wrong shape.
+       For a vertical 2×10 bar:
+        rotate(-45deg) → long axis along NW–SE diagonal
+        rotate( 45deg) → long axis along NE–SW diagonal
+       The NW & SE quadrants lie on the NW–SE radial line; the NE & SW
+       quadrants lie on the NE–SW radial line, so they pair up. */
+
+    /* NW segment — radial NW→centre, along NW–SE */
     .hit-line:nth-child(1) {
       top: 25%;
       left: 25%;
-      transform: rotate(45deg);
+      transform: rotate(-45deg);
     }
 
-    /* NE segment — bar lies along the NE→SW diagonal */
+    /* NE segment — radial NE→centre, along NE–SW */
     .hit-line:nth-child(2) {
       top: 25%;
       left: 75%;
-      transform: rotate(-45deg);
+      transform: rotate(45deg);
     }
 
-    /* SW segment — same diagonal as NE */
+    /* SW segment — radial SW→centre, along NE–SW */
     .hit-line:nth-child(3) {
       top: 75%;
       left: 25%;
-      transform: rotate(-45deg);
+      transform: rotate(45deg);
     }
 
-    /* SE segment — same diagonal as NW */
+    /* SE segment — radial SE→centre, along NW–SE */
     .hit-line:nth-child(4) {
       top: 75%;
       left: 75%;
-      transform: rotate(45deg);
+      transform: rotate(-45deg);
     }
 
     #hit-marker.kill .hit-line {
