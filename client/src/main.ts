@@ -203,6 +203,11 @@ const lastShotByTank = new Map<PlayerId, LastShotInfo>();
  *  the server, and fire / aim / tank prediction are suppressed. Refreshed
  *  from the projectiles list on every state_update / room_snapshot. */
 let pilotingMissile: ActiveProjectileState | null = null;
+/** Local clock time (seconds, from THREE.Clock) at which the current
+ *  Predator launch was first observed. Used to drive the cooldown bar
+ *  as a flight-time-remaining indicator. Null when not piloting. */
+let pilotingMissileStartTime: number | null = null;
+const PREDATOR_LIFETIME = (WEAPONS.find((w) => w.id === 'predator')?.behaviorConfig?.predatorLifetime ?? 7);
 function refreshPilotingMissile(projectiles: ActiveProjectileState[] | undefined): void {
   const next = projectiles?.find(
     (p) => p.ownerId === myId && p.visualStyle === 'predator_missile',
@@ -210,13 +215,16 @@ function refreshPilotingMissile(projectiles: ActiveProjectileState[] | undefined
   const wasPiloting = !!pilotingMissile;
   const isPiloting = !!next;
   if (isPiloting && !wasPiloting) {
-    // Entering pilot mode — seed the chase camera state and surface the
-    // HUD overlay. Audio is fired here too, once per launch.
+    // Entering pilot mode — seed the chase camera state, mark the
+    // launch instant for the flight-time bar, and surface the HUD
+    // overlay. Audio fires here too, once per launch.
     beginFollowMissile();
+    pilotingMissileStartTime = clock.getElapsedTime();
     showPilotingOverlay(true);
     playPredatorLaunch();
   } else if (!isPiloting && wasPiloting) {
     showPilotingOverlay(false);
+    pilotingMissileStartTime = null;
   }
   pilotingMissile = next;
 }
@@ -1746,7 +1754,19 @@ function animate(): void {
     // / ready, 0 = locked) so it visibly empties as sustained fire heats
     // the gun and refills while the player lays off the trigger.
     let cooldownProgress: number;
-    if (isHoldFire) {
+    if (isPiloting && pilotingMissileStartTime !== null) {
+      // While piloting, the cooldown bar doubles as a flight-time
+      // indicator: full at launch, drains linearly to 0 at the
+      // server-side lifetime cutoff. Server is authoritative for the
+      // actual auto-detonation; this is purely a player-facing read of
+      // "how much time do I have left to find a target". The overlay
+      // text echoes the same number with one-decimal precision.
+      const elapsed = now - pilotingMissileStartTime;
+      const remaining = Math.max(0, PREDATOR_LIFETIME - elapsed);
+      cooldownProgress = remaining / PREDATOR_LIFETIME;
+      const timeEl = document.getElementById('predator-overlay-time');
+      if (timeEl) timeEl.textContent = remaining.toFixed(1);
+    } else if (isHoldFire) {
       const heatValue = heatValueAt(selectedWeapon.id, selectedWeapon, now);
       cooldownProgress = isWeaponOverheatedLocal(selectedWeapon.id, now) ? 0 : Math.max(0, 1 - heatValue);
     } else {
