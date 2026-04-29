@@ -80,9 +80,9 @@ interface ImpactSpec {
   directHitTankId?: PlayerId | null;
 }
 
-export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3 }>;
+export type DamageTotals = Map<string, { damage: number; killed: boolean; impulse: Vec3; shielded?: boolean }>;
 
-function makeDamageEntry(): { damage: number; killed: boolean; impulse: Vec3 } {
+function makeDamageEntry(): { damage: number; killed: boolean; impulse: Vec3; shielded?: boolean } {
   return { damage: 0, killed: false, impulse: { x: 0, y: 0, z: 0 } };
 }
 
@@ -174,7 +174,7 @@ export function createShotResult(
   const impulses: ShotResult['impulses'] = [];
   const damageDealt: ShotResult['damageDealt'] = [];
   for (const [playerId, value] of damageTotals) {
-    damageDealt.push({ playerId, damage: value.damage, killed: value.killed });
+    damageDealt.push({ playerId, damage: value.damage, killed: value.killed, shielded: value.shielded });
     const impLenSq = value.impulse.x ** 2 + value.impulse.y ** 2 + value.impulse.z ** 2;
     if (impLenSq > 1e-4) impulses.push({ playerId, impulse: value.impulse });
   }
@@ -186,7 +186,10 @@ export function createShotResult(
 function finalizeDamageTotals(allTanks: TankState[], damageTotals: DamageTotals): void {
   for (const [playerId, totals] of damageTotals) {
     const victim = allTanks.find((tank) => tank.playerId === playerId);
-    if (victim && totals.damage >= victim.hp) totals.killed = true;
+    if (victim) {
+      if (victim.shieldActive) totals.shielded = true;
+      if (totals.damage >= victim.hp) totals.killed = true;
+    }
   }
 }
 

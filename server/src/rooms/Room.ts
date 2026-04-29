@@ -1700,7 +1700,8 @@ export class Room {
       if (damage > 0) {
         // Round to an integer so HP/score stay whole numbers.
         const dmgInt = Math.max(1, Math.round(damage));
-        const entry = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        const entry: import('@shared/types/index').DamageHit = { playerId: tank.playerId, damage: dmgInt, killed: false };
+        if (tank.shieldActive) entry.shielded = true;
         if (owner === undefined) {
           orphaned.push(entry);
         } else {
@@ -1715,7 +1716,7 @@ export class Room {
     // Clone entries for the popup broadcast before applyResolvedDamage
     // might mutate them, then retroactively flag killed by re-reading
     // victim.alive post-damage.
-    const allHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
+    const allHits: import('@shared/types/index').DamageHit[] = [];
     for (const list of byOwner.values()) for (const h of list) allHits.push({ ...h });
     for (const h of orphaned) allHits.push({ ...h });
 

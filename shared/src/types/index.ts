@@ -476,11 +476,18 @@ export interface ShotStep {
   terrainOp?: TerrainOp;
 }
 
+export interface DamageHit {
+  playerId: PlayerId;
+  damage: number;
+  killed: boolean;
+  shielded?: boolean;
+}
+
 export interface ShotResult {
   shooterId: PlayerId;
   weaponId: string;
   steps: ShotStep[];
-  damageDealt: { playerId: PlayerId; damage: number; killed: boolean }[];
+  damageDealt: DamageHit[];
   /** Per-tank kinetic impulse (world-units / second velocity delta) to be
    *  applied at impact time. Populated by the simulator; the room applies
    *  it to the tank's linVel and flips airborne if |delta| exceeds the
@@ -546,7 +553,7 @@ export interface ServerEvents {
    *  that don't ride on a shot_resolved. Each entry drives a floating
    *  damage-number popup and hit-marker on the client, mirroring the
    *  experience of direct-hit weapons. */
-  damage_applied: (data: { weaponId: string; hits: { playerId: PlayerId; damage: number; killed: boolean }[] }) => void;
+  damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
   /** Fired when a new pickup drops into the world. */

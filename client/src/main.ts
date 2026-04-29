@@ -659,7 +659,7 @@ socket.on('fire_update', (update: FireUpdate) => {
 socket.on('damage_applied', (data) => {
   for (const hit of data.hits) {
     const mesh = getAllTankMeshes().get(hit.playerId);
-    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed);
+    if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed, hit.shielded);
   }
   if (myId && data.hits.some((h) => h.playerId !== myId)) {
     // At least one non-self hit — play hit marker for the local shooter
@@ -1046,7 +1046,7 @@ socket.on('shot_resolved', (result: ShotResult) => {
     for (const d of result.damageDealt) {
       const mesh = getAllTankMeshes().get(d.playerId);
       if (mesh) {
-        spawnDamagePopup(mesh.group, d.damage, d.killed);
+        spawnDamagePopup(mesh.group, d.damage, d.killed, d.shielded);
         if (atmosphere) {
           atmosphere.spawnImpactSparks(mesh.group.position);
         }

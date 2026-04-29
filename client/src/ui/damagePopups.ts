@@ -18,7 +18,10 @@ interface Tier {
   skull: boolean;
 }
 
-function tierFor(amount: number, killed: boolean): Tier {
+function tierFor(amount: number, killed: boolean, shielded?: boolean): Tier {
+  if (shielded) {
+    return { fontSize: 24, durationMs: 1500, color: '#44aaff', glow: true, shake: false, skull: false };
+  }
   if (killed || amount >= 60) {
     return { fontSize: 46, durationMs: 2200, color: '#ff2a14', glow: true, shake: true, skull: true };
   }
@@ -60,10 +63,10 @@ export function spawnPickupToast(tankGroup: THREE.Object3D, text: string, color:
   setTimeout(() => tankGroup.remove(obj), 1600);
 }
 
-export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, killed: boolean): void {
+export function spawnDamagePopup(tankGroup: THREE.Object3D, amount: number, killed: boolean, shielded?: boolean): void {
   if (amount <= 0 && !killed) return;
 
-  const tier = tierFor(amount, killed);
+  const tier = tierFor(amount, killed, shielded);
 
   // Outer: positioned each frame by CSS2DRenderer (transform is owned by three).
   const outer = document.createElement('div');
