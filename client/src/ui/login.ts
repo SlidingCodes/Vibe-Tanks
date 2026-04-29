@@ -400,7 +400,8 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
 
     // Default values: random color + Xbox-Live-style random name.
     let selected = PALETTE[Math.floor(Math.random() * PALETTE.length)];
-    let selectedParachute = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
+    let selectedParachutePrimary = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
+    let selectedParachuteSecondary = '#fff';
     let selectedFlag = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
     nameInput.value = pickRandomName();
     nameInput.placeholder = pickRandomName();
@@ -447,13 +448,30 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
         const el = document.createElement('div');
         el.className = 'parachute-swatch';
         el.style.setProperty('--p-color', hex);
-        if (hex === selectedParachute) el.classList.add('selected');
+        if (hex === selectedParachutePrimary) el.classList.add('selected');
         el.addEventListener('click', () => {
-          selectedParachute = hex;
+          selectedParachutePrimary = hex;
           parachuteSwatches.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
           el.classList.add('selected');
         });
         parachuteSwatches.appendChild(el);
+      });
+    }
+
+    const parachuteSwatchesSecondary = document.getElementById('parachute-swatches-secondary');
+    if (parachuteSwatchesSecondary) {
+      parachuteSwatchesSecondary.innerHTML = '';
+      PARACHUTE_PALETTE.forEach((hex) => {
+        const el = document.createElement('div');
+        el.className = 'parachute-swatch';
+        el.style.setProperty('--p-color', hex);
+        if (hex === selectedParachuteSecondary) el.classList.add('selected');
+        el.addEventListener('click', () => {
+          selectedParachuteSecondary = hex;
+          parachuteSwatchesSecondary.querySelectorAll('.parachute-swatch').forEach((e) => e.classList.remove('selected'));
+          el.classList.add('selected');
+        });
+        parachuteSwatchesSecondary.appendChild(el);
       });
     }
 
@@ -528,7 +546,7 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
       inviteInput.removeEventListener('input', onCodeInput);
       flagSearch.removeEventListener('input', onFilterFlags);
       preview.stop();
-      resolve({ name, color: selected, flagId: selectedFlag, parachuteId: selectedParachute, mode, inviteCode, settings });
+      resolve({ name, color: selected, flagId: selectedFlag, parachuteId: `${selectedParachutePrimary},${selectedParachuteSecondary}`, mode, inviteCode, settings });
     };
     const onSubmitClick = (): void => done(false);
     const onCreateClick = (): void => done(true);
