@@ -86,12 +86,48 @@ function createReticle(): Reticle {
   return { group, ringMat, accentMat };
 }
 
-function placeReticle(r: Reticle, x: number, y: number, z: number, scale: number, ringHex: number, accentHex: number): void {
-  r.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+function placeReticle(r: Reticle, x: number, y: number, z: number, scale: number, ringHex: number, accentHex: number, tilt: boolean = true): void {
+  applyMarkerPose(r.group, x, y, z, tilt);
   r.group.scale.setScalar(scale);
   r.ringMat.color.setHex(ringHex);
   r.accentMat.color.setHex(accentHex);
   r.group.visible = true;
+}
+
+const _normalScratch = new THREE.Vector3();
+const _upScratch = new THREE.Vector3(0, 1, 0);
+const _quatScratch = new THREE.Quaternion();
+/** Sample the terrain normal at (x, z) via central-difference height
+ *  finite differences and align `group`'s local +Y axis to it. Lift is
+ *  applied along the normal so the marker stays a constant 0.2 m clear
+ *  of the surface regardless of slope. When `tilt` is false (hitscan
+ *  rail / minigun) we keep the legacy flat-on-XZ pose: those weapons
+ *  fire horizontally, the reticle reads as a target plate facing the
+ *  shooter, and a tilted ring just makes the hit-spot harder to parse. */
+function applyMarkerPose(group: THREE.Object3D, x: number, y: number, z: number, tilt: boolean): void {
+  if (!tilt) {
+    group.position.set(x, y + MARKER_GROUND_LIFT, z);
+    group.quaternion.identity();
+    return;
+  }
+  // Central difference on the voxel surface. Step matches the cell size
+  // (default 1 m) so we capture the slope of the same terrain triangle
+  // the marker sits on, not a sub-cell artefact.
+  const step = Math.max(0.5, getTerrainCellSize());
+  const hL = getTerrainHeight(x - step, z);
+  const hR = getTerrainHeight(x + step, z);
+  const hB = getTerrainHeight(x, z - step);
+  const hF = getTerrainHeight(x, z + step);
+  // Heightmap normal: (-dh/dx, 1, -dh/dz). Avoid normalizing a zero on
+  // perfectly-flat terrain — falls back to (0,1,0).
+  _normalScratch.set((hL - hR) / (2 * step), 1, (hB - hF) / (2 * step)).normalize();
+  group.position.set(
+    x + _normalScratch.x * MARKER_GROUND_LIFT,
+    y + _normalScratch.y * MARKER_GROUND_LIFT,
+    z + _normalScratch.z * MARKER_GROUND_LIFT,
+  );
+  _quatScratch.setFromUnitVectors(_upScratch, _normalScratch);
+  group.quaternion.copy(_quatScratch);
 }
 
 function hideAuxReticles(): void {
@@ -133,8 +169,8 @@ function init(scene: THREE.Scene): void {
   initialized = true;
 }
 
-function placeMarker(x: number, y: number, z: number): void {
-  marker.group.position.set(x, y + MARKER_GROUND_LIFT, z);
+function placeMarker(x: number, y: number, z: number, tilt: boolean = true): void {
+  applyMarkerPose(marker.group, x, y, z, tilt);
 }
 
 function setMarkerColor(ringHex: number, accentHex: number): void {
@@ -482,7 +518,10 @@ export function updateTrajectoryPreview(
           z: startPos.z + dir.z * (weapon.behaviorConfig?.railRange ?? 50),
         };
     placePoints(parentDots, makeLinePoints(startPos, end, 22));
-    placeMarker(end.x, end.y, end.z);
+    // Hitscan: the player aims along a horizontal line, so a tilted
+    // reticle slanted with the ground would read as random clutter.
+    // Keep the legacy flat pose.
+    placeMarker(end.x, end.y, end.z, false);
     marker.group.scale.setScalar(0.45);
     setMarkerColor(0xc8e4ec, 0xe8f4f8);
     marker.group.visible = true;
@@ -508,7 +547,8 @@ export function updateTrajectoryPreview(
       };
     }
     placePoints(parentDots, makeLinePoints(startPos, end, 18));
-    placeMarker(end.x, end.y, end.z);
+    // Hitscan: see the rail branch above — flat pose, no terrain tilt.
+    placeMarker(end.x, end.y, end.z, false);
     marker.group.scale.setScalar(0.55);
     setMarkerColor(0xffd060, 0xfff0a0);
     marker.group.visible = true;
