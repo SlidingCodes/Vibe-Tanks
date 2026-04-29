@@ -400,10 +400,14 @@ export class Room {
       tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
       tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
       tank.lastAppliedSeq = 0;
+      tank.shieldActive = false;
+      tank.shieldAvailable = true;
+      tank.shieldTimeRemaining = 0;
       tank.burning = false;
       const player = this.players.get(pid);
       if (player) {
-        player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+        player.spawnProtectionUntil = 0;
+        player.shieldExpiresAt = 0;
         player.respawnAllowedAt = 0;
         player.lastTrackSampleAt = null;
         player.input.seq = 0;
@@ -449,7 +453,7 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
@@ -622,6 +626,10 @@ export class Room {
     this.tanks.set(playerId, tank);
     this.refreshTankList();
     this.physics.addTank(tank);
+    
+    if (player && this.phase === MatchPhase.InProgress) {
+      this.applySpawnProtection(tank, player);
+    }
   }
 
   private findSpawnPosition(): { x: number; y: number; z: number } {
@@ -818,7 +826,7 @@ export class Room {
       lastInputAt: Date.now() / 1000,
       idleWarned: false,
       lastFireByWeapon: new Map(),
-      spawnProtectionUntil: Date.now() / 1000 + SPAWN_PROTECTION_SECONDS,
+      spawnProtectionUntil: 0,
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
@@ -1495,10 +1503,14 @@ export class Room {
     player.burningUntil = 0;
     player.burningOwner = null;
     player.input.seq = 0;
-    player.spawnProtectionUntil = Date.now() / 1000 + SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = 0;
     player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
     this.physics.resetTank(playerId, tank.position, 0);
+
+    if (this.phase === MatchPhase.InProgress) {
+      this.applySpawnProtection(tank, player);
+    }
   }
 
   private startMatch(): void {
@@ -1506,6 +1518,16 @@ export class Room {
     this.io.to(this.id).emit('voxel_snapshot', this.getVoxelSnapshot());
     this.io.to(this.id).emit('fire_snapshot', this.fire.snapshot());
     this.beginCountdown();
+  }
+
+  private applySpawnProtection(tank: TankState, player: PlayerState): void {
+    if (this.phase !== MatchPhase.InProgress) return;
+    const nowSec = Date.now() / 1000;
+    tank.shieldActive = true;
+    tank.shieldAvailable = true;
+    tank.shieldTimeRemaining = SPAWN_PROTECTION_SECONDS;
+    player.spawnProtectionUntil = nowSec + SPAWN_PROTECTION_SECONDS;
+    player.shieldExpiresAt = nowSec + SPAWN_PROTECTION_SECONDS;
   }
 
   /** Freeze tanks for MATCH_COUNTDOWN_MS, then flip to InProgress.
@@ -1526,6 +1548,15 @@ export class Room {
       this.phase = MatchPhase.InProgress;
       this.countdownEndsAt = 0;
       this.scheduleReset();
+
+      // Apply spawn protection exactly as the tank touches the ground and the match starts
+      for (const [pid, player] of this.players) {
+        const tank = this.tanks.get(pid);
+        if (tank && tank.alive) {
+          this.applySpawnProtection(tank, player);
+        }
+      }
+
       this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     }, MATCH_COUNTDOWN_MS);
   }
