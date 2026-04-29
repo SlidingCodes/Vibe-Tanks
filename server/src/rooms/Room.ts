@@ -45,6 +45,9 @@ import {
   PICKUP_FALL_SPEED,
   PICKUP_WEAPON_CHANCE,
   PARACHUTE_DROP_HEIGHT,
+  SELF_DESTRUCT_RADIUS,
+  SELF_DESTRUCT_DAMAGE,
+  SELF_DESTRUCT_SCORE_PENALTY,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -882,6 +885,10 @@ export class Room {
       // Stamp activity so the manual self-destruct keeps the player
       // out of the idle-kick window.
       player.lastInputAt = Date.now() / 1000;
+    });
+
+    socket.on('self_destruct_request', () => {
+      this.handleSelfDestruct(socket.id);
     });
 
     socket.on('ping', (t: number) => {
@@ -2701,6 +2708,77 @@ export class Room {
       ownerPlayer.activeMissileId = null;
     }
     this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
+  }
+
+  /** Tank self-destruct triggered by the R key. Detonates a big_blast at
+   *  the tank's current position: damage to nearby enemies credits score
+   *  normally (1 score per HP, +50 per kill), then a flat penalty is
+   *  applied to the owner. Score may go negative — the malus is the
+   *  cost of the play, and a high-damage detonation can offset it. */
+  private handleSelfDestruct(playerId: PlayerId): void {
+    if (this.phase !== MatchPhase.InProgress) return;
+    const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+    if (!tank || !player || !tank.alive) return;
+
+    // Use the tank's centre-mass position as the blast origin. Slightly
+    // raised so the falloff doesn't hug the ground voxels and waste
+    // damage on the floor.
+    const epicentre: Vec3 = {
+      x: tank.position.x,
+      y: tank.position.y + 0.6,
+      z: tank.position.z,
+    };
+
+    // Compute splash on every alive tank. The owner gets removed from
+    // the totals before applyResolvedDamage runs so we can emit a
+    // dedicated 'self_destruct' match_event instead of the generic
+    // 'suicide' the resolver emits when ownerId === victimId.
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: epicentre,
+      blastRadius: SELF_DESTRUCT_RADIUS,
+      damage: SELF_DESTRUCT_DAMAGE,
+      // Any positive value flips the carve flag on the ShotStep —
+      // the carve radius itself is driven by step.blastRadius downstream.
+      terrainDamage: 1,
+      // Small flat core: anyone within 2 m takes the full 120 dmg, so
+      // a tank-on-tank ram-and-pop is a reliable kill.
+      flatCoreRadius: 2,
+    }, this.getTankList(), damageTotals);
+
+    damageTotals.delete(playerId);
+
+    const result = createShotResult(playerId, 'self_destruct', [
+      makeStep(0, [epicentre], epicentre, 'impact', carveTerrain, SELF_DESTRUCT_RADIUS, 'big_blast'),
+    ], damageTotals);
+
+    // Mark the tank dead first so emitShotResultNow's downstream
+    // checks (e.g. mine triggers iterating alive tanks) don't bring
+    // the corpse back into damage logic mid-pass. applyResolvedDamage
+    // is robust to this — it skips victims with !alive — and we no
+    // longer have the owner in damageDealt anyway.
+    tank.alive = false;
+    tank.hp = 0;
+    tank.deaths++;
+    player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+    player.lastInputAt = Date.now() / 1000;
+    if (player.activeMissileId) player.activeMissileId = null;
+
+    this.emitShotResultNow(result, playerId, 'self_destruct');
+
+    // Apply the flat penalty AFTER the damage credits land in
+    // applyResolvedDamage, so the in-feed math reads as
+    // "+47 from damage, +50 from kill, -100 self-destruct". Score is
+    // intentionally allowed to go negative.
+    tank.score -= SELF_DESTRUCT_SCORE_PENALTY;
+
+    this.io.to(this.id).emit('match_event', {
+      kind: 'self_destruct',
+      victimId: tank.playerId,
+      name: tank.playerName,
+      color: tank.color,
+    });
   }
 
   /** Soldiers AI tick. Per unit:

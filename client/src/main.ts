@@ -39,7 +39,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
@@ -528,7 +528,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
   syncSoldiers(scene, snap.soldiers ?? []);
   refreshPilotingMissile(snap.projectiles);
-  hud.updateScoreboard(snap.tanks);
+  hud.updateScoreboard(snap.tanks, myId);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   syncLocalInventory(myTank);
@@ -967,7 +967,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
-  hud.updateScoreboard(tanks);
+  hud.updateScoreboard(tanks, myId);
   syncLocalInventory(myTank);
 
   if (myTank) {
@@ -1664,6 +1664,16 @@ function animate(): void {
       hideTrajectoryPreview();
       if (consumeSpace()) {
         socket.emit('predator_detonate');
+      }
+    }
+
+    // R-key self-destruct. Gated on (alive && not piloting) so the key
+    // is silently ignored when it can't fire — server validates again,
+    // but consuming the latch here prevents a queued-up press from
+    // firing the moment a respawn lands.
+    if (consumeSelfDestruct()) {
+      if (predictedState?.alive && !isPiloting) {
+        socket.emit('self_destruct_request');
       }
     }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;

@@ -610,6 +610,11 @@ export interface ClientEvents {
    *  position with the standard blast radius / damage. No-op if the
    *  player isn't currently piloting. */
   predator_detonate: () => void;
+  /** Tank self-destruct (R key). Detonates at the tank's current
+   *  position, damages nearby players within SELF_DESTRUCT_RADIUS,
+   *  applies a fixed score penalty, and kills the player. Damage
+   *  inflicted credits score normally and can offset the penalty. */
+  self_destruct_request: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
@@ -621,6 +626,7 @@ export type MatchEvent =
   | { kind: 'leave'; name: string; color: string }
   | { kind: 'kill'; killerId: PlayerId; victimId: PlayerId; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
   | { kind: 'suicide'; victimId: PlayerId; name: string; color: string; weaponId: string }
+  | { kind: 'self_destruct'; victimId: PlayerId; name: string; color: string }
   | { kind: 'reset' };
 
 // ── Network events: server → client ──

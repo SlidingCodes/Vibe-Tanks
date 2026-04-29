@@ -11,6 +11,11 @@ let weaponCount = 1;
  *  pilot mode for manual self-detonation so a held key produces one
  *  detonation, not a stream of events. */
 let spaceJustPressed = false;
+/** Edge-triggered R press flag. Same pattern as `spaceJustPressed` —
+ *  latched on the rising edge, cleared by `consumeSelfDestruct()`. The
+ *  R key triggers the tank's self-destruct (kills the player, damages
+ *  nearby enemies, applies a flat score penalty). */
+let selfDestructJustPressed = false;
 
 export function setWeaponCount(count: number): void {
   weaponCount = count;
@@ -30,6 +35,9 @@ window.addEventListener('keydown', (e) => {
     // Stop the page scrolling on spacebar — the canvas takes the full
     // viewport but body scroll is still possible on some layouts.
     e.preventDefault();
+  }
+  if (!keys[e.code] && e.code === 'KeyR') {
+    selfDestructJustPressed = true;
   }
 
   keys[e.code] = true;
@@ -121,6 +129,14 @@ export function consumeRightClick(): boolean {
 export function consumeSpace(): boolean {
   if (spaceJustPressed) {
     spaceJustPressed = false;
+    return true;
+  }
+  return false;
+}
+
+export function consumeSelfDestruct(): boolean {
+  if (selfDestructJustPressed) {
+    selfDestructJustPressed = false;
     return true;
   }
   return false;
