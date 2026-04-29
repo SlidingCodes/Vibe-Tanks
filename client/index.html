@@ -2172,89 +2172,109 @@
       bottom: 0;
     }
 
-    #mc-joystick-base {
+    /* Throttle lever (left, sticky): vertical bar with a small Neutral
+       band at the centre — knob stays where you leave it so the player
+       sets a fixed forward/neutral/reverse state and frees their hand
+       for aim. */
+    #mc-throttle {
       position: absolute;
       left: 32px;
       bottom: 40px;
-      width: 140px;
-      height: 140px;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.08);
-      border: 2px solid rgba(255, 255, 255, 0.25);
+      width: 72px;
+      height: 280px;
+      border-radius: 36px;
+      background: rgba(0, 0, 0, 0.30);
+      border: 2px solid rgba(255, 255, 255, 0.30);
       pointer-events: auto;
       touch-action: none;
+      box-shadow: 0 0 12px rgba(0, 0, 0, 0.45);
     }
 
-    #mc-joystick-knob {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      margin: -28px 0 0 -28px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.35);
-      border: 2px solid rgba(255, 255, 255, 0.6);
-      pointer-events: none;
-      transition: transform 0.05s linear;
-    }
-
-    #mc-aim-bar {
-      position: absolute;
-      right: 40px;
-      bottom: 40px;
-      width: 80px;
-      height: 260px;
-      border-radius: 40px;
-      background: rgba(154, 19, 19, 0.18);
-      border: 2px solid rgba(255, 120, 120, 0.45);
-      pointer-events: auto;
-      touch-action: none;
-      overflow: hidden;
-    }
-
-    #mc-aim-bar.active {
-      border-color: rgba(255, 180, 180, 0.9);
-    }
-
-    #mc-aim-bar-fill {
+    /* Neutral band — 15% of the bar height, centred. Mirrors the
+       NEUTRAL_BAND constant in mobileControls.ts. */
+    #mc-throttle .mc-throttle-neutral {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 0;
-      background: linear-gradient(to top, #ff7744, #ffcc55);
-      height: 50%;
-      transition: height 0.05s linear;
-      opacity: 0.55;
-    }
-
-    #mc-aim-bar-knob {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      margin: -20px 0 0 -20px;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: rgba(255, 220, 180, 0.92);
-      border: 2px solid rgba(255, 255, 255, 0.85);
-      box-shadow: 0 0 8px rgba(255, 120, 60, 0.6);
+      top: 42.5%;
+      height: 15%;
+      background: rgba(255, 255, 255, 0.08);
+      border-top: 1px dashed rgba(255, 255, 255, 0.55);
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.55);
+      text-align: center;
+      color: rgba(255, 255, 255, 0.75);
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      line-height: 2.6;
       pointer-events: none;
-      transition: transform 0.05s linear;
+      user-select: none;
     }
 
-    #mc-aim-bar-label {
+    #mc-throttle .mc-throttle-tick {
       position: absolute;
-      top: 8px;
       left: 0;
       right: 0;
       text-align: center;
-      color: rgba(255, 230, 230, 0.75);
+      color: rgba(255, 255, 255, 0.55);
       font-family: monospace;
       font-size: 10px;
       letter-spacing: 2px;
       pointer-events: none;
       user-select: none;
+    }
+    #mc-throttle .mc-tick-fwd { top: 6px; }
+    #mc-throttle .mc-tick-rev { bottom: 6px; }
+
+    #mc-throttle-knob {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 60px;
+      height: 36px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.85);
+      border: 2px solid rgba(255, 255, 255, 0.95);
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+      transform: translate(-50%, -50%);
+      transition: background 0.1s linear, border-color 0.1s linear;
+      pointer-events: none;
+    }
+    #mc-throttle-knob.fwd {
+      background: rgba(120, 240, 140, 0.92);
+      border-color: rgba(180, 255, 200, 1);
+    }
+    #mc-throttle-knob.rev {
+      background: rgba(255, 130, 110, 0.92);
+      border-color: rgba(255, 200, 180, 1);
+    }
+
+    /* Fire button (bottom-right) — replaces the old aim bar. Tap to
+       fire the currently selected weapon; aim comes from the canvas tap. */
+    #mc-fire {
+      position: absolute;
+      right: 36px;
+      bottom: 56px;
+      width: 116px;
+      height: 116px;
+      border-radius: 50%;
+      background: rgba(154, 19, 19, 0.30);
+      border: 3px solid rgba(255, 120, 120, 0.75);
+      color: rgba(255, 230, 230, 0.95);
+      font-family: monospace;
+      font-size: 18px;
+      font-weight: bold;
+      letter-spacing: 3px;
+      pointer-events: auto;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      box-shadow: 0 0 14px rgba(255, 60, 60, 0.4);
+    }
+    #mc-fire.active {
+      background: rgba(255, 80, 80, 0.65);
+      border-color: rgba(255, 220, 220, 1);
     }
 
     /* Hitmarker — Call of Duty style: 4 short diagonal segments in the
@@ -2662,14 +2682,13 @@
   </div>
 
   <div id="mobile-controls">
-    <div id="mc-joystick-base">
-      <div id="mc-joystick-knob"></div>
+    <div id="mc-throttle">
+      <div class="mc-throttle-tick mc-tick-fwd">FWD</div>
+      <div class="mc-throttle-neutral">N</div>
+      <div class="mc-throttle-tick mc-tick-rev">REV</div>
+      <div id="mc-throttle-knob"></div>
     </div>
-    <div id="mc-aim-bar">
-      <div id="mc-aim-bar-fill"></div>
-      <div id="mc-aim-bar-knob"></div>
-      <div id="mc-aim-bar-label">ARC</div>
-    </div>
+    <button id="mc-fire" type="button" aria-label="Fire">FIRE</button>
   </div>
   <button id="settings-gear" type="button" title="Settings (ESC)">⚙</button>
   <div id="settings-overlay">
