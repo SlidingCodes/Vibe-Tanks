@@ -12,7 +12,12 @@ interface PickupVisual {
   crate: THREE.Group;
   parachute: THREE.Mesh;
   shrouds: THREE.LineSegments;
-  glow: THREE.Mesh;
+  glow: THREE.Group;
+  crateHalo: THREE.Mesh;
+  markerInner: THREE.Mesh;
+  markerOuter: THREE.Mesh;
+  markerBeacon: THREE.Mesh;
+  groundY: number;
   fallTimeRemaining: number;
   basePosition: THREE.Vector3;
   age: number;
@@ -35,6 +40,89 @@ const REINFORCE_COLOR = 0x141310;
 
 const parachuteTextureCache = new Map<string, THREE.CanvasTexture>();
 const stencilTextureCache = new Map<string, THREE.CanvasTexture>();
+const markerTextureCache = new Map<string, THREE.CanvasTexture>();
+
+function getMarkerTexture(color: THREE.Color, type: 'inner' | 'outer'): THREE.CanvasTexture {
+  const key = `${color.getStyle()}-${type}`;
+  if (markerTextureCache.has(key)) return markerTextureCache.get(key)!;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  const center = 128;
+
+  if (type === 'outer') {
+    // 1. Outer dashed ring
+    ctx.strokeStyle = color.getStyle();
+    ctx.lineWidth = 8;
+    ctx.setLineDash([60, 30]);
+    ctx.beginPath();
+    ctx.arc(center, center, 110, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 2. Medium dashed ring (inverted dash)
+    ctx.lineWidth = 4;
+    ctx.setLineDash([20, 10]);
+    ctx.beginPath();
+    ctx.arc(center, center, 90, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 3. Corner Brackets (L-shapes)
+    ctx.setLineDash([]);
+    ctx.lineWidth = 12;
+    const bSize = 40;
+    const bOffset = 110;
+    // Top-Left
+    ctx.beginPath();
+    ctx.moveTo(center - bOffset, center - bOffset + bSize);
+    ctx.lineTo(center - bOffset, center - bOffset);
+    ctx.lineTo(center - bOffset + bSize, center - bOffset);
+    ctx.stroke();
+    // Top-Right
+    ctx.beginPath();
+    ctx.moveTo(center + bOffset, center - bOffset + bSize);
+    ctx.lineTo(center + bOffset, center - bOffset);
+    ctx.lineTo(center + bOffset - bSize, center - bOffset);
+    ctx.stroke();
+    // Bottom-Left
+    ctx.beginPath();
+    ctx.moveTo(center - bOffset, center + bOffset - bSize);
+    ctx.lineTo(center - bOffset, center + bOffset);
+    ctx.lineTo(center - bOffset + bSize, center + bOffset);
+    ctx.stroke();
+    // Bottom-Right
+    ctx.beginPath();
+    ctx.moveTo(center + bOffset, center + bOffset - bSize);
+    ctx.lineTo(center + bOffset, center + bOffset);
+    ctx.lineTo(center + bOffset - bSize, center + bOffset);
+    ctx.stroke();
+
+  } else {
+    // 1. Solid inner ring with soft glow
+    const grad = ctx.createRadialGradient(center, center, 60, center, center, 100);
+    grad.addColorStop(0, 'transparent');
+    grad.addColorStop(0.4, color.getStyle());
+    grad.addColorStop(1, 'transparent');
+    
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(center, center, 100, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 2. Central crosshair
+    ctx.strokeStyle = color.getStyle();
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(center - 30, center); ctx.lineTo(center + 30, center);
+    ctx.moveTo(center, center - 30); ctx.lineTo(center, center + 30);
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  markerTextureCache.set(key, tex);
+  return tex;
+}
 
 export function getParachuteTexture(colorString: string = '#b43020,#e8e8e0'): THREE.CanvasTexture {
   if (parachuteTextureCache.has(colorString)) return parachuteTextureCache.get(colorString)!;
@@ -231,6 +319,23 @@ function buildCrate(kind: 'weapon' | 'ammo'): THREE.Group {
     }
   }
 
+  // High-tech rotating halo (attached to crate)
+  const haloGeom = new THREE.RingGeometry(1.1, 1.15, 32);
+  const halo = new THREE.Mesh(
+    haloGeom,
+    new THREE.MeshBasicMaterial({
+      color: accent,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    })
+  );
+  halo.rotation.x = Math.PI / 2;
+  halo.position.y = H / 2 + 0.06;
+  crate.add(halo);
+  (crate as any)._halo = halo; // Tag for animation
+
   return crate;
 }
 
@@ -284,18 +389,78 @@ export function createPickupScene(scene: THREE.Scene): PickupSceneHandle {
     const shrouds = new THREE.LineSegments(shroudGeom, shroudMat);
     group.add(shrouds);
 
-    // Ground pulse ring — sits just above the terrain once landed.
-    const glow = new THREE.Mesh(
-      new THREE.RingGeometry(1.0, 1.7, 28),
+    // Ground pulse marker group — sits just above the terrain.
+    const glow = new THREE.Group();
+    
+    const markerOuter = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 4),
       new THREE.MeshBasicMaterial({
-        color: accent,
+        map: getMarkerTexture(accent, 'outer'),
         transparent: true,
-        opacity: 0.3,
+        opacity: 0.6,
         side: THREE.DoubleSide,
-      }),
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
     );
-    glow.rotation.x = -Math.PI / 2;
-    glow.position.y = 0.03;
+    markerOuter.rotation.x = -Math.PI / 2;
+    glow.add(markerOuter);
+
+    const markerInner = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.2, 3.2),
+      new THREE.MeshBasicMaterial({
+        map: getMarkerTexture(accent, 'inner'),
+        transparent: true,
+        opacity: 0.4,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    markerInner.rotation.x = -Math.PI / 2;
+    markerInner.position.y = 0.01;
+    glow.add(markerInner);
+
+    // Vertical beacon beam - Multi-layered energy effect
+    const beaconGroup = new THREE.Group();
+    
+    const beamGeom = new THREE.CylinderGeometry(0.8, 1.0, 16, 16, 1, true);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: accent,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const mainBeam = new THREE.Mesh(beamGeom, beamMat);
+    mainBeam.position.y = 8;
+    beaconGroup.add(mainBeam);
+
+    // Inner core beam (taller and thinner)
+    const coreGeom = new THREE.CylinderGeometry(0.15, 0.15, 24, 8, 1, true);
+    const coreBeam = new THREE.Mesh(coreGeom, beamMat.clone());
+    (coreBeam.material as THREE.MeshBasicMaterial).opacity = 0.4;
+    coreBeam.position.y = 12;
+    beaconGroup.add(coreBeam);
+
+    // Energy pulse rings moving up the beam
+    const pulseGeom = new THREE.TorusGeometry(0.9, 0.05, 8, 24);
+    const pulseRings: THREE.Mesh[] = [];
+    for (let i = 0; i < 3; i++) {
+      const pulse = new THREE.Mesh(pulseGeom, beamMat.clone());
+      (pulse.material as THREE.MeshBasicMaterial).opacity = 0.6;
+      pulse.rotation.x = Math.PI / 2;
+      pulse.position.y = i * 6;
+      beaconGroup.add(pulse);
+      pulseRings.push(pulse);
+    }
+
+    glow.add(beaconGroup);
+    (glow as any)._pulses = pulseRings;
+    const markerBeacon = mainBeam; // Reference for old animation compatibility
+
+    glow.position.y = 0.05;
     group.add(glow);
 
     scene.add(group);
@@ -308,6 +473,11 @@ export function createPickupScene(scene: THREE.Scene): PickupSceneHandle {
       parachute,
       shrouds,
       glow,
+      crateHalo: (crate as any)._halo,
+      markerInner,
+      markerOuter,
+      markerBeacon,
+      groundY: state.groundY,
       fallTimeRemaining: state.fallTimeRemaining,
       basePosition: new THREE.Vector3(state.position.x, state.position.y, state.position.z),
       age: 0,
@@ -335,6 +505,7 @@ export function createPickupScene(scene: THREE.Scene): PickupSceneHandle {
     const v = visuals.get(state.pickupId);
     if (!v) return;
     v.fallTimeRemaining = state.fallTimeRemaining;
+    v.groundY = state.groundY;
     v.basePosition.set(state.position.x, state.position.y, state.position.z);
   }
 
@@ -362,6 +533,48 @@ export function createPickupScene(scene: THREE.Scene): PickupSceneHandle {
     for (const v of visuals.values()) {
       v.age += dt;
       v.group.position.copy(v.basePosition);
+
+      // Animate crate halo
+      if (v.crateHalo) {
+        v.crateHalo.rotation.z = v.age * 1.5;
+        const hPulse = 0.6 + 0.4 * Math.sin(v.age * 4.0);
+        v.crateHalo.scale.set(1 + hPulse * 0.1, 1 + hPulse * 0.1, 1);
+        (v.crateHalo.material as THREE.MeshBasicMaterial).opacity = 0.2 + 0.4 * hPulse;
+      }
+
+      // Position ground marker at groundY (offset from the group position)
+      v.glow.position.y = v.groundY - v.basePosition.y + 0.05;
+      v.glow.visible = true;
+
+      // Animate the markers
+      const pulse = 0.5 + 0.5 * Math.sin(v.age * 3.0);
+      
+      // Outer ring rotates slowly
+      v.markerOuter.rotation.z = v.age * 0.5;
+      (v.markerOuter.material as THREE.MeshBasicMaterial).opacity = 0.3 + 0.3 * pulse;
+
+      // Inner ring pulses scale and opacity
+      const sInner = 0.9 + 0.2 * pulse;
+      v.markerInner.scale.set(sInner, sInner, 1);
+      (v.markerInner.material as THREE.MeshBasicMaterial).opacity = 0.2 + 0.4 * pulse;
+
+      // Beacon beam behavior
+      const beaconGroup = v.markerBeacon.parent as THREE.Group;
+      beaconGroup.rotation.y = v.age * 0.4;
+      const pulses = (v.glow as any)._pulses as THREE.Mesh[];
+      
+      if (pulses) {
+        pulses.forEach((p, i) => {
+          p.position.y = ((v.age * 8 + i * 6) % 20);
+          const life = 1 - (p.position.y / 20);
+          (p.material as THREE.MeshBasicMaterial).opacity = life * 0.6;
+          const s = 0.5 + 1.5 * (1 - life);
+          p.scale.set(s, s, s);
+        });
+      }
+
+      const beaconPulse = 0.8 + 0.2 * Math.sin(v.age * 8.0);
+      
       if (v.fallTimeRemaining > 0) {
         const swing = Math.sin(v.age * 2.4) * 0.10;
         v.parachute.rotation.z = swing;
@@ -370,18 +583,21 @@ export function createPickupScene(scene: THREE.Scene): PickupSceneHandle {
         v.crate.rotation.y = Math.sin(v.age * 1.2) * 0.25;
         v.parachute.visible = true;
         v.shrouds.visible = true;
-        v.glow.visible = false;
+
+        // Taller, more opaque beam while falling (incoming drop signal)
+        beaconGroup.scale.y = 1.5;
+        beaconGroup.position.y = 0; // offset inside glow which is already at groundY
+        (v.markerBeacon.material as THREE.MeshBasicMaterial).opacity = (0.2 + 0.1 * pulse) * beaconPulse;
       } else {
         v.parachute.visible = false;
         v.shrouds.visible = false;
-        v.glow.visible = true;
         const bob = Math.sin(v.age * 3.2) * 0.06;
         v.group.position.y = v.basePosition.y + bob + 0.08;
         v.crate.rotation.y = v.age * 0.35;
-        const pulse = 0.5 + 0.5 * Math.sin(v.age * 3.0);
-        (v.glow.material as THREE.MeshBasicMaterial).opacity = 0.22 + 0.32 * pulse;
-        const s = 1 + pulse * 0.22;
-        v.glow.scale.set(s, s, 1);
+
+        // Shorter, fainter beam after landing
+        beaconGroup.scale.y = 1.0;
+        (v.markerBeacon.material as THREE.MeshBasicMaterial).opacity = (0.12 + 0.05 * pulse) * beaconPulse;
       }
     }
   }

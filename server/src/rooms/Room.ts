@@ -1682,6 +1682,7 @@ export class Room {
       kind: partial.kind,
       weaponId: partial.weaponId,
       position: partial.position,
+      groundY: partial.groundY,
       fallTimeRemaining: partial.fallTimeRemaining,
     };
     const runtime = partial as ActivePickupRuntime;
@@ -1722,6 +1723,7 @@ export class Room {
           pickup.expiresAt = nowSec + PICKUP_GROUND_LIFETIME;
         }
         pickup.wire.position = pickup.position;
+        pickup.wire.groundY = pickup.groundY;
         pickup.wire.fallTimeRemaining = pickup.fallTimeRemaining;
       } else if (nowSec >= pickup.expiresAt) {
         this.unregisterPickup(pickupId);

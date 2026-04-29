@@ -374,6 +374,8 @@ export interface PickupState {
   /** Set when kind === 'weapon'. The weapon contained in the crate. */
   weaponId?: string;
   position: Vec3;
+  /** Ground height at the landing spot. */
+  groundY: number;
   /** Seconds remaining before the crate touches down. 0 = already landed.
    *  Purely cosmetic — the collision check runs regardless. */
   fallTimeRemaining: number;
