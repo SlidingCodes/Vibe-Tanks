@@ -758,6 +758,21 @@ export class Room {
       player.lastInputAt = nowSec;
     });
 
+    socket.on('predator_detonate', () => {
+      const player = this.players.get(socket.id);
+      if (!player || !player.activeMissileId) return;
+      const missile = this.activeProjectiles.get(player.activeMissileId);
+      if (!missile || missile.visualStyle !== 'predator_missile') return;
+      // Detonate at the current position. prevPos = current position
+      // too — the visual shot animation collapses to a one-frame burst
+      // at the impact since there's no in-flight segment to travel.
+      const here: Vec3 = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+      this.detonatePredatorMissile(missile, here, here);
+      // Stamp activity so the manual self-destruct keeps the player
+      // out of the idle-kick window.
+      player.lastInputAt = Date.now() / 1000;
+    });
+
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -2338,24 +2353,37 @@ export class Room {
       }
 
       if (impactPoint) {
-        const damageTotals: DamageTotals = new Map();
-        const carveTerrain = applyImpact({
-          point: impactPoint,
-          blastRadius: missile.blastRadius,
-          damage: missile.damage,
-          terrainDamage: missile.terrainDamage,
-        }, this.getTankList(), damageTotals);
-
-        const result = createShotResult(missile.ownerId, missile.weaponId, [
-          makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', carveTerrain, missile.blastRadius, 'predator_missile'),
-        ], damageTotals);
-        this.unregisterProjectile(projectileId);
-        if (ownerPlayer && ownerPlayer.activeMissileId === projectileId) {
-          ownerPlayer.activeMissileId = null;
-        }
-        this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
+        this.detonatePredatorMissile(missile, impactPoint, prevPos);
       }
     }
+  }
+
+  /** Force-detonate a Predator missile at the given impact point. Same
+   *  applyImpact + emitShotResultNow flow as the natural detonation
+   *  branch in tickPredatorMissiles, factored out so the manual
+   *  spacebar self-destruct (predator_detonate event) and the
+   *  collision/timeout path share one code path. `prevPos` is the
+   *  segment start used by the visual shot animation — typically the
+   *  pre-tick position when called from the natural path, or the
+   *  current position itself for manual detonation. */
+  private detonatePredatorMissile(missile: ActiveProjectileRuntime, impactPoint: Vec3, prevPos: Vec3): void {
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: impactPoint,
+      blastRadius: missile.blastRadius,
+      damage: missile.damage,
+      terrainDamage: missile.terrainDamage,
+    }, this.getTankList(), damageTotals);
+
+    const result = createShotResult(missile.ownerId, missile.weaponId, [
+      makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', carveTerrain, missile.blastRadius, 'predator_missile'),
+    ], damageTotals);
+    this.unregisterProjectile(missile.projectileId);
+    const ownerPlayer = this.players.get(missile.ownerId);
+    if (ownerPlayer && ownerPlayer.activeMissileId === missile.projectileId) {
+      ownerPlayer.activeMissileId = null;
+    }
+    this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
   }
 
   private tickHazards(dt: number): void {

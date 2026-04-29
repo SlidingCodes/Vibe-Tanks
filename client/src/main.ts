@@ -38,7 +38,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
@@ -1582,9 +1582,15 @@ function animate(): void {
 
     // While piloting a Predator missile, hide the trajectory preview and
     // skip aim_update / fire_request entirely — the cursor and WASD
-    // belong to the missile camera, not the dormant cannon.
+    // belong to the missile camera, not the dormant cannon. Spacebar
+    // self-destructs the warhead in flight: server applies the same
+    // applyImpact at the missile's current position, so any tank inside
+    // the blast sphere takes damage exactly like a ground hit.
     if (isPiloting) {
       hideTrajectoryPreview();
+      if (consumeSpace()) {
+        socket.emit('predator_detonate');
+      }
     }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;

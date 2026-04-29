@@ -547,6 +547,11 @@ export interface ClientEvents {
   aim_update: (data: { turretRotation: number; barrelPitch: number }) => void;
   fire_request: (data: { weaponId: string; aimPoint?: Vec3 | null }) => void;
   shield_activate: () => void;
+  /** Manual self-destruct of the player's currently-piloted Predator
+   *  missile. Server forces detonation at the missile's current
+   *  position with the standard blast radius / damage. No-op if the
+   *  player isn't currently piloting. */
+  predator_detonate: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
