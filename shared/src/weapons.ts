@@ -416,15 +416,22 @@ export const WEAPONS: WeaponDefinition[] = [
       soldierHp: 10,
       soldierLifetime: 30,
       soldierShotInterval: 2.0,
-      // 8 dmg × 5 soldiers × 0.5 shots/s = 20 dps when all units have a
-      // line of fire. Most fights end before the full DPS lands; the
-      // weapon rewards the player who keeps their squad alive.
-      soldierShotDamage: 8,
+      // 1 dmg per round × 5 soldiers × 0.5 shots/s = 2.5 dps total —
+      // a steady tickle of pressure that spans tens of seconds before
+      // it kills, not a burst weapon. Encourages the user to deploy
+      // proactively and reposition under cover, rather than relying on
+      // the squad to one-shot anything.
+      soldierShotDamage: 1,
       // 22 m engagement range — a bit shorter than the rail's 50 m so
       // soldiers don't dominate the long sightlines.
       soldierShotRange: 22,
-      soldierMoveSpeed: 4.5,
-      soldierFollowDistance: 8,
+      // Match (and slightly exceed) the tank's top speed so the squad
+      // can actually keep pace when the owner pushes forward — tested
+      // 4.5 m/s left them 30+ m behind on every advance.
+      soldierMoveSpeed: 8,
+      // Tight following: 3 m sits just outside the hull collision so
+      // they stay in a clear ring without nipping at the tank's heels.
+      soldierFollowDistance: 3,
     },
   },
   {

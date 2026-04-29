@@ -1503,9 +1503,11 @@ export class Room {
 
     const cx = tank.position.x;
     const cz = tank.position.z;
-    // Ring spawn just outside the hull radius so soldiers don't appear
-    // intersecting the tank's own collider — they walk from there.
-    const ringRadius = HULL_RADIUS + 1.6;
+    // Ring spawn just outside the hull collider — the followDistance
+    // is what the tickSoldiers loop uses to keep the squad tight, and
+    // matching it here means they don't have to reposition the moment
+    // they're spawned.
+    const ringRadius = HULL_RADIUS + Math.max(0.6, followDistance - HULL_RADIUS);
     const phaseOffset = Math.random() * Math.PI * 2;
     for (let i = 0; i < count; i++) {
       const ang = phaseOffset + (i / count) * Math.PI * 2;
@@ -2553,9 +2555,26 @@ export class Room {
         continue;
       }
 
-      // Engagement: pick nearest enemy tank within shotRange (XYZ to keep
-      // soldiers from shooting up at a tank perched on a cliff above —
-      // they should walk into line of sight first).
+      // Always walk toward the owner if outside followDistance, even
+      // while engaging a target — the previous "freeze and shoot"
+      // branch left the squad stranded the moment any enemy came into
+      // range, so the owner driving past would shed soldiers in seconds.
+      // Real squads run-and-gun; ours do too.
+      const dxO = owner.position.x - soldier.position.x;
+      const dzO = owner.position.z - soldier.position.z;
+      const distO = Math.sqrt(dxO * dxO + dzO * dzO);
+      let walkedX = 0;
+      let walkedZ = 0;
+      if (distO > soldier.followDistance) {
+        const step = Math.min(distO, soldier.moveSpeed * dt);
+        walkedX = (dxO / distO) * step;
+        walkedZ = (dzO / distO) * step;
+        soldier.position.x += walkedX;
+        soldier.position.z += walkedZ;
+        soldier.walkPhase += step;
+      }
+
+      // Engagement: pick nearest enemy tank within shotRange (XYZ).
       const targetId = findNearestEnemyFn(
         soldier.position,
         soldier.ownerId,
@@ -2563,47 +2582,38 @@ export class Room {
         this.tanks.values(),
       );
 
+      // Facing priority: target if engaging, else direction of motion,
+      // else owner. Stand-still soldiers face the squad leader so the
+      // group has a coherent silhouette.
       if (targetId) {
-        const target = this.tanks.get(targetId);
-        if (target) {
-          const dx = target.position.x - soldier.position.x;
-          const dz = target.position.z - soldier.position.z;
-          soldier.rotation = Math.atan2(dx, dz);
-          soldier.fireTimer -= dt;
-          if (soldier.fireTimer <= 0) {
-            soldier.fireTimer = soldier.shotInterval;
-            const fromY = soldier.position.y + 1.0;
-            const toY = target.position.y + 0.8;
-            this.io.to(this.id).emit('soldier_fire', {
-              soldierId: soldier.soldierId,
-              ownerId: soldier.ownerId,
-              color: soldier.color,
-              from: { x: soldier.position.x, y: fromY, z: soldier.position.z },
-              to: { x: target.position.x, y: toY, z: target.position.z },
-              targetId: target.playerId,
-            });
-            const killed = target.hp - soldier.shotDamage <= 0;
-            const hit = { playerId: target.playerId, damage: soldier.shotDamage, killed };
-            const list = damageByOwner.get(soldier.ownerId);
-            if (list) list.push(hit);
-            else damageByOwner.set(soldier.ownerId, [hit]);
-            popupHits.push({ ...hit });
-          }
+        const target = this.tanks.get(targetId)!;
+        const dxT = target.position.x - soldier.position.x;
+        const dzT = target.position.z - soldier.position.z;
+        soldier.rotation = Math.atan2(dxT, dzT);
+        soldier.fireTimer -= dt;
+        if (soldier.fireTimer <= 0) {
+          soldier.fireTimer = soldier.shotInterval;
+          const fromY = soldier.position.y + 1.0;
+          const toY = target.position.y + 0.8;
+          this.io.to(this.id).emit('soldier_fire', {
+            soldierId: soldier.soldierId,
+            ownerId: soldier.ownerId,
+            color: soldier.color,
+            from: { x: soldier.position.x, y: fromY, z: soldier.position.z },
+            to: { x: target.position.x, y: toY, z: target.position.z },
+            targetId: target.playerId,
+          });
+          const killed = target.hp - soldier.shotDamage <= 0;
+          const hit = { playerId: target.playerId, damage: soldier.shotDamage, killed };
+          const list = damageByOwner.get(soldier.ownerId);
+          if (list) list.push(hit);
+          else damageByOwner.set(soldier.ownerId, [hit]);
+          popupHits.push({ ...hit });
         }
+      } else if (walkedX !== 0 || walkedZ !== 0) {
+        soldier.rotation = Math.atan2(walkedX, walkedZ);
       } else {
-        // No target — walk back toward the owner if too far. Owners moving
-        // around the map should be able to bring their squad with them
-        // without leaving them stranded at the original drop site.
-        const dx = owner.position.x - soldier.position.x;
-        const dz = owner.position.z - soldier.position.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist > soldier.followDistance) {
-          const step = Math.min(dist, soldier.moveSpeed * dt);
-          soldier.position.x += (dx / dist) * step;
-          soldier.position.z += (dz / dist) * step;
-          soldier.rotation = Math.atan2(dx, dz);
-          soldier.walkPhase += step;
-        }
+        soldier.rotation = Math.atan2(dxO, dzO);
       }
 
       // Stick to the ground every tick — terrain may have been carved

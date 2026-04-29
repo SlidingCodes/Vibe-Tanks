@@ -1,12 +1,23 @@
 import * as THREE from 'three';
 import { SoldierState, Vec3 } from '@shared/types/index';
+import { getTerrainHeight } from '../scene/terrain';
 
 interface SoldierVisual {
   group: THREE.Group;
+  /** Inner pivot the body+head+limbs hang from. We translate this up/down
+   *  for the breathing/idle bob without stomping the group's world Y
+   *  (which is locked to the terrain surface). */
+  pivot: THREE.Group;
   body: THREE.Mesh;
   head: THREE.Mesh;
   legL: THREE.Mesh;
   legR: THREE.Mesh;
+  /** Arms hang from a shared "shoulder" pivot in front of the chest so
+   *  the rifle can be aimed in lock-step with the body's facing — and
+   *  the arms swing slightly when walking. */
+  armPivot: THREE.Group;
+  armL: THREE.Mesh;
+  armR: THREE.Mesh;
   rifle: THREE.Mesh;
   /** Smoothed render position lerped toward server target. */
   renderPos: THREE.Vector3;
@@ -18,6 +29,13 @@ interface SoldierVisual {
   /** Brief seconds-remaining for the muzzle-flash flash overlay. */
   flashTimer: number;
   flash: THREE.Mesh;
+  /** Bullets-in-flight pose timer — when fresh out of a shot the rifle
+   *  recoils back briefly. Kept separate from flashTimer so the recoil
+   *  can outlast the muzzle flash by a hair. */
+  recoilTimer: number;
+  /** Per-soldier idle-phase offset so the squad's breathing isn't
+   *  perfectly synchronised. */
+  idlePhaseOffset: number;
   ownerColorHex: number;
 }
 
@@ -32,11 +50,19 @@ const tracers: Tracer[] = [];
 
 interface BloodSplatter {
   group: THREE.Group;
+  /** World XZ used to re-sample the terrain Y every frame — without this
+   *  a splatter spawned over solid ground will float in mid-air the
+   *  moment a shell carves a crater under it. */
+  worldX: number;
+  worldZ: number;
+  /** Tiny constant lift kept above the surface to dodge z-fighting. */
+  lift: number;
 }
 const bloodSplatters: BloodSplatter[] = [];
 
 const TRACER_LIFETIME = 0.12;
 const FLASH_LIFETIME = 0.06;
+const RECOIL_LIFETIME = 0.18;
 
 // User feedback: ship at least 1/3 smaller than the first cut. The
 // pre-scale mesh tops out at ~1.7 m; 0.55 brings it to ~0.95 m — well
@@ -48,62 +74,106 @@ function buildSoldier(color: number): SoldierVisual {
   const group = new THREE.Group();
   group.scale.setScalar(SOLDIER_SCALE);
 
-  const bodyGeom = new THREE.BoxGeometry(0.5, 0.7, 0.35);
+  // Pivot inside the scaled group — every body part hangs off this so
+  // the per-frame breathing/walk bob can offset the whole figure
+  // without touching the world-anchored group.position.
+  const pivot = new THREE.Group();
+  group.add(pivot);
+
+  // Tapered torso: lower wide segment + narrower upper plate so the
+  // silhouette has more shape than a single block. Both pieces share
+  // the team-colour material so chest hits read clearly.
   const bodyMat = new THREE.MeshStandardMaterial({
     color,
     roughness: 0.8,
     metalness: 0.05,
   });
-  const body = new THREE.Mesh(bodyGeom, bodyMat);
-  body.position.y = 0.95;
-  group.add(body);
+  const torsoLower = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.4, 0.3), bodyMat);
+  torsoLower.position.y = 0.78;
+  pivot.add(torsoLower);
+  const torsoUpper = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.32, 0.34), bodyMat);
+  torsoUpper.position.y = 1.12;
+  pivot.add(torsoUpper);
 
-  // Head: pale skin tone tinted slightly with team color so the squad
-  // reads as a unit at distance without becoming uniform mannequins.
-  const headGeom = new THREE.BoxGeometry(0.32, 0.32, 0.32);
+  // Head: pale skin tone, slightly rounded by chamfering with a smaller
+  // top cap so it doesn't read as a perfect cube.
   const headMat = new THREE.MeshStandardMaterial({
     color: 0xd6b78c,
     roughness: 0.85,
   });
-  const head = new THREE.Mesh(headGeom, headMat);
-  head.position.y = 1.46;
-  group.add(head);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.28, 0.3), headMat);
+  head.position.y = 1.42;
+  pivot.add(head);
 
-  // Helmet stripe in the team colour for visibility from above (tank
-  // perspective). Tiny — doesn't dominate the silhouette.
-  const helmetGeom = new THREE.BoxGeometry(0.34, 0.1, 0.34);
-  const helmet = new THREE.Mesh(
-    helmetGeom,
-    new THREE.MeshStandardMaterial({ color, roughness: 0.7 }),
+  // Helmet: rounded with a small visor so the unit reads as combat-kit
+  // rather than office-worker. Team-colour stripe sits on top.
+  const helmetCrown = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 0.12, 0.34),
+    new THREE.MeshStandardMaterial({ color: 0x4a4e34, roughness: 0.7 }),
   );
-  helmet.position.y = 1.66;
-  group.add(helmet);
+  helmetCrown.position.y = 1.62;
+  pivot.add(helmetCrown);
+  const helmetStripe = new THREE.Mesh(
+    new THREE.BoxGeometry(0.36, 0.04, 0.36),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.6 }),
+  );
+  helmetStripe.position.y = 1.7;
+  pivot.add(helmetStripe);
+  const visor = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 0.06, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0x1a1814, roughness: 0.4 }),
+  );
+  visor.position.set(0, 1.5, 0.16);
+  pivot.add(visor);
 
-  const legGeom = new THREE.BoxGeometry(0.2, 0.55, 0.22);
+  // Legs: slimmer than v1, anchored at the hip so a tilt swings the
+  // foot through a clean arc instead of pivoting around the knee.
   const legMat = new THREE.MeshStandardMaterial({
     color: 0x3a3a2a,
     roughness: 0.85,
   });
-  const legL = new THREE.Mesh(legGeom, legMat);
-  legL.position.set(-0.13, 0.32, 0);
-  group.add(legL);
-  const legR = new THREE.Mesh(legGeom, legMat.clone());
-  legR.position.set(0.13, 0.32, 0);
-  group.add(legR);
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.55, 0.18), legMat);
+  legL.position.set(-0.11, 0.32, 0);
+  legL.geometry.translate(0, -0.275, 0); // shift origin to the hip
+  legL.position.y = 0.6;                 // re-anchor hip at y=0.6
+  pivot.add(legL);
+  const legR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.55, 0.18), legMat.clone());
+  legR.position.set(0.11, 0.6, 0);
+  legR.geometry.translate(0, -0.275, 0);
+  pivot.add(legR);
 
-  // Rifle: small forward-facing cylinder so the squad reads as armed
-  // rather than a generic crowd of bystanders.
-  const rifleGeom = new THREE.BoxGeometry(0.08, 0.08, 0.7);
-  const rifle = new THREE.Mesh(
-    rifleGeom,
-    new THREE.MeshStandardMaterial({ color: 0x1a1814, roughness: 0.5 }),
-  );
-  rifle.position.set(0.18, 1.0, 0.4);
-  group.add(rifle);
+  // Arms hang from a shoulder pivot just below the chest. The pivot
+  // rotates on X for the recoil punch and on Y per-frame to stay
+  // pointing at the rifle's forward axis.
+  const armPivot = new THREE.Group();
+  armPivot.position.set(0, 1.1, 0);
+  pivot.add(armPivot);
+  const armMat = new THREE.MeshStandardMaterial({
+    color: 0x6a6e44,
+    roughness: 0.78,
+  });
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.42), armMat);
+  armL.position.set(-0.18, -0.05, 0.22);
+  armPivot.add(armL);
+  const armR = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.42), armMat.clone());
+  armR.position.set(0.18, -0.05, 0.22);
+  armPivot.add(armR);
 
-  // Muzzle flash sprite — small additive plane positioned at the rifle
-  // tip, visible only briefly when the soldier fires.
-  const flashGeom = new THREE.PlaneGeometry(0.4, 0.4);
+  // Rifle: bigger and forward in the firing pose so it looks like the
+  // soldier is actually aiming, not carrying a stick. Stock + barrel
+  // built from two boxes for a basic silhouette.
+  const rifleMat = new THREE.MeshStandardMaterial({ color: 0x1a1814, roughness: 0.5 });
+  const rifle = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.08, 0.7), rifleMat);
+  rifle.position.set(0.06, -0.06, 0.45);
+  armPivot.add(rifle);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.18), rifleMat);
+  stock.position.set(0.06, -0.06, 0.18);
+  armPivot.add(stock);
+
+  // Muzzle flash sprite — small additive plane at the rifle tip,
+  // visible only briefly. Parented to armPivot so it inherits the
+  // recoil rotation cleanly.
+  const flashGeom = new THREE.PlaneGeometry(0.5, 0.5);
   const flashMat = new THREE.MeshBasicMaterial({
     color: 0xffd060,
     transparent: true,
@@ -112,16 +182,20 @@ function buildSoldier(color: number): SoldierVisual {
     depthWrite: false,
   });
   const flash = new THREE.Mesh(flashGeom, flashMat);
-  flash.position.set(0.18, 1.0, 0.78);
+  flash.position.set(0.06, -0.06, 0.85);
   flash.visible = false;
-  group.add(flash);
+  armPivot.add(flash);
 
   return {
     group,
-    body,
+    pivot,
+    body: torsoUpper,
     head,
     legL,
     legR,
+    armPivot,
+    armL,
+    armR,
     rifle,
     flash,
     renderPos: new THREE.Vector3(),
@@ -129,6 +203,8 @@ function buildSoldier(color: number): SoldierVisual {
     lastWalkPhase: 0,
     rotation: 0,
     flashTimer: 0,
+    recoilTimer: 0,
+    idlePhaseOffset: Math.random() * Math.PI * 2,
     ownerColorHex: color,
   };
 }
@@ -164,11 +240,7 @@ export function syncSoldiers(scene: THREE.Scene, soldiers: SoldierState[]): void
     }
     visual.targetPos.set(s.position.x, s.position.y, s.position.z);
     visual.rotation = s.rotation;
-    // Walk-phase delta drives the leg swing; reset on big jumps so a
-    // teleport (server snap, terrain regen) doesn't induce a giant kick.
-    const dPhase = s.walkPhase - visual.lastWalkPhase;
-    if (Math.abs(dPhase) > 5 || dPhase < 0) visual.lastWalkPhase = s.walkPhase;
-    else visual.lastWalkPhase = s.walkPhase;
+    visual.lastWalkPhase = s.walkPhase;
   }
   for (const id of Array.from(soldierVisuals.keys())) {
     if (present.has(id)) continue;
@@ -181,7 +253,9 @@ export function syncSoldiers(scene: THREE.Scene, soldiers: SoldierState[]): void
 /** Per-frame tween + animation pass for soldiers. Smooths render position
  *  toward the latest server target and drives a tiny stride animation
  *  so the squad doesn't look glued to the ground. */
+let animTime = 0;
 export function updateSoldiers(dt: number): void {
+  animTime += dt;
   for (const v of soldierVisuals.values()) {
     // Lerp ~0.25 per 1/60 s toward the target — smooth but tight enough
     // that fast walking soldiers don't lag behind their server position.
@@ -190,12 +264,47 @@ export function updateSoldiers(dt: number): void {
     v.group.position.copy(v.renderPos);
     v.group.rotation.y = v.rotation;
 
-    // Stride based on walk phase — a small leg / rifle swing.
-    const phase = v.lastWalkPhase * 2.6;
-    const swing = Math.sin(phase) * 0.35;
-    v.legL.rotation.x = swing;
-    v.legR.rotation.x = -swing;
-    v.rifle.position.y = 1.0 + Math.sin(phase * 2) * 0.02;
+    // Walk activity: high while the server's walkPhase is incrementing,
+    // decays toward zero when the soldier stands still. Drives the
+    // amplitude blend between idle and walk poses below.
+    // Re-derive a velocity by comparing renderPos vs targetPos —
+    // walkPhase is broadcast at 20 Hz, but the lerp catches up much
+    // faster, so this gives a clean "moving vs idle" signal.
+    const dxRender = v.targetPos.x - v.renderPos.x;
+    const dzRender = v.targetPos.z - v.renderPos.z;
+    const moveActivity = Math.min(1, Math.sqrt(dxRender * dxRender + dzRender * dzRender) * 4);
+
+    // Walk cycle: legs swing opposite, arms (rifle + arm pivot) swing
+    // opposite to legs. Phase clocked off the broadcast walkPhase so
+    // strides line up with actual motion at any speed.
+    const stridePhase = v.lastWalkPhase * 3.4;
+    const stride = Math.sin(stridePhase) * 0.45 * moveActivity;
+    v.legL.rotation.x = stride;
+    v.legR.rotation.x = -stride;
+
+    // Arm swing — shoulders rotate counter to legs. Damped on the X
+    // axis so the rifle never slews wildly off-target while moving.
+    // The recoil punch (below) overrides this for a fraction of a
+    // second after each shot.
+    const armSwing = -stride * 0.35;
+    if (v.recoilTimer > 0) {
+      v.recoilTimer -= dt;
+      const a = Math.max(0, v.recoilTimer / RECOIL_LIFETIME);
+      // Arms kick up + back, then settle.
+      v.armPivot.rotation.x = -0.55 * a;
+    } else {
+      v.armPivot.rotation.x = armSwing;
+    }
+
+    // Idle bob: continuous breathing applied to the inner pivot's Y.
+    // Always on (even while walking) at very small amplitude so the
+    // squad never reads as a frozen poster.
+    const idle = Math.sin(animTime * 1.6 + v.idlePhaseOffset);
+    const walkBob = Math.cos(stridePhase * 2) * 0.04 * moveActivity;
+    v.pivot.position.y = idle * 0.025 + walkBob;
+    // Subtle head sway opposite to the bob — sells "alive" without
+    // committing to a full skeletal rig.
+    v.head.rotation.z = idle * 0.06;
 
     if (v.flashTimer > 0) {
       v.flashTimer -= dt;
@@ -218,6 +327,14 @@ export function updateSoldiers(dt: number): void {
       mat.dispose();
       tracers.splice(i, 1);
     }
+  }
+
+  // Re-anchor every blood splatter to the current terrain Y. Splatters
+  // are world decals — if a shell carves a crater under one the disc
+  // would otherwise float in mid-air. Cheap (XZ → Y bilinear sample +
+  // Y assign per splatter, ≤100 of them in even a busy match).
+  for (const b of bloodSplatters) {
+    b.group.position.y = getTerrainHeight(b.worldX, b.worldZ) + b.lift;
   }
 }
 
@@ -243,23 +360,23 @@ export function playSoldierShot(
   scene.add(line);
   tracers.push({ line, age: 0, lifetime: TRACER_LIFETIME });
 
-  // Muzzle flash on the firing soldier — short opacity pulse on the
-  // pre-built additive plane.
+  // Muzzle flash + recoil pose on the firing soldier.
   const visual = soldierVisuals.get(soldierId);
   if (visual) {
     visual.flashTimer = FLASH_LIFETIME;
     visual.flash.visible = true;
+    visual.recoilTimer = RECOIL_LIFETIME;
   }
 }
 
 /** Build a small cluster of dark-red discs flat on the ground at the death
- *  position — the "blood splatter" decal. Persists for the rest of the
- *  match (no fade): cheap meshes, low count even in a busy fight. */
+ *  position — the "blood splatter" decal. The group's Y is re-anchored
+ *  to the live terrain height every frame in `updateSoldiers` so a carve
+ *  underneath doesn't leave the splatter floating. */
 export function spawnBloodSplatter(scene: THREE.Scene, position: Vec3): void {
   const group = new THREE.Group();
-  // Slightly above the surface so the disc doesn't z-fight with the
-  // terrain mesh.
-  group.position.set(position.x, position.y + 0.04, position.z);
+  const lift = 0.06;
+  group.position.set(position.x, position.y + lift, position.z);
   group.rotation.x = -Math.PI / 2;
 
   const blobCount = 6;
@@ -279,7 +396,7 @@ export function spawnBloodSplatter(scene: THREE.Scene, position: Vec3): void {
     group.add(blob);
   }
   scene.add(group);
-  bloodSplatters.push({ group });
+  bloodSplatters.push({ group, worldX: position.x, worldZ: position.z, lift });
 }
 
 /** Clear all soldier visuals + tracers + blood splatters. Called on match
