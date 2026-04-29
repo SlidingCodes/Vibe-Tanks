@@ -260,6 +260,11 @@ interface ActiveSoldierRuntime extends SoldierState {
    *  spread evenly across 2π at spawn so the squad forms a stable ring
    *  instead of all collapsing onto the owner's centre while marching. */
   formationAngle: number;
+  /** True once the soldier has switched from "march to formation slot"
+   *  to "march back to the tank to re-board". Latched at lifetime ≤
+   *  RETREAT_LEAD_SECONDS and never cleared — once they head home, the
+   *  countdown to re-entry is one-way. */
+  retreating: boolean;
   weaponId: string;
   /** Pre-allocated wire view kept in sync with the mutable public fields,
    *  same pattern as the projectile/hazard runtimes. */
@@ -1507,28 +1512,26 @@ export class Room {
 
     const cx = tank.position.x;
     const cz = tank.position.z;
-    // Ring spawn just outside the hull collider — the followDistance
-    // is what the tickSoldiers loop uses to keep the squad tight, and
-    // matching it here means they don't have to reposition the moment
-    // they're spawned.
-    const ringRadius = HULL_RADIUS + Math.max(0.6, followDistance - HULL_RADIUS);
+    // Phase offset randomises which way the ring is oriented per
+    // deploy, so a second cast doesn't perfectly stack on the first
+    // one's slots when a player has multiple ammo charges.
     const phaseOffset = Math.random() * Math.PI * 2;
     for (let i = 0; i < count; i++) {
       const ang = phaseOffset + (i / count) * Math.PI * 2;
-      const px = cx + Math.cos(ang) * ringRadius;
-      const pz = cz + Math.sin(ang) * ringRadius;
-      const py = this.voxels.getHeight(px, pz);
       const soldierId = `sld_${this.nextSoldierId++}`;
       // Slight per-soldier desync on the first shot so a 5-strong
       // squad doesn't fire one synchronised volley every 2 s.
       const initialFireDelay = 0.4 + Math.random() * 0.8;
+      // Spawn at the tank's hull, not at the formation slot — the
+      // tickSoldiers loop will march them out to their slot on the
+      // next tick, so visually they appear to climb out of the tank
+      // and walk to their station instead of teleporting in around it.
       this.registerSoldier({
         soldierId,
         ownerId: tank.playerId,
-        position: { x: px, y: py, z: pz },
-        // Start facing outward from the tank — they'll re-aim at the
-        // first valid enemy on the next tick.
-        rotation: ang,
+        position: { x: cx, y: tank.position.y, z: cz },
+        // Start facing outward toward the slot they're about to walk to.
+        rotation: Math.atan2(Math.cos(ang), Math.sin(ang)),
         hp,
         maxHp: hp,
         walkPhase: 0,
@@ -1541,6 +1544,7 @@ export class Room {
         moveSpeed,
         followDistance,
         formationAngle: ang,
+        retreating: false,
         weaponId: weapon.id,
       });
     }
@@ -2530,6 +2534,15 @@ export class Room {
     const damageByOwner: Map<PlayerId, { playerId: PlayerId; damage: number; killed: boolean }[]> = new Map();
     const popupHits: { playerId: PlayerId; damage: number; killed: boolean }[] = [];
 
+    // Lead time before natural lifetime expiry at which the surviving
+    // squad turns and walks back to the tank to "re-board". They reach
+    // the hull and despawn cleanly inside this window — no death
+    // splatter — visually selling that the unit climbed back into the
+    // turret instead of evaporating in place.
+    const RETREAT_LEAD_SECONDS = 3;
+    const REBOARD_RADIUS = HULL_RADIUS + 0.4;
+    const reboardR2 = REBOARD_RADIUS * REBOARD_RADIUS;
+
     for (const [sid, soldier] of this.activeSoldiers) {
       soldier.lifetime -= dt;
       if (soldier.lifetime <= 0) {
@@ -2540,6 +2553,24 @@ export class Room {
       if (!owner || !owner.alive) {
         expired.push(sid);
         continue;
+      }
+
+      // Trip the retreat latch with `RETREAT_LEAD_SECONDS` of lifetime
+      // remaining — only if the owner is still alive (we already
+      // expired-out above otherwise). Once latched it never resets.
+      if (!soldier.retreating && soldier.lifetime <= RETREAT_LEAD_SECONDS) {
+        soldier.retreating = true;
+      }
+
+      // Already inside reboard radius while retreating? Disappear cleanly
+      // (expired = no blood splatter — they made it home).
+      if (soldier.retreating) {
+        const ddx = owner.position.x - soldier.position.x;
+        const ddz = owner.position.z - soldier.position.z;
+        if (ddx * ddx + ddz * ddz <= reboardR2) {
+          expired.push(sid);
+          continue;
+        }
       }
 
       // Run-over: any alive *enemy* hull whose XZ centre is within hull
@@ -2560,23 +2591,28 @@ export class Room {
         continue;
       }
 
-      // Each soldier holds a unique angular slot around the owner so the
-      // squad walks as a stable ring instead of stacking onto the same
-      // point. Target = owner + (cos·sin) × followDistance at the
-      // soldier's formationAngle. Slot is fixed at spawn (evenly spread
-      // 2π across `count`) so the formation stays consistent even as
-      // some units die and the count drops.
-      const slotX = owner.position.x + Math.cos(soldier.formationAngle) * soldier.followDistance;
-      const slotZ = owner.position.z + Math.sin(soldier.formationAngle) * soldier.followDistance;
-      const dxS = slotX - soldier.position.x;
-      const dzS = slotZ - soldier.position.z;
+      // Walk target depends on phase: while retreating, head straight
+      // for the tank to re-board (no formation slot — the squad
+      // collapses inward). Otherwise hold the formation ring at the
+      // soldier's fixed angular slot offset from the owner.
+      let targetX: number;
+      let targetZ: number;
+      let deadZone: number;
+      if (soldier.retreating) {
+        targetX = owner.position.x;
+        targetZ = owner.position.z;
+        deadZone = 0; // walk all the way in until the reboard radius hits
+      } else {
+        targetX = owner.position.x + Math.cos(soldier.formationAngle) * soldier.followDistance;
+        targetZ = owner.position.z + Math.sin(soldier.formationAngle) * soldier.followDistance;
+        deadZone = 0.4;
+      }
+      const dxS = targetX - soldier.position.x;
+      const dzS = targetZ - soldier.position.z;
       const distS = Math.sqrt(dxS * dxS + dzS * dzS);
       let walkedX = 0;
       let walkedZ = 0;
-      // Small dead-zone (0.4 m) around the slot so soldiers don't tic
-      // back and forth across their target as the owner moves at low
-      // speed. Outside the dead-zone they march at full moveSpeed.
-      if (distS > 0.4) {
+      if (distS > deadZone) {
         const step = Math.min(distS, soldier.moveSpeed * dt);
         walkedX = (dxS / distS) * step;
         walkedZ = (dzS / distS) * step;
