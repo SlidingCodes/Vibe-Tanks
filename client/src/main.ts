@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
+import {
+  antialiasEnabled,
+  pixelRatioCap,
+  shadowsEnabled,
+  shouldAttemptTextureUpgrade,
+  onQualityChange,
+  AUTO_UPGRADE_FPS,
+  AUTO_BENCHMARK_MS,
+} from './quality';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
@@ -88,11 +97,30 @@ import { resolveRailEndpoint } from '@shared/rail';
 // not the 1×1 default placeholder.
 getParticleTextures();
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// Renderer setup is parameterised by the saved quality preset
+// (vt.quality in localStorage). Antialias and shadowMap.type are both
+// constructor-fixed, so the boot path picks them up once — switching
+// presets while in-game updates pixelRatio + shadowMap.enabled live,
+// but flipping antialias requires a reload (we surface a toast for
+// that case from the settings dialog).
+const renderer = new THREE.WebGLRenderer({ antialias: antialiasEnabled() });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.shadowMap.enabled = true;
+renderer.setPixelRatio(pixelRatioCap());
+renderer.shadowMap.enabled = shadowsEnabled();
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// React to live changes from the settings dialog. Antialias and
+// texture filter changes require a reload — handled by the dialog
+// surfacing a hint, we just no-op on those here. Pixel ratio and
+// shadow toggles flip live; texture upgrade fires when the user
+// promotes from auto/low to high.
+onQualityChange((q) => {
+  renderer.setPixelRatio(pixelRatioCap());
+  renderer.shadowMap.enabled = shadowsEnabled();
+  if (q === 'high' && surfaceNets) {
+    surfaceNets.upgradeTerrainTexturesToHi();
+  }
+});
 // ACES filmic tone mapping gives a natural daylight response — the linear
 // albedo × light product gets compressed into displayable range with a
 // filmic S-curve instead of clipping at 1.0. Exposure > 1 lifts midtones so
@@ -554,6 +582,45 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
 let voxelGrid: VoxelGrid | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
+
+/** Boot-time benchmark for the 'auto' quality preset. Samples per-frame
+ *  delta-times for AUTO_BENCHMARK_MS after the terrain finishes its
+ *  first build, then upgrades to hi-res textures iff the median FPS
+ *  cleared AUTO_UPGRADE_FPS. Fires only once per page load. */
+let autoBenchmarkRunning = false;
+function kickAutoTextureBenchmark(handle: SurfaceNetsHandle): void {
+  if (autoBenchmarkRunning) return;
+  autoBenchmarkRunning = true;
+  // 0.5 s grace so the initial chunk-mesh + GL upload stutter doesn't
+  // poison the FPS sample.
+  setTimeout(() => {
+    const dts: number[] = [];
+    let last = performance.now();
+    const start = last;
+    let raf = 0;
+    const tick = (now: number): void => {
+      const dt = now - last;
+      last = now;
+      // Drop the first frame after grace — schedulers occasionally hand
+      // out a 50ms first frame after a setTimeout that nothing should be
+      // graded on.
+      if (dts.length > 0 || now - start > 16) dts.push(dt);
+      if (now - start < AUTO_BENCHMARK_MS) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      // Median is more robust than mean against single-frame stalls.
+      dts.sort((a, b) => a - b);
+      const medianDt = dts[Math.floor(dts.length / 2)] ?? 33;
+      const medianFps = 1000 / medianDt;
+      if (medianFps >= AUTO_UPGRADE_FPS) {
+        handle.upgradeTerrainTexturesToHi();
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    void raf;
+  }, 500);
+}
 let voxelDebris: VoxelDebrisHandle | null = null;
 /** Client-side Rapier mirror. Only the LOCAL player is registered here;
  *  remote tanks stay cosmetic (server-broadcast state + interpolation). The
@@ -660,6 +727,13 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   clearAllSoldierVisuals(scene);
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
+    // Quality 'auto' boots with the lo-res textures; if the device
+    // sustains the FPS floor in the next few seconds we upgrade in
+    // the background. Quality 'high' starts on hi already, 'low'
+    // never upgrades.
+    if (shouldAttemptTextureUpgrade()) {
+      kickAutoTextureBenchmark(surfaceNets);
+    }
   } else {
     surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
   }
