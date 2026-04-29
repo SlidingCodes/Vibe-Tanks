@@ -1895,6 +1895,49 @@
       font-weight: bold;
     }
 
+    /* Predator missile pilot mode banner. Shown while the local player is
+       steering a Predator missile — the camera is on the warhead and the
+       tank is frozen + vulnerable, so we make that visible without
+       blocking the chase view. Sits high-centre, keeps its peripheral. */
+    #predator-overlay {
+      position: fixed;
+      top: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 22px;
+      font-family: monospace;
+      font-size: 13px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      background: rgba(58, 53, 38, 0.86);
+      color: #e8d8a0;
+      border: 1px solid rgba(216, 176, 88, 0.65);
+      border-radius: 2px;
+      z-index: 36;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+      display: none;
+      pointer-events: none;
+    }
+
+    #predator-overlay.visible {
+      display: block;
+    }
+
+    #predator-overlay .label {
+      color: #ffb060;
+      font-weight: bold;
+      letter-spacing: 5px;
+    }
+
+    #predator-overlay .hint {
+      display: block;
+      margin-top: 4px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #c0b890;
+      opacity: 0.8;
+    }
+
     /* Inline iOS fullscreen hint inside the settings dialog. Shown only
        when the browser exposes no FS API but the UA looks like iPhone
        Safari running in-browser (i.e. not Add-to-Home-Screen mode), so
@@ -2406,6 +2449,10 @@
     </div>
   </div>
   <div id="idle-warning">Inactive — kick in <span class="count" id="idle-warning-count">15</span>s</div>
+  <div id="predator-overlay">
+    <span class="label">PILOTING MISSILE</span>
+    <span class="hint">WASD steer · tank exposed</span>
+  </div>
   <div id="turbo-vfx"></div>
   <div id="hit-marker">
     <div class="hit-line"></div>

@@ -15,11 +15,11 @@ import {
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
 } from './entities/tank';
-import { playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
 import { connect } from './net/socket';
-import { addImpactCameraShake, beginSpectate, createCamera, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
+import { addImpactCameraShake, beginFollowMissile, beginSpectate, createCamera, followMissile, followTank, overviewCamera, setCameraBoomMultiplier, setCameraBuriedMode, spectateTank, updateCameraScale } from './scene/camera';
 import { clearHighlight, ensureHighlightVisible, highlightTank } from './scene/killcamOverlay';
 import { createLights } from './scene/lights';
 import { createSea } from './scene/sea';
@@ -48,9 +48,9 @@ import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from '
 import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
-import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning } from './audio/sounds';
+import { playShoot, playMinigunShot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak, playNukeWarning, playPredatorLaunch } from './audio/sounds';
 import { startMusic, nextTrack } from './audio/music';
-import { FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
+import { ActiveProjectileState, FireGridSnapshot, FireUpdate, MatchPhase, MatchSnapshot, MovementInput, PickupState, PlayerId, RoomStateUpdate, ShotResult, TankState, TrackHistory, VoxelSnapshot, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
 import { stepTankPhysics } from '@shared/physics';
 import { initRapier, HULL_RADIUS, RapierVoxelWorld } from '@shared/physics/RapierVoxelWorld';
 import { SIM_DT } from '@shared/constants';
@@ -198,6 +198,34 @@ function bumpWeaponHeatLocal(weapon: WeaponDefinition, now: number): void {
  *  glow fades over. */
 interface LastShotInfo { weaponId: string; firedAt: number; }
 const lastShotByTank = new Map<PlayerId, LastShotInfo>();
+/** Predator piloting state: when the local player has a steerable missile
+ *  in flight, the camera takes over the warhead, WASD drives steering on
+ *  the server, and fire / aim / tank prediction are suppressed. Refreshed
+ *  from the projectiles list on every state_update / room_snapshot. */
+let pilotingMissile: ActiveProjectileState | null = null;
+function refreshPilotingMissile(projectiles: ActiveProjectileState[] | undefined): void {
+  const next = projectiles?.find(
+    (p) => p.ownerId === myId && p.visualStyle === 'predator_missile',
+  ) ?? null;
+  const wasPiloting = !!pilotingMissile;
+  const isPiloting = !!next;
+  if (isPiloting && !wasPiloting) {
+    // Entering pilot mode — seed the chase camera state and surface the
+    // HUD overlay. Audio is fired here too, once per launch.
+    beginFollowMissile();
+    showPilotingOverlay(true);
+    playPredatorLaunch();
+  } else if (!isPiloting && wasPiloting) {
+    showPilotingOverlay(false);
+  }
+  pilotingMissile = next;
+}
+function showPilotingOverlay(on: boolean): void {
+  const el = document.getElementById('predator-overlay');
+  if (!el) return;
+  if (on) el.classList.add('visible');
+  else el.classList.remove('visible');
+}
 let selectedWeaponId = 'standard';
 /** Local mirror of the server-authoritative inventory for the local tank.
  *  Rebuilt on each room_snapshot / state_update; drives the HUD chips and
@@ -488,6 +516,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   }
 
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
+  refreshPilotingMissile(snap.projectiles);
   hud.updateScoreboard(snap.tanks);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -894,6 +923,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
   }
 
   syncActiveCombatState(scene, projectiles, hazards);
+  refreshPilotingMissile(projectiles);
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
@@ -1349,6 +1379,7 @@ function animate(): void {
     const turboActive = now < turboActiveUntil;
 
     const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    const isPiloting = !!pilotingMissile;
     const baseInput = getMovementInput();
     // Match the server-side mask in tickMovement: during Countdown the tank
     // can still yaw on the spot (left/right) and aim, but forward/backward
@@ -1360,6 +1391,17 @@ function animate(): void {
       backward: inCountdown ? false : baseInput.backward,
       turbo: inCountdown ? false : turboActive,
     };
+    // Predator: while piloting a steerable missile the tank body is
+    // frozen on the server, so the local Rapier prediction must use an
+    // empty input or it'll drift forward and the next state_update will
+    // snap it back. The *raw* WASD still goes to the server, where it's
+    // consumed as missile yaw/pitch steering.
+    const predictionInput = isPiloting
+      ? { forward: false, backward: false, left: false, right: false, turbo: false }
+      : rawInput;
+    const networkInput = isPiloting
+      ? { ...baseInput, turbo: false }
+      : rawInput;
     const { w: mapW, h: mapH } = getMapBounds();
     const localState = predictedState;
     // Y-aware sampler used only by the fallback path (while Rapier WASM
@@ -1381,10 +1423,14 @@ function animate(): void {
       );
       while (physicsAccumulator >= CLIENT_PHYSICS_STEP) {
         clientSeq += 1;
-        const tickInput: MovementInput = { ...rawInput, seq: clientSeq };
-        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickInput;
-        socket.emit('movement_input', tickInput);
-        clientPhysics.setTankInput(myId, tickInput);
+        // Tank prediction uses predictionInput (empty while piloting);
+        // the network ships networkInput (the player's actual WASD,
+        // which the server reroutes to the missile when piloting).
+        const tickPredictInput: MovementInput = { ...predictionInput, seq: clientSeq };
+        const tickNetInput: MovementInput = { ...networkInput, seq: clientSeq };
+        inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickPredictInput;
+        socket.emit('movement_input', tickNetInput);
+        clientPhysics.setTankInput(myId, tickPredictInput);
         clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
         clientPhysics.step(CLIENT_PHYSICS_STEP);
         // Snapshot the predicted transform (position + yaw) AFTER this
@@ -1405,9 +1451,9 @@ function animate(): void {
       // Fallback: shared pure-function physics while Rapier WASM is still
       // loading. A few hundred ms of degraded prediction at match start.
       // seq: 0 here is fine — no reconciliation happens in this window.
-      const fallbackInput: MovementInput = { ...rawInput, seq: 0 };
+      const fallbackInput: MovementInput = { ...predictionInput, seq: 0 };
       stepTankPhysics(predictedState, fallbackInput, predictedVel, dt, sampleGround, mapW, mapH, voxelGrid?.cellSize ?? 1);
-      socket.emit('movement_input', fallbackInput);
+      socket.emit('movement_input', { ...networkInput, seq: 0 });
     }
 
     // Render-side error smoother: `predictedState` is the authoritative
@@ -1526,7 +1572,13 @@ function animate(): void {
       };
     }
 
-    const aimDirect = buriedAimOverride ?? getVirtualAimDirect();
+    // While piloting a Predator missile, hide the trajectory preview and
+    // skip aim_update / fire_request entirely — the cursor and WASD
+    // belong to the missile camera, not the dormant cannon.
+    if (isPiloting) {
+      hideTrajectoryPreview();
+    }
+    const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
       const v = selectedWeapon.projectileSpeed;
@@ -1544,6 +1596,8 @@ function animate(): void {
         muzzle.direction.x * v, muzzle.direction.y * v, muzzle.direction.z * v,
         selectedWeapon,
       );
+    } else if (isPiloting) {
+      // Already handled above — nothing to do for the world-aim path.
     } else {
       const aimTarget = getAimTarget(camera, surfaceNets?.group ?? null, predictedState.position.y);
       if (aimTarget) {
@@ -1618,7 +1672,12 @@ function animate(): void {
     // produces a new fire_request. Single-shot weapons keep the
     // edge-triggered consumeClick() so a tap = one round.
     const isHoldFire = selectedWeapon.behavior === 'minigun';
-    const fireRequested = isHoldFire ? isMouseDown() : consumeClick();
+    // Drain the click queue while piloting so a fire-on-release doesn't
+    // leak into the cannon the moment the missile detonates.
+    if (isPiloting) {
+      consumeClick();
+    }
+    const fireRequested = !isPiloting && (isHoldFire ? isMouseDown() : consumeClick());
     if (fireRequested) {
       // Suppress fire entirely during the start-of-match countdown so the
       // input is consumed (no queued click leaking into the match start)
@@ -1685,13 +1744,26 @@ function animate(): void {
     const selSlot = getSelectedInventorySlot();
     hud.setSelectedWeaponAmmo(selSlot ? selSlot.ammo : 0);
 
-    followTank(
-      myTankMesh.group.position,
-      predictedState.bodyRotation,
-      dt,
-      predictedState.turretRotation,
-      predictedState.barrelPitch,
-    );
+    if (isPiloting && pilotingMissile) {
+      // Chase camera on the warhead. The replicatedProjectile visual
+      // lerps from the last broadcast (20 Hz) to the current snap each
+      // frame; reading that smoothed position keeps the chase eye from
+      // strobing in lockstep with the broadcast tick.
+      const m = pilotingMissile;
+      const lerpedPos = new THREE.Vector3();
+      const ok = getReplicatedProjectilePosition(m.projectileId, lerpedPos);
+      const pos = ok ? lerpedPos : new THREE.Vector3(m.position.x, m.position.y, m.position.z);
+      const vel = getReplicatedProjectileVelocity(m.projectileId) ?? m.velocity;
+      followMissile(pos, vel, dt);
+    } else {
+      followTank(
+        myTankMesh.group.position,
+        predictedState.bodyRotation,
+        dt,
+        predictedState.turretRotation,
+        predictedState.barrelPitch,
+      );
+    }
   } else {
     hideTrajectoryPreview();
     // Dead / no predicted tank: drop the outline and revert camera state

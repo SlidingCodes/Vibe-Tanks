@@ -179,6 +179,12 @@ interface PlayerState {
    *  from the array when ammo hits 0. The same array reference is stored
    *  on the tank's TankState so broadcasts stay in sync without a copy. */
   inventory: WeaponInventorySlot[];
+  /** Predator: id of the steerable missile currently in flight for this
+   *  player, or null. While set, the tank's MovementInput is rerouted to
+   *  the missile's yaw/pitch and the body is frozen in place (vulnerable,
+   *  but cannot move). Cleared on detonation, lifetime expiry, owner
+   *  death, or disconnect. */
+  activeMissileId: string | null;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -189,6 +195,15 @@ interface ActiveProjectileRuntime extends ActiveProjectileState {
   blastRadius: number;
   damage: number;
   terrainDamage: number;
+  /** Predator-only: pilot-controlled flight state. Yaw/pitch are integrated
+   *  from the owner's MovementInput (A/D yaw, W/S pitch) at predatorTurnRate
+   *  and predatorPitchRate. predatorPitchRate doubles as the marker that
+   *  this projectile is a steerable missile (vs. a passive seeker). */
+  predatorYaw?: number;
+  predatorPitch?: number;
+  predatorTurnRate?: number;
+  predatorPitchRate?: number;
+  predatorSpeed?: number;
   /** Pre-allocated wire view kept in sync with the mutable public fields.
    *  Broadcast reuses this reference every tick instead of mapping a fresh
    *  object per projectile — critical on Pi where 20 Hz × N .map() allocs
@@ -475,6 +490,7 @@ export class Room {
       burningUntil: 0,
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
+      activeMissileId: null,
     });
 
     this.spawnTank(playerId, playerName, color, flagId);
@@ -697,6 +713,13 @@ export class Room {
       const weapon = WEAPONS.find((w) => w.id === data.weaponId);
       if (!weapon) return;
 
+      // Already piloting a Predator missile? The camera is gone from the
+      // tank and the tank body is frozen — let nothing else fire while
+      // the player is in missile-pilot mode. Mirrors the client-side
+      // suppression so a desync can't backdoor a shell out of the
+      // unattended cannon.
+      if (player.activeMissileId) return;
+
       const now = Date.now() / 1000;
       const prevFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
       if (now - prevFire < weapon.cooldown) return;
@@ -816,6 +839,9 @@ export class Room {
       case 'nuke':
         this.fireNuke(tank, weapon, aimPoint);
         break;
+      case 'predator':
+        this.firePredator(tank, player, weapon);
+        break;
       default: {
         const result = precomputedResult || simulateShot(
           tank,
@@ -899,6 +925,7 @@ export class Room {
       burningUntil: 0,
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
+      activeMissileId: null,
     });
 
     // Pick a unique flag for the bot from the full countries list
@@ -1109,6 +1136,12 @@ export class Room {
         victim.deaths++;
         if (victimPlayer) {
           victimPlayer.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+          // Drop any predator missile they were piloting — tickPredatorMissiles
+          // will see ownerLost=true on the next sim tick and detonate it
+          // where it currently is, returning camera control to the corpse.
+          if (victimPlayer.activeMissileId) {
+            victimPlayer.activeMissileId = null;
+          }
         }
         if (owner) {
           if (dmg.playerId === ownerId) {
@@ -1341,6 +1374,51 @@ export class Room {
       spawnHeight: fallHeight,
       fallDuration,
     });
+  }
+
+  /** Predator: spawn a steerable missile and bind it to the player as their
+   *  one-and-only `activeMissileId`. While the missile is alive,
+   *  tickMovement masks the tank's translation input (the body stays
+   *  vulnerable but motionless) and tickPredatorMissiles reads the same
+   *  MovementInput as steering (A/D yaw, W/S pitch). Cooldown + ammo are
+   *  consumed by the caller before we get here, but we still gate on
+   *  "already piloting" so a double-click can't spawn two missiles. */
+  private firePredator(tank: TankState, player: PlayerState, weapon: (typeof WEAPONS)[number]): void {
+    if (player.activeMissileId) return; // already piloting — no chain-launch
+    const projectileId = `proj_${this.nextProjectileId++}`;
+    const position = createMuzzlePosition(tank);
+    const speed = weapon.behaviorConfig?.predatorSpeed ?? 22;
+    const velocity = createInitialVelocity(tank, speed);
+    // Initial yaw/pitch derived from the launch velocity so the steering
+    // integrator picks up where the muzzle pointed.
+    const yaw = Math.atan2(velocity.x, velocity.z);
+    const horiz = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    const pitch = Math.atan2(velocity.y, Math.max(0.0001, horiz));
+    this.registerProjectile({
+      projectileId,
+      ownerId: tank.playerId,
+      weaponId: weapon.id,
+      position,
+      velocity,
+      visualStyle: 'predator_missile',
+      targetId: null,
+      age: 0,
+      lifetime: weapon.behaviorConfig?.predatorLifetime ?? 9,
+      // Reuse turnRate/targetRadius fields for completeness (unused by
+      // the predator branch in tickProjectiles); steering rates live in
+      // the predator-specific fields below.
+      turnRate: 0,
+      targetRadius: 0,
+      blastRadius: weapon.behaviorConfig?.predatorBlastRadius ?? weapon.blastRadius,
+      damage: weapon.behaviorConfig?.predatorDamage ?? weapon.damage,
+      terrainDamage: weapon.behaviorConfig?.predatorTerrainDamage ?? weapon.terrainDamage,
+      predatorYaw: yaw,
+      predatorPitch: pitch,
+      predatorTurnRate: weapon.behaviorConfig?.predatorTurnRate ?? 1.6,
+      predatorPitchRate: weapon.behaviorConfig?.predatorPitchRate ?? 1.2,
+      predatorSpeed: speed,
+    });
+    player.activeMissileId = projectileId;
   }
 
   private fireMine(tank: TankState, weapon: (typeof WEAPONS)[number]): void {
@@ -1639,6 +1717,9 @@ export class Room {
     // Wipe any stale heat / lockout from the previous life — the new
     // loadout may not even include a hold-to-fire weapon.
     player.weaponHeat.clear();
+    // Defensive: kill cleanup already cleared this, but a desync would
+    // leave the camera locked to a despawned missile across respawn.
+    player.activeMissileId = null;
     this.physics.resetTank(playerId, tank.position, 0);
   }
 
@@ -1693,6 +1774,7 @@ export class Room {
       this.tickBots(simDt);
       this.tickMovement(simDt);
       this.tickProjectiles(simDt);
+      this.tickPredatorMissiles(simDt);
       this.tickHazards(simDt);
       this.tickScheduledStrikes();
       this.tickPickups(simDt);
@@ -1907,6 +1989,14 @@ export class Room {
         if (this.phase === MatchPhase.Countdown) {
           effectiveInput = { ...effectiveInput, forward: false, backward: false, turbo: false };
         }
+        // Predator: while the player is piloting a steerable missile,
+        // their MovementInput is consumed by the missile (yaw/pitch
+        // steering) and the tank body is held in place. Turbo also
+        // masked so it can't drain in the background. Tank stays
+        // vulnerable on purpose — that's the whole risk/reward.
+        if (player.activeMissileId) {
+          effectiveInput = EMPTY;
+        }
         this.physics.setTankInput(pid, effectiveInput);
       } else {
         this.physics.setTankInput(pid, EMPTY);
@@ -1974,6 +2064,7 @@ export class Room {
           tank.alive = false;
           if (player) {
             player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+            if (player.activeMissileId) player.activeMissileId = null;
           }
           this.io.to(this.id).emit('match_event', {
             kind: 'suicide',
@@ -2013,6 +2104,10 @@ export class Room {
 
   private tickProjectiles(dt: number): void {
     for (const [projectileId, projectile] of this.activeProjectiles) {
+      // Predator missiles steer from MovementInput rather than chasing a
+      // target — they get a dedicated tick so seeker logic doesn't mangle
+      // their velocity.
+      if (projectile.visualStyle === 'predator_missile') continue;
       projectile.age += dt;
 
       if (!projectile.targetId || !isTargetValidFn(projectile.targetId, projectile.ownerId, projectile.targetRadius, projectile.position, this.tanks)) {
@@ -2126,6 +2221,125 @@ export class Room {
         ], damageTotals);
         this.unregisterProjectile(projectileId);
         this.emitShotResultNow(result, projectile.ownerId, projectile.weaponId);
+      }
+    }
+  }
+
+  /** Steerable Predator missiles. Each one's owner is locked into piloting
+   *  mode (their tank can't translate) and their MovementInput is consumed
+   *  here as steering: A/D rotate yaw at predatorTurnRate, W/S rotate pitch
+   *  at predatorPitchRate. Cruise speed is constant. Detonation conditions:
+   *  terrain hit, tank hit (any tank including the owner — fly carefully),
+   *  out-of-bounds, lifetime expiry, owner disconnect/death. On any of
+   *  those we apply the impact like a regular shell and clear the owner's
+   *  activeMissileId so the camera (client) returns to the tank. */
+  private tickPredatorMissiles(dt: number): void {
+    for (const [projectileId, missile] of this.activeProjectiles) {
+      if (missile.visualStyle !== 'predator_missile') continue;
+      missile.age += dt;
+
+      const owner = this.tanks.get(missile.ownerId);
+      const ownerPlayer = this.players.get(missile.ownerId);
+      // Owner died, disconnected, or somehow lost their handle on this
+      // missile — detonate at the current position so the world doesn't
+      // hold an orphaned ghost projectile.
+      const ownerLost = !owner || !owner.alive || !ownerPlayer || ownerPlayer.activeMissileId !== projectileId;
+
+      const yawRate = missile.predatorTurnRate ?? 1.6;
+      const pitchRate = missile.predatorPitchRate ?? 1.2;
+      const speed = missile.predatorSpeed ?? 22;
+      let yaw = missile.predatorYaw ?? Math.atan2(missile.velocity.x, missile.velocity.z);
+      let pitch = missile.predatorPitch ?? 0;
+
+      if (!ownerLost && ownerPlayer) {
+        const inp = ownerPlayer.input;
+        // A turns left → yaw decreases (counter-clockwise around +Y looking
+        // down). D turns right → yaw increases. Mirror Y axis for a
+        // flight-sim-style stick: W = nose down (dive), S = nose up (climb).
+        if (inp.left) yaw -= yawRate * dt;
+        if (inp.right) yaw += yawRate * dt;
+        if (inp.forward) pitch -= pitchRate * dt;
+        if (inp.backward) pitch += pitchRate * dt;
+        // Clamp pitch so the player can't roll the missile past vertical
+        // (looks awful + inverts yaw control).
+        const PITCH_LIMIT = Math.PI * 0.45;
+        if (pitch > PITCH_LIMIT) pitch = PITCH_LIMIT;
+        if (pitch < -PITCH_LIMIT) pitch = -PITCH_LIMIT;
+      }
+      missile.predatorYaw = yaw;
+      missile.predatorPitch = pitch;
+
+      const cosP = Math.cos(pitch);
+      const sinP = Math.sin(pitch);
+      const sinY = Math.sin(yaw);
+      const cosY = Math.cos(yaw);
+      // Convention: pitch > 0 = climb (matches tank.barrelPitch semantics
+      // elsewhere in the codebase). W decreases pitch (dive), S increases
+      // it (climb), so velocity.y = +sin(pitch)*speed.
+      missile.velocity.x = sinY * cosP * speed;
+      missile.velocity.y = sinP * speed;
+      missile.velocity.z = cosY * cosP * speed;
+
+      const prevPos = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+      missile.position.x += missile.velocity.x * dt;
+      missile.position.y += missile.velocity.y * dt;
+      missile.position.z += missile.velocity.z * dt;
+
+      missile.wire.position = missile.position;
+      missile.wire.velocity = missile.velocity;
+
+      // Detonation tests: terrain, any tank hull, out-of-bounds, or
+      // lifetime/owner-loss timeout.
+      let impactPoint: Vec3 | null = null;
+      const terrainY = this.voxels.getHeight(missile.position.x, missile.position.z);
+      if (missile.position.y <= terrainY) {
+        impactPoint = { x: missile.position.x, y: terrainY, z: missile.position.z };
+      }
+      if (!impactPoint) {
+        for (const t of this.tanks.values()) {
+          if (!t.alive) continue;
+          // Owner can self-detonate on their own hull — gameplay choice
+          // matching the Little Boy / mine philosophy: if you steer it
+          // back into yourself, that's on you.
+          const dx = t.position.x - missile.position.x;
+          const dy = t.position.y + 0.8 - missile.position.y;
+          const dz = t.position.z - missile.position.z;
+          if (dx * dx + dy * dy + dz * dz <= 1.4 * 1.4) {
+            impactPoint = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+            break;
+          }
+        }
+      }
+      if (!impactPoint) {
+        const outOfBounds =
+          missile.position.x < -10 || missile.position.x > this.voxels.sizeX * this.voxels.cellSize + 10 ||
+          missile.position.z < -10 || missile.position.z > this.voxels.sizeZ * this.voxels.cellSize + 10 ||
+          missile.position.y < -20;
+        if (outOfBounds || missile.age >= missile.lifetime || ownerLost) {
+          // Detonate where we are so the player still gets feedback (and
+          // any tanks underneath catch the splash). Even an owner-loss
+          // detonation feels better than a silent vanish.
+          impactPoint = { x: missile.position.x, y: missile.position.y, z: missile.position.z };
+        }
+      }
+
+      if (impactPoint) {
+        const damageTotals: DamageTotals = new Map();
+        const carveTerrain = applyImpact({
+          point: impactPoint,
+          blastRadius: missile.blastRadius,
+          damage: missile.damage,
+          terrainDamage: missile.terrainDamage,
+        }, this.getTankList(), damageTotals);
+
+        const result = createShotResult(missile.ownerId, missile.weaponId, [
+          makeStep(0, [prevPos, impactPoint], impactPoint, 'impact', carveTerrain, missile.blastRadius, 'predator_missile'),
+        ], damageTotals);
+        this.unregisterProjectile(projectileId);
+        if (ownerPlayer && ownerPlayer.activeMissileId === projectileId) {
+          ownerPlayer.activeMissileId = null;
+        }
+        this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
       }
     }
   }
@@ -2454,8 +2668,16 @@ export class Room {
           continue;
         }
 
-        // Only run simulation if cooldown is ready to save performance
+        // Only run simulation if cooldown is ready to save performance.
+        // Predator is excluded from the bot pool — it requires the
+        // pilot-camera client takeover, which bots have no concept of;
+        // letting them fire it would just freeze them in place for
+        // 9 s while a missile flew straight ahead.
         const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
+        if (weapon.behavior === 'predator') {
+          player.botWeaponIndex = (slotIdx + 1) % player.inventory.length;
+          continue;
+        }
         if (now - prevBotFire >= weapon.cooldown
           && !(weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now))) {
           // Dry-run simulation using the current (jittered) aim

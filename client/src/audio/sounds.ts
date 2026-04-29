@@ -557,6 +557,57 @@ export function playShieldBreak(): void {
   sub.stop(now + 0.31);
 }
 
+// ── Predator missile launch ──
+// Single-shot rocket-motor ignition: bandpass-swept noise rising from
+// thudding low-end into a bright jet-roar, layered with a sawtooth
+// "burner" that climbs an octave. Lasts ~1 s; the chase camera takes
+// over within the first frame so the audio frames the transition.
+export function playPredatorLaunch(): void {
+  const ac = getCtx();
+  const now = ac.currentTime;
+  const out = masterGain(ac);
+
+  // Booster ignition rumble: noise through bandpass climbing low→high
+  const noise = createNoise(ac, 1.0);
+  const nf = ac.createBiquadFilter();
+  nf.type = 'bandpass';
+  nf.Q.value = 1.0;
+  nf.frequency.setValueAtTime(180, now);
+  nf.frequency.exponentialRampToValueAtTime(2400, now + 0.7);
+  const ng = ac.createGain();
+  ng.gain.setValueAtTime(0, now);
+  ng.gain.linearRampToValueAtTime(0.55, now + 0.08);
+  ng.gain.linearRampToValueAtTime(0.32, now + 0.7);
+  ng.gain.linearRampToValueAtTime(0, now + 1.0);
+  noise.connect(nf).connect(ng).connect(out);
+  noise.start(now);
+  noise.stop(now + 1.05);
+
+  // Rising sawtooth burner: 80 → 320 Hz over ~0.6 s
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(80, now);
+  osc.frequency.exponentialRampToValueAtTime(320, now + 0.6);
+  const og = ac.createGain();
+  og.gain.setValueAtTime(0, now);
+  og.gain.linearRampToValueAtTime(0.32, now + 0.1);
+  og.gain.linearRampToValueAtTime(0, now + 0.7);
+  osc.connect(og).connect(out);
+  osc.start(now);
+  osc.stop(now + 0.75);
+
+  // Initial chuff transient: quick bandpass thump on ignition
+  const thump = ac.createOscillator();
+  thump.type = 'sine';
+  thump.frequency.setValueAtTime(60, now);
+  thump.frequency.exponentialRampToValueAtTime(28, now + 0.18);
+  const tg = ac.createGain();
+  ramp(tg.gain, 0.5, 0, now, now + 0.2);
+  thump.connect(tg).connect(out);
+  thump.start(now);
+  thump.stop(now + 0.22);
+}
+
 // ── Hit marker (your shot hit someone) ──
 // Quick metallic "ting".
 

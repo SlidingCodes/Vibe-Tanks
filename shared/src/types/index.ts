@@ -112,7 +112,8 @@ export type WeaponBehavior =
   | 'ramp'
   | 'jump'
   | 'nuke'
-  | 'minigun';
+  | 'minigun'
+  | 'predator';
 
 export type ShotEventType = 'impact' | 'split' | 'bounce' | 'beam';
 
@@ -137,7 +138,8 @@ export type ShotVisualStyle =
   | 'jump_launch'
   | 'nuke'
   | 'nuke_falling'
-  | 'minigun_tracer';
+  | 'minigun_tracer'
+  | 'predator_missile';
 
 export type HazardType = 'napalm' | 'mine' | 'mortar_marker';
 
@@ -218,6 +220,20 @@ export interface WeaponBehaviorConfig {
   heatCoolRate?: number;
   /** Minigun: cooldown (s) applied when the heat gauge fills. */
   overheatLockout?: number;
+  /** Predator: cruise speed (m/s) of the steerable missile. */
+  predatorSpeed?: number;
+  /** Predator: yaw turn rate (rad/s) driven by A/D. */
+  predatorTurnRate?: number;
+  /** Predator: pitch turn rate (rad/s) driven by W/S. */
+  predatorPitchRate?: number;
+  /** Predator: max flight time (s) before auto-detonation. */
+  predatorLifetime?: number;
+  /** Predator: blast radius applied at the impact point. */
+  predatorBlastRadius?: number;
+  /** Predator: peak damage at the impact centre. */
+  predatorDamage?: number;
+  /** Predator: terrain damage scalar at the impact. */
+  predatorTerrainDamage?: number;
 }
 
 export interface WeaponDefinition {

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="pdBody" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3a3a24"/>
+      <stop offset="0.5" stop-color="#6a6e44"/>
+      <stop offset="1" stop-color="#3a3a24"/>
+    </linearGradient>
+    <linearGradient id="pdNose" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a8763a"/>
+      <stop offset="1" stop-color="#6a4828"/>
+    </linearGradient>
+    <radialGradient id="pdBurner" cx="0.2" cy="0.5" r="0.6">
+      <stop offset="0" stop-color="#ffb060"/>
+      <stop offset="1" stop-color="#3a2818" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g stroke="#1a1814" stroke-width="1.5" stroke-linejoin="round">
+    <!-- Booster ring at the rear -->
+    <rect x="6" y="28" width="3" height="8" fill="#2a261a"/>
+    <!-- Fuselage -->
+    <rect x="9" y="29" width="34" height="6" fill="url(#pdBody)"/>
+    <!-- Ogive nose -->
+    <path d="M43 29 L52 32 L43 35 Z" fill="url(#pdNose)"/>
+    <!-- Top fin -->
+    <path d="M14 29 L18 22 L22 29 Z" fill="#5a5e44"/>
+    <!-- Bottom fin -->
+    <path d="M14 35 L18 42 L22 35 Z" fill="#5a5e44"/>
+    <!-- Mid stabilizer -->
+    <path d="M28 29 L34 26 L34 29 Z" fill="#7a7a58"/>
+    <path d="M28 35 L34 38 L34 35 Z" fill="#7a7a58"/>
+  </g>
+  <!-- Booster glow -->
+  <ellipse cx="6" cy="32" rx="6" ry="3.4" fill="url(#pdBurner)" opacity="0.85"/>
+  <!-- Pilot HUD reticle in the corner -->
+  <g stroke="#a89868" stroke-width="1.4" fill="none" opacity="0.85">
+    <circle cx="50" cy="14" r="6"/>
+    <path d="M50 8 L50 20 M44 14 L56 14"/>
+  </g>
+  <!-- Steering arrows hint -->
+  <g stroke="#c87a28" stroke-width="1.2" fill="none" opacity="0.75">
+    <path d="M48 50 L52 46 L56 50" stroke-linecap="round"/>
+    <path d="M52 46 L52 56" stroke-linecap="round"/>
+  </g>
+</svg>

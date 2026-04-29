@@ -56,6 +56,50 @@ function buildNukeBombGeometry(): THREE.BufferGeometry {
   return merged;
 }
 
+/** Build a steerable cruise-missile silhouette: a long cylindrical fuselage
+ *  with a rounded ogive nose and 4 cross-shaped tail fins. Same +Z-forward
+ *  convention as buildShellGeometry so Object3D.lookAt(behind) orients the
+ *  warhead along the velocity vector. Returns one merged geometry — same
+ *  one-mesh contract as the other projectile builders. */
+function buildPredatorMissileGeometry(): THREE.BufferGeometry {
+  const bodyLen = 1.9;
+  const bodyR = 0.18;
+
+  const body = new THREE.CylinderGeometry(bodyR, bodyR, bodyLen, 14);
+  body.rotateX(Math.PI / 2);
+
+  // Ogive nose: cone with a rounded apex
+  const nose = new THREE.ConeGeometry(bodyR, 0.55, 14);
+  nose.rotateX(Math.PI / 2);
+  nose.translate(0, 0, bodyLen / 2 + 0.55 / 2);
+
+  // Tail booster ring (hint of an exhaust nozzle)
+  const booster = new THREE.CylinderGeometry(bodyR * 0.85, bodyR * 0.95, 0.18, 14);
+  booster.rotateX(Math.PI / 2);
+  booster.translate(0, 0, -bodyLen / 2 - 0.09);
+
+  // Cross fins at the rear, narrower than the bomb's
+  const finExt = 0.22;
+  const finLen = 0.36;
+  const finT = 0.03;
+  const finCenterZ = -bodyLen / 2 + 0.18;
+  const fins: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 4; i++) {
+    const fin = new THREE.BoxGeometry(finExt, finT, finLen);
+    fin.translate(bodyR + finExt / 2, 0, finCenterZ);
+    fin.rotateZ((i * Math.PI) / 2);
+    fins.push(fin);
+  }
+
+  const merged = mergeGeometries([body, nose, booster, ...fins]);
+  body.dispose();
+  nose.dispose();
+  booster.dispose();
+  for (const f of fins) f.dispose();
+  if (!merged) throw new Error('buildPredatorMissileGeometry: mergeGeometries returned null');
+  return merged;
+}
+
 /** Build a true tank-shell geometry: cylindrical body + conical nose,
  *  merged into a single BufferGeometry oriented with the nose along +Z so
  *  Object3D.lookAt(behind) aims it down-trajectory. The radius parameter
@@ -380,6 +424,21 @@ function getVisualSpecBase(style: ShotStep['visualStyle']): VisualSpec {
         pathOpacity: 0.18,
         explosionColor: 0xfff0b8,
         explosionScale: 1.6,
+      };
+    case 'predator_missile':
+      // Steerable cruise missile: olive fuselage + brass-tipped warhead,
+      // bright booster glow at the tail. Trail is a warm exhaust plume so
+      // the chase camera reads "rocket motor" instead of "smoke shell".
+      return {
+        projectileRadius: 0.22,
+        projectileColor: 0x5a5e44,   // olive military green
+        emissiveColor: 0xffa040,     // warm booster glow
+        trailColor: 0x807468,        // warm grey exhaust
+        trailSize: 0.55,
+        pathColor: 0x9a8060,
+        pathOpacity: 0.22,
+        explosionColor: 0xff7820,
+        explosionScale: 0.85,
       };
     case 'standard':
     default:
@@ -953,11 +1012,16 @@ function createReplicatedProjectile(state: ActiveProjectileState, scene: THREE.S
   const tm = getAllTankMeshes().get(state.ownerId);
   const colorOverride = tm ? new THREE.Color(tm.state.color).getHex() : null;
   const spec = getVisualSpec(state.visualStyle, colorOverride);
-  const geo = buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
+  // Predator gets a dedicated cruise-missile silhouette (long fuselage +
+  // ogive + tail fins) so the chase camera reads as a real warhead, not
+  // a stretched tank shell.
+  const geo = state.visualStyle === 'predator_missile'
+    ? buildPredatorMissileGeometry()
+    : buildShellGeometry(Math.max(0.12, spec.projectileRadius * 0.9));
   const mat = new THREE.MeshStandardMaterial({
     color: spec.projectileColor,
     emissive: spec.emissiveColor,
-    emissiveIntensity: 0.4,
+    emissiveIntensity: state.visualStyle === 'predator_missile' ? 0.6 : 0.4,
     metalness: 0.6,
     roughness: 0.5,
   });
@@ -1073,6 +1137,26 @@ function removeHazardVisual(id: string, scene: THREE.Scene): void {
   if (!visual) return;
   disposeObject(visual.group, scene);
   hazardVisuals.delete(id);
+}
+
+/** Read the lerped client-side position of a server-broadcast projectile.
+ *  Returns null if the projectile id isn't currently rendered. Used by the
+ *  Predator chase camera so the eye tracks the smooth visual instead of
+ *  jittering with every 20 Hz broadcast snap. */
+export function getReplicatedProjectilePosition(id: string, out: THREE.Vector3): boolean {
+  const v = replicatedProjectiles.get(id);
+  if (!v) return false;
+  out.copy(v.currentPosition);
+  return true;
+}
+
+/** Read the cached velocity of a server-broadcast projectile (last
+ *  state_update value). Used by the Predator chase camera to orient the
+ *  eye along the warhead's heading without waiting for the next broadcast. */
+export function getReplicatedProjectileVelocity(id: string): { x: number; y: number; z: number } | null {
+  const v = replicatedProjectiles.get(id);
+  if (!v) return null;
+  return v.velocity;
 }
 
 export function syncActiveCombatState(

@@ -338,6 +338,44 @@ export const WEAPONS: WeaponDefinition[] = [
     },
   },
   {
+    // Predator: pilot a steerable cruise missile to your target. Aim
+    // launches it; while in flight the player's WASD steers yaw + pitch
+    // and the camera switches to a chase view behind the warhead. Tank
+    // body stays in the world and remains vulnerable for the whole ride
+    // — the trade-off for the precision strike. Only one missile per
+    // tank at a time; lifetime auto-detonates so the player can't park
+    // it indefinitely.
+    id: 'predator',
+    name: 'Predator',
+    description: 'Pilot a steerable missile — your tank stays exposed while you fly.',
+    // projectileSpeed feeds the trajectory preview's ballistic solver
+    // (so the reticle shows where the missile would land if you flew it
+    // straight) and the launch velocity. Steering takes over the moment
+    // the round is in the air.
+    projectileSpeed: 22,
+    blastRadius: 5,
+    damage: 55,
+    terrainDamage: 3.5,
+    behavior: 'predator',
+    cooldown: 7,
+    startAmmo: 1,
+    maxAmmo: 2,
+    // Rare-ish: the steering camera is a strong utility, but each round
+    // freezes the owner for several seconds so it's not pure upside.
+    pickupWeight: 0.4,
+    behaviorConfig: {
+      predatorSpeed: 22,
+      // Roughly 90°/s yaw, 70°/s pitch — punchy enough to chase a
+      // moving tank without making the missile feel like a fighter jet.
+      predatorTurnRate: 1.6,
+      predatorPitchRate: 1.2,
+      predatorLifetime: 9,
+      predatorBlastRadius: 5,
+      predatorDamage: 55,
+      predatorTerrainDamage: 3.5,
+    },
+  },
+  {
     // Rocket jump: the tank itself becomes the projectile. Aim with the
     // normal reticle — the same ballistic solver used by standard weapons
     // picks a turret/barrel angle that would land a shell at the target,
