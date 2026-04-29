@@ -187,6 +187,17 @@ interface PlayerState {
    *  but cannot move). Cleared on detonation, lifetime expiry, owner
    *  death, or disconnect. */
   activeMissileId: string | null;
+  /** Epoch seconds until which the tank is descending in a respawn
+   *  parachute drop. 0 means no respawn descent active (the start-of-
+   *  match Countdown drop is gated on `phase === Countdown` instead and
+   *  doesn't use this field). While positive: KCC drive is bypassed,
+   *  Y is lerped from the elevated peak down to `parachuteGroundY`,
+   *  and fire (human + bot) is rejected. */
+  parachuteUntil: number;
+  /** Cached ground Y at the respawn XZ, sampled once at respawnTank time
+   *  so the descent stays a clean linear lerp. Read by the integrator
+   *  every tick during the descent and on the just-landed snap. */
+  parachuteGroundY: number;
 }
 
 interface ActiveProjectileRuntime extends ActiveProjectileState {
@@ -536,6 +547,8 @@ export class Room {
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
       activeMissileId: null,
+      parachuteUntil: 0,
+      parachuteGroundY: 0,
     });
 
     this.spawnTank(playerId, playerName, color, flagId, parachuteId);
@@ -784,6 +797,12 @@ export class Room {
       if (player.activeMissileId) return;
 
       const now = Date.now() / 1000;
+      // Cannon is locked while the tank is descending under a respawn
+      // parachute. The Countdown-phase parachute is already covered by
+      // the InProgress-only gate above (fire_request returns early
+      // outside InProgress), so this only triggers for the per-player
+      // respawn descent.
+      if (now < player.parachuteUntil) return;
       const prevFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
       if (now - prevFire < weapon.cooldown) return;
 
@@ -1010,6 +1029,8 @@ export class Room {
       burningOwner: null,
       inventory: createRandomLoadout(this.settings.weaponAllowed),
       activeMissileId: null,
+      parachuteUntil: 0,
+      parachuteGroundY: 0,
     });
 
     // Pick a unique flag for the bot from the full countries list
@@ -1853,6 +1874,14 @@ export class Room {
     const player = this.players.get(playerId);
     if (!tank || !player) return;
     const pos = this.findSpawnPosition();
+    // Respawn parachute: lift Y and arm the per-player descent timer so
+    // the integrator runs the same parachute path used at match-start.
+    // Spawn protection is *not* applied here — it'll be applied at the
+    // moment the descent ends (integrator transition-out branch) so the
+    // 3 s shield-bubble window covers the post-landing walk, not the
+    // descent itself (which is already invulnerable via parachute gate).
+    const groundY = pos.y;
+    pos.y = groundY + PARACHUTE_DROP_HEIGHT;
     tank.position = pos;
     tank.hp = TANK_MAX_HP;
     tank.alive = true;
@@ -1862,6 +1891,7 @@ export class Room {
     tank.turretRotation = 0;
     tank.barrelPitch = 0.2;
     tank.airborne = false;
+    tank.parachute = true;
     tank.linVel.x = 0; tank.linVel.y = 0; tank.linVel.z = 0;
     tank.extraVel.x = 0; tank.extraVel.y = 0; tank.extraVel.z = 0;
     tank.angVel.x = 0; tank.angVel.y = 0; tank.angVel.z = 0;
@@ -1878,6 +1908,8 @@ export class Room {
     player.burningOwner = null;
     player.input.seq = 0;
     player.spawnProtectionUntil = 0;
+    player.parachuteUntil = Date.now() / 1000 + MATCH_COUNTDOWN_MS / 1000;
+    player.parachuteGroundY = groundY;
     player.inventory = createRandomLoadout(this.settings.weaponAllowed);
     tank.inventory = player.inventory;
     // Wipe any stale heat / lockout from the previous life — the new
@@ -1887,10 +1919,6 @@ export class Room {
     // leave the camera locked to a despawned missile across respawn.
     player.activeMissileId = null;
     this.physics.resetTank(playerId, tank.position, 0);
-
-    if (this.phase === MatchPhase.InProgress) {
-      this.applySpawnProtection(tank, player);
-    }
   }
 
   private startMatch(): void {
@@ -2207,20 +2235,27 @@ export class Room {
     // freeze the body, and short-circuit the drown / airborne checks in
     // the readback loop. The player digs out by shooting.
     const buriedIds = this.computeBuriedTanks();
-    // During the start-of-match countdown every alive tank is pinned in
-    // its parachute drop: KCC drive is skipped (no input, no gravity
-    // integration on the body) and the broadcast Y is computed below from
-    // a deterministic linear lerp. resetTank is called only at the
-    // transition out so the body lands on the sampled ground in a single
-    // teleport — the previous implementation paid resetTank+readbackTank
-    // 60Hz × N tanks which dominated the Countdown CPU profile.
+    // Parachuting tanks (start-of-match Countdown OR per-player respawn
+    // descent) bypass KCC drive — Y is overridden below from a
+    // deterministic linear lerp. resetTank is called only at transition
+    // out so the body lands in a single teleport. The previous
+    // implementation paid resetTank+readbackTank 60 Hz × N tanks which
+    // dominated the Countdown CPU profile.
     const inCountdown = this.phase === MatchPhase.Countdown;
-    let applySkipIds = buriedIds;
-    if (inCountdown) {
-      applySkipIds = new Set<PlayerId>(buriedIds);
-      for (const [pid, tank] of this.tanks) {
-        if (tank.alive) applySkipIds.add(pid);
+    const parachutingIds = new Set<PlayerId>();
+    for (const [pid, tank] of this.tanks) {
+      if (!tank.alive) continue;
+      if (inCountdown) {
+        parachutingIds.add(pid);
+        continue;
       }
+      const player = this.players.get(pid);
+      if (player && nowSec < player.parachuteUntil) parachutingIds.add(pid);
+    }
+    let applySkipIds = buriedIds;
+    if (parachutingIds.size > 0) {
+      applySkipIds = new Set<PlayerId>(buriedIds);
+      for (const id of parachutingIds) applySkipIds.add(id);
     }
     this.physics.applyTankInputs(dt, applySkipIds);
     this.physics.step(dt);
@@ -2231,14 +2266,27 @@ export class Room {
       const buried = buriedIds.has(pid);
       const player = this.players.get(pid);
       const wasParachute = tank.parachute === true;
+      const isParachuting = parachutingIds.has(pid);
 
-      if (inCountdown) {
-        // Linear lerp Y from peak → groundY over the countdown window. The
-        // body itself stays at the spawn-time elevated Y (set by spawnTank
-        // / resetMatch); we only update the broadcast state here.
-        const remain = Math.max(0, this.countdownEndsAt - Date.now());
-        const fraction = Math.min(1, remain / MATCH_COUNTDOWN_MS);
-        const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+      if (isParachuting) {
+        // Linear lerp Y from peak → groundY. Two source-of-timing cases:
+        //  - Countdown match-start: time anchored to this.countdownEndsAt,
+        //    groundY sampled per tick (cheap voxel query).
+        //  - Per-player respawn: time anchored to player.parachuteUntil,
+        //    groundY cached on the player at respawn time.
+        let groundY: number;
+        let fraction: number;
+        if (inCountdown) {
+          const remain = Math.max(0, this.countdownEndsAt - Date.now());
+          fraction = Math.min(1, remain / MATCH_COUNTDOWN_MS);
+          groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
+        } else {
+          // player must exist — parachutingIds entries below the inCountdown
+          // branch were filtered on player.parachuteUntil.
+          const remainSec = Math.max(0, player!.parachuteUntil - nowSec);
+          fraction = Math.min(1, remainSec / (MATCH_COUNTDOWN_MS / 1000));
+          groundY = player!.parachuteGroundY;
+        }
         tank.position.y = groundY + PARACHUTE_DROP_HEIGHT * fraction;
         tank.parachute = true;
         tank.airborne = false;
@@ -2253,17 +2301,27 @@ export class Room {
         continue;
       }
 
-      // Countdown just ended: snap the body to the sampled ground in one
-      // resetTank call so the next tick's KCC has a grounded contact, then
-      // skip the rest of this iteration to let normal physics run from the
-      // following tick.
+      // Parachute just ended this tick: snap the body to the sampled
+      // ground in one resetTank call so the next tick's KCC has a
+      // grounded contact, then apply spawn-protection if this was a
+      // respawn descent (the start-of-match Countdown case is already
+      // covered by beginCountdown's setTimeout). Skip the rest of this
+      // iteration so normal physics resumes from the following tick.
       if (wasParachute && !buried) {
-        const groundY = this.voxels.getHeight(tank.position.x, tank.position.z);
-        tank.position.y = groundY;
+        const cachedGround = player && player.parachuteUntil > 0
+          ? player.parachuteGroundY
+          : this.voxels.getHeight(tank.position.x, tank.position.z);
+        tank.position.y = cachedGround;
         this.physics.resetTank(pid, tank.position, tank.bodyRotation);
         tank.parachute = false;
         tank.airborne = false;
-        if (player) tank.lastAppliedSeq = player.input.seq;
+        if (player) {
+          if (player.parachuteUntil > 0) {
+            this.applySpawnProtection(tank, player);
+            player.parachuteUntil = 0;
+          }
+          tank.lastAppliedSeq = player.input.seq;
+        }
         continue;
       }
 
@@ -3090,6 +3148,11 @@ export class Room {
         if (now >= player.respawnAllowedAt) this.respawnTank(pid);
         continue;
       }
+
+      // Bots stay passive while parachuting in after respawn — no aim,
+      // no fire, no movement input. The integrator pins their hull and
+      // the tank drops in visually identical to a human respawn.
+      if (now < player.parachuteUntil) continue;
 
       // TARGETING - very large radius to ensure they always find an enemy
       const targetId = findNearestEnemyFn(tank.position, pid, 5000, allTanks);

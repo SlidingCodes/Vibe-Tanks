@@ -812,7 +812,11 @@ socket.on('state_update', (state: RoomStateUpdate) => {
         predictedState.angVel.y = tankState.angVel.y;
         predictedState.angVel.z = tankState.angVel.z;
 
-        if (justRespawned) {
+        const inParachuteServer = tankState.parachute === true;
+        if (justRespawned || inParachuteServer) {
+          // Snap to server position. justRespawned covers the dead→alive
+          // teleport; inParachuteServer covers every state_update during
+          // the descent (server-authoritative deterministic Y lerp).
           predictedState.position.x = tankState.position.x;
           predictedState.position.y = tankState.position.y;
           predictedState.position.z = tankState.position.z;
@@ -823,20 +827,39 @@ socket.on('state_update', (state: RoomStateUpdate) => {
           predictedState.barrelPitch = tankState.barrelPitch;
           predictedVel.x = 0;
           predictedVel.z = 0;
-          // The new loadout may not even include a hold-to-fire weapon,
-          // and any heat carried over from the previous life would mis-
-          // gate the first burst — wipe it.
-          weaponHeat.clear();
-          // Re-baseline the reconciliation clocks to match the server's
-          // post-respawn ACK (also 0). Buffer entries from the previous
-          // life are harmless because the circular index's seq check in
-          // the replay loop skips any whose stored seq != requested seq.
-          clientSeq = 0;
-          lastReconciledSeq = 0;
-          triggerRespawnAnim(myId);
-          if (clientPhysics) {
-            clientPhysics.addTank(predictedState);
-            localTankRegistered = true;
+          if (justRespawned) {
+            // The new loadout may not even include a hold-to-fire weapon,
+            // and any heat carried over from the previous life would mis-
+            // gate the first burst — wipe it.
+            weaponHeat.clear();
+            // Re-baseline the reconciliation clocks to match the server's
+            // post-respawn ACK (also 0). Buffer entries from the previous
+            // life are harmless because the circular index's seq check in
+            // the replay loop skips any whose stored seq != requested seq.
+            clientSeq = 0;
+            lastReconciledSeq = 0;
+            // Skip the scale-in fade if the player is entering by
+            // parachute — the descent is already the entrance animation,
+            // shrinking-and-growing on top of it looks like a bug.
+            if (!inParachuteServer) triggerRespawnAnim(myId);
+            if (clientPhysics) {
+              clientPhysics.addTank(predictedState);
+              localTankRegistered = true;
+            }
+          } else if (clientPhysics && localTankRegistered) {
+            // Mid-parachute snap: re-anchor the client physics body each
+            // broadcast so when the descent ends the body is already at
+            // the broadcast position. Without this, the body would sit
+            // at its pre-parachute Y and the first post-parachute reconcile
+            // would hard-resync.
+            clientPhysics.restoreTankState(
+              myId,
+              tankState.position,
+              tankState.bodyRotation,
+              tankState.linVel,
+              tankState.extraVel,
+              tankState.angVel,
+            );
           }
         } else {
           // Unified grounded + airborne reconciliation via rewind-and-
@@ -1413,7 +1436,12 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const inCountdown = (snapshot?.phase === MatchPhase.Countdown) || isMatchCountdownActive();
+    // Input freeze covers the start-of-match countdown, the FIGHT! tail
+    // (covered by isMatchCountdownActive), AND the per-player respawn
+    // parachute descent. All three keep the carro on rails while the
+    // server is the sole authority on the body's position.
+    const inParachute = predictedState.parachute === true;
+    const inCountdown = (snapshot?.phase === MatchPhase.Countdown) || isMatchCountdownActive() || inParachute;
     const isPiloting = !!pilotingMissile;
     const baseInput = getMovementInput();
     // Match the server-side mask in tickMovement: during Countdown the tank
@@ -1467,21 +1495,38 @@ function animate(): void {
         const tickNetInput: MovementInput = { ...networkInput, seq: clientSeq };
         inputBuffer[clientSeq % INPUT_BUFFER_SIZE] = tickPredictInput;
         socket.emit('movement_input', tickNetInput);
-        clientPhysics.setTankInput(myId, tickPredictInput);
-        clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
-        clientPhysics.step(CLIENT_PHYSICS_STEP);
-        // Snapshot the predicted transform (position + yaw) AFTER this
-        // tick's physics step so reconciliation can compare
-        // server-state(seq) against our prediction(seq) — same tick,
-        // lag cancels. Yaw included because small yaw drift rotates the
-        // drive vector and regenerates position drift every frame.
-        const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
-        sample.seq = clientSeq;
-        clientPhysics.getTankPosition(myId, sample);
-        sample.yaw = clientPhysics.getTankYaw(myId);
+        if (inParachute) {
+          // Server is authoritative during the parachute descent (Y is a
+          // pure linear lerp on its side). Skip applyTankInputs/step
+          // entirely; the state_update handler restoreTankStates the
+          // client body to the broadcast position so the body is already
+          // on the ground when the descent ends. Still emit input + bump
+          // clientSeq so the server's lastAppliedSeq stays in lockstep.
+          const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
+          sample.seq = clientSeq;
+          sample.x = predictedState.position.x;
+          sample.y = predictedState.position.y;
+          sample.z = predictedState.position.z;
+          sample.yaw = predictedState.bodyRotation;
+        } else {
+          clientPhysics.setTankInput(myId, tickPredictInput);
+          clientPhysics.applyTankInputs(CLIENT_PHYSICS_STEP);
+          clientPhysics.step(CLIENT_PHYSICS_STEP);
+          // Snapshot the predicted transform (position + yaw) AFTER this
+          // tick's physics step so reconciliation can compare
+          // server-state(seq) against our prediction(seq) — same tick,
+          // lag cancels. Yaw included because small yaw drift rotates the
+          // drive vector and regenerates position drift every frame.
+          const sample = predictedPosBuffer[clientSeq % INPUT_BUFFER_SIZE];
+          sample.seq = clientSeq;
+          clientPhysics.getTankPosition(myId, sample);
+          sample.yaw = clientPhysics.getTankYaw(myId);
+        }
         physicsAccumulator -= CLIENT_PHYSICS_STEP;
       }
-      clientPhysics.readbackTank(myId, predictedState);
+      if (!inParachute) {
+        clientPhysics.readbackTank(myId, predictedState);
+      }
       predictedVel.x = 0;
       predictedVel.z = 0;
     } else {
