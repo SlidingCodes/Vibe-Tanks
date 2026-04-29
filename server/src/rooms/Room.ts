@@ -90,7 +90,7 @@ const SPAWN_PROTECTION_SECONDS = 3;
 const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
-const MATCH_COUNTDOWN_MS = 3000; // freeze tanks for this long at the start of every match
+const MATCH_COUNTDOWN_MS = 4000; // 4s total (3s visual + 1s buffer)
 const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
 /** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
@@ -334,7 +334,6 @@ export class Room {
     this.fire = new FireGrid(this.voxels);
 
     this.physics = new RapierVoxelWorld(this.voxels);
-    this.scheduleReset();
     this.ensureFourTanks();
   }
 
@@ -418,7 +417,6 @@ export class Room {
       this.physics.resetTank(pid, tank.position, 0);
     }
     this.ensureFourTanks();
-    this.scheduleReset();
     // If the reset timer fired on an empty server (no human ever joined
     // during the previous match), resetMatch flips phase to InProgress
     // without anyone having called startLoop. The first player to
@@ -1526,6 +1524,7 @@ export class Room {
       if (this.phase !== MatchPhase.Countdown) return;
       this.phase = MatchPhase.InProgress;
       this.countdownEndsAt = 0;
+      this.scheduleReset();
       this.io.to(this.id).emit('room_snapshot', this.getSnapshot());
     }, MATCH_COUNTDOWN_MS);
   }
@@ -1758,7 +1757,7 @@ export class Room {
         // masked so a player who held it from the prev match doesn't carry
         // momentum into the new map.
         if (this.phase === MatchPhase.Countdown) {
-          effectiveInput = { ...effectiveInput, forward: false, backward: false, turbo: false };
+          effectiveInput = { ...effectiveInput, forward: false, backward: false, left: false, right: false, turbo: false };
         }
         this.physics.setTankInput(pid, effectiveInput);
       } else {
@@ -2273,9 +2272,11 @@ export class Room {
       projectiles: state.projectiles,
       hazards: state.hazards,
       pickups: state.pickups,
-      resetsInSeconds: Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000)),
+      resetsInSeconds: (this.phase === MatchPhase.InProgress || this.phase === MatchPhase.Leaderboard)
+        ? Math.max(0, Math.floor(this.matchResetAt - Date.now() / 1000))
+        : MATCH_DURATION_SECONDS,
       countdownEndsInMs: this.phase === MatchPhase.Countdown
-        ? Math.max(0, this.countdownEndsAt - Date.now())
+        ? Math.max(0, this.countdownEndsAt - 1000 - Date.now())
         : 0,
       inviteCode: this.inviteCode,
     };

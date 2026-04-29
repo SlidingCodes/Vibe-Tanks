@@ -45,7 +45,7 @@ import { setupSettingsDialog } from './ui/settingsDialog';
 import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
-import { setupMatchCountdown, setMatchCountdown } from './ui/matchCountdown';
+import { setupMatchCountdown, setMatchCountdown, isMatchCountdownActive } from './ui/matchCountdown';
 import { initMinimap, onMinimapCarve, updateMinimap } from './ui/minimap';
 import { spawnDamagePopup, spawnPickupToast } from './ui/damagePopups';
 import { playShoot, playExplosion, playTankExplosion, playDeath, playRespawn, playWeaponSwitch, playHitMarker, playAnnouncer, playSpeech, playTurbo, playShieldActivate, playShieldBreak } from './audio/sounds';
@@ -1267,7 +1267,7 @@ function animate(): void {
     const selectedWeapon = getSelectedWeapon();
     const turboActive = now < turboActiveUntil;
 
-    const inCountdown = snapshot?.phase === MatchPhase.Countdown;
+    const inCountdown = (snapshot?.phase === MatchPhase.Countdown) || isMatchCountdownActive();
     const baseInput = getMovementInput();
     // Match the server-side mask in tickMovement: during Countdown the tank
     // can still yaw on the spot (left/right) and aim, but forward/backward
@@ -1277,6 +1277,8 @@ function animate(): void {
       ...baseInput,
       forward: inCountdown ? false : baseInput.forward,
       backward: inCountdown ? false : baseInput.backward,
+      left: inCountdown ? false : baseInput.left,
+      right: inCountdown ? false : baseInput.right,
       turbo: inCountdown ? false : turboActive,
     };
     const { w: mapW, h: mapH } = getMapBounds();
