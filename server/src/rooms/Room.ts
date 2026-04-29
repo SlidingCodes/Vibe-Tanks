@@ -93,8 +93,21 @@ const SHIELD_DURATION = 5; // seconds the shield stays active after activation
 const RESPAWN_MIN_INTERVAL_SECONDS = 5; // matches the client death-screen countdown
 const MATCH_DURATION_SECONDS = 300; // reset the map + scores every 5 minutes
 const MATCH_COUNTDOWN_MS = 4000; // 4s total (3s visual + 1s buffer)
-const BOT_HIT_RATE = 0.5; // Probability (0.0 to 1.0) of a bot aiming correctly
+const BOT_HIT_RATE = 0.4; // Probability (0.0 to 1.0) of a bot aiming correctly
 const BOT_MISS_JITTER = 5.0; // Error magnitude in meters when a bot is meant to miss
+const BOT_DECISION_INTERVAL = 1.2; // Seconds between strategic decisions
+const BOT_IDLE_CHANCE = 0.25; // 25% chance to just wander around for a bit
+const BOT_IDLE_DURATION_MIN = 4.0; // Min seconds to wander
+const BOT_IDLE_DURATION_MAX = 8.0; // Max seconds to wander
+const BOT_TARGET_STICKY_RANGE = 35.0; // Keep target if within this range
+const BOT_MAX_FOCUS_ON_SAME_HUMAN = 1; // Don't gang up! Max 1 bot targeting the same human
+const BOT_REACTION_TIME = 0.85; // Delay in seconds before a bot reacts to a new target
+const BOT_CHARGE_CHANCE = 0.15; // 15% chance to charge instead of skirmish
+const BOT_MAX_ENGAGEMENT_DIST = 40.0; // Distance beyond which bot moves forward
+const BOT_MIN_ENGAGEMENT_DIST = 15.0; // Distance below which bot moves backward
+const BOT_TURRET_SPEED = 1.2; // Rad/s max rotation speed for turret (prevents instant snapping)
+const BOT_FIRE_RATE_MULT = 1.6; // Multiplier on weapon cooldown (bots shoot 1.6x slower)
+const BOT_WEAPON_SWITCH_COOLDOWN = 4.0; // Delay between weapon switches
 /** Fire cellular-automaton tick frequency. Slower than the sim/broadcast
  *  loops so spread looks like a creeping burn, not a strobe. */
 const FIRE_TICK_RATE = 5;
@@ -162,6 +175,18 @@ interface PlayerState {
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
   botWeaponIndex?: number;
+  botTargetId?: PlayerId | null;
+  botMoveMode?: 'skirmish' | 'flee' | 'charge';
+  botIdleUntil?: number;
+  botNextDecisionAt?: number;
+  botTargetJitter?: { x: number; y: number; z: number };
+  botMoveModeUntil?: number;
+  botStrafeUntil?: number;
+  botStrafeDir?: number;
+  botReactionUntil?: number;
+  lastDamagedAt?: number;
+  lastAttackerId?: PlayerId | null;
+  lastBotWeaponSwitchAt?: number;
   /** Epoch seconds until which the turbo boost is active. */
   turboActiveUntil: number;
   /** Epoch seconds before which turbo cannot be re-activated (recharge). */
@@ -361,6 +386,7 @@ export class Room {
   private nextStrikeId = 1;
   private nextPickupId = 1;
   private nextSoldierId = 1;
+  private humanFocusCount: Map<PlayerId, number> = new Map();
   /** Sim-time (seconds) at which the next pickup will spawn. */
   private nextPickupSpawnAt = 0;
   private resetTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -3146,103 +3172,264 @@ export class Room {
 
       if (!tank.alive) {
         if (now >= player.respawnAllowedAt) this.respawnTank(pid);
+        player.botTargetId = null;
+        player.botMoveMode = 'skirmish';
         continue;
       }
 
-      // Bots stay passive while parachuting in after respawn — no aim,
-      // no fire, no movement input. The integrator pins their hull and
-      // the tank drops in visually identical to a human respawn.
       if (now < player.parachuteUntil) continue;
 
-      // TARGETING - very large radius to ensure they always find an enemy
-      const targetId = findNearestEnemyFn(tank.position, pid, 5000, allTanks);
-      const targetTank = targetId ? this.tanks.get(targetId) : null;
+      // ── IDLE PATROL: bot temporarily disengages ──
+      if (now < (player.botIdleUntil ?? 0)) {
+        player.input.forward = true;
+        player.input.backward = false;
+        player.input.left = Math.random() < 0.01;
+        player.input.right = !player.input.left && Math.random() < 0.01;
+        player.botTargetId = null;
+        continue;
+      }
 
-      // Default state: Always move forward!
-      player.input.forward = true;
+      // ── 1. STRATEGIC DECISION (Low Frequency) ──
+      if (now >= (player.botNextDecisionAt ?? 0)) {
+        player.botNextDecisionAt = now + BOT_DECISION_INTERVAL + Math.random() * 0.3;
+
+        // Random idle patrol: bot takes a break from combat
+        if (Math.random() < BOT_IDLE_CHANCE) {
+          player.botIdleUntil = now + BOT_IDLE_DURATION_MIN + Math.random() * (BOT_IDLE_DURATION_MAX - BOT_IDLE_DURATION_MIN);
+          player.botTargetId = null;
+          continue;
+        }
+
+        const prevTargetId = player.botTargetId;
+        let bestTargetId: PlayerId | null = null;
+        let minTargetDistSq = Infinity;
+
+        // Sticky Targeting
+        const currentTarget = prevTargetId ? this.tanks.get(prevTargetId) : null;
+        if (currentTarget && currentTarget.alive) {
+          const dx = currentTarget.position.x - tank.position.x;
+          const dz = currentTarget.position.z - tank.position.z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < BOT_TARGET_STICKY_RANGE * BOT_TARGET_STICKY_RANGE) {
+            bestTargetId = prevTargetId!;
+            minTargetDistSq = d2;
+          }
+        }
+
+        // Revenge Targeting
+        const attackerId = player.lastAttackerId;
+        const attacker = attackerId ? this.tanks.get(attackerId) : null;
+        if (attacker && attacker.alive) {
+          bestTargetId = attackerId!;
+          player.lastAttackerId = null;
+        }
+
+        // Anti-gang-up: if chosen target is human and already focused by
+        // enough bots, prefer a different target (bot or farther human).
+        if (bestTargetId) {
+          const tp = this.players.get(bestTargetId);
+          if (tp && !tp.isBot) {
+            const count = this.humanFocusCount.get(bestTargetId) ?? 0;
+            if (count >= BOT_MAX_FOCUS_ON_SAME_HUMAN && bestTargetId !== prevTargetId) {
+              bestTargetId = null; // force fallback search
+            }
+          }
+        }
+
+        if (!bestTargetId) {
+          // Prefer bot targets over human targets to reduce pressure
+          let nearestBotId: PlayerId | null = null;
+          let nearestBotDist = Infinity;
+          let nearestHumanId: PlayerId | null = null;
+          let nearestHumanDist = Infinity;
+
+          for (const t of allTanks) {
+            if (t.playerId === pid || !t.alive) continue;
+            const dx = t.position.x - tank.position.x;
+            const dz = t.position.z - tank.position.z;
+            const d2 = dx * dx + dz * dz;
+            const isBot = this.players.get(t.playerId)?.isBot ?? false;
+            if (isBot && d2 < nearestBotDist) { nearestBotDist = d2; nearestBotId = t.playerId; }
+            if (!isBot && d2 < nearestHumanDist) { nearestHumanDist = d2; nearestHumanId = t.playerId; }
+          }
+
+          // 70% preference for bot targets when available
+          if (nearestBotId && (Math.random() < 0.7 || !nearestHumanId)) {
+            bestTargetId = nearestBotId;
+            minTargetDistSq = nearestBotDist;
+          } else if (nearestHumanId) {
+            const humanCount = this.humanFocusCount.get(nearestHumanId) ?? 0;
+            if (humanCount < BOT_MAX_FOCUS_ON_SAME_HUMAN) {
+              bestTargetId = nearestHumanId;
+              minTargetDistSq = nearestHumanDist;
+            } else if (nearestBotId) {
+              bestTargetId = nearestBotId;
+              minTargetDistSq = nearestBotDist;
+            }
+          }
+        }
+
+        if (bestTargetId !== prevTargetId) {
+          // Update focus count map
+          if (prevTargetId) {
+            const oldTp = this.players.get(prevTargetId);
+            if (oldTp && !oldTp.isBot) this.humanFocusCount.set(prevTargetId, Math.max(0, (this.humanFocusCount.get(prevTargetId) ?? 1) - 1));
+          }
+          if (bestTargetId) {
+            const newTp = this.players.get(bestTargetId);
+            if (newTp && !newTp.isBot) this.humanFocusCount.set(bestTargetId, (this.humanFocusCount.get(bestTargetId) ?? 0) + 1);
+          }
+          player.botTargetId = bestTargetId;
+          player.botReactionUntil = now + BOT_REACTION_TIME + Math.random() * 0.4;
+        }
+
+        // Accuracy decision (stable jitter per decision cycle)
+        const dist = Math.sqrt(minTargetDistSq);
+        const distFactor = Math.min(2.5, dist / 30);
+        const jitterMag = (Math.random() < BOT_HIT_RATE ? 0.5 : BOT_MISS_JITTER) * distFactor;
+        player.botTargetJitter = {
+          x: (Math.random() - 0.5) * jitterMag,
+          y: (Math.random() - 0.5) * jitterMag * 0.4,
+          z: (Math.random() - 0.5) * jitterMag,
+        };
+
+        // Movement mode
+        if (now >= (player.botMoveModeUntil ?? 0)) {
+          const hpRatio = tank.hp / tank.maxHp;
+          if (hpRatio < 0.25) {
+            player.botMoveMode = 'flee';
+            player.botMoveModeUntil = now + 3.0 + Math.random() * 2;
+          } else if (hpRatio > 0.8 && Math.random() < BOT_CHARGE_CHANCE) {
+            player.botMoveMode = 'charge';
+            player.botMoveModeUntil = now + 3.0 + Math.random() * 2;
+          } else {
+            player.botMoveMode = 'skirmish';
+            player.botMoveModeUntil = now + 4.0 + Math.random() * 2;
+          }
+        }
+
+        // Strafe
+        if (now >= (player.botStrafeUntil ?? 0)) {
+          player.botStrafeDir = Math.random() < 0.6 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+          player.botStrafeUntil = now + 2.0 + Math.random() * 3.0;
+        }
+
+        // Shield
+        if (tank.hp < tank.maxHp * 0.35 && tank.shieldAvailable && !tank.shieldActive) {
+          if (now - (player.lastDamagedAt ?? 0) < 2.0) {
+            tank.shieldActive = true;
+            tank.shieldAvailable = false;
+            tank.shieldTimeRemaining = SHIELD_DURATION;
+            player.shieldExpiresAt = now + SHIELD_DURATION;
+          }
+        }
+
+        // Turbo
+        const needsTurbo = player.botMoveMode === 'flee' || player.botMoveMode === 'charge';
+        if (needsTurbo && now >= player.turboCooldownUntil) {
+          player.turboActiveUntil = now + TURBO_DURATION;
+          player.turboCooldownUntil = player.turboActiveUntil + TURBO_COOLDOWN;
+          player.input.turbo = true;
+        } else {
+          player.input.turbo = false;
+        }
+      }
+
+      // ── 2. MOVEMENT & AIMING (High Frequency) ──
+      const targetTank = player.botTargetId ? this.tanks.get(player.botTargetId) : null;
+      player.input.forward = false;
       player.input.backward = false;
       player.input.left = false;
       player.input.right = false;
 
-      if (targetTank) {
+      if (targetTank && targetTank.alive) {
         const dx = targetTank.position.x - tank.position.x;
         const dz = targetTank.position.z - tank.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         const targetRotation = Math.atan2(dx, dz);
         const angleDiff = (targetRotation - tank.bodyRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
 
-        // Steering follows actual target
-        if (angleDiff < -0.05) player.input.right = true;
-        else if (angleDiff > 0.05) player.input.left = true;
+        if (angleDiff < -0.15) player.input.right = true;
+        else if (angleDiff > 0.15) player.input.left = true;
 
-        // --- BRAIN: Accuracy Logic ---
-        // Roll to see if the bot aims accurately or intentionally misses.
-        const isHitAttempt = Math.random() < BOT_HIT_RATE;
-        const currentJitter = isHitAttempt ? 0.4 : BOT_MISS_JITTER;
-        const jitteredPos = {
-          x: targetTank.position.x + (Math.random() - 0.5) * currentJitter,
-          y: targetTank.position.y + (Math.random() - 0.5) * currentJitter * 0.5,
-          z: targetTank.position.z + (Math.random() - 0.5) * currentJitter,
-        };
-
-        const solution = solveAimAnglesForTarget(tank, jitteredPos);
-        tank.turretRotation = solution.turretRotation;
-        tank.barrelPitch = solution.barrelPitch;
-
-        // Stop only when very close to target
-        if (dist < 3) player.input.forward = false;
-
-        // Simple water avoidance
-        const lookAheadDist = 5;
-        const lookX = tank.position.x + Math.sin(tank.bodyRotation) * lookAheadDist;
-        const lookZ = tank.position.z + Math.cos(tank.bodyRotation) * lookAheadDist;
-        const groundHeight = this.physics.getHeight(lookX, lookZ);
-        if (groundHeight < 0.2) {
-          player.input.forward = false;
+        const mode = player.botMoveMode ?? 'skirmish';
+        if (mode === 'flee') {
           player.input.backward = true;
-          player.input.left = true; // Spin away from water
+          if (player.botStrafeDir === -1) player.input.left = true;
+          else if (player.botStrafeDir === 1) player.input.right = true;
+        } else if (mode === 'charge') {
+          player.input.forward = true;
+          if (dist < 12) player.botMoveMode = 'skirmish';
+        } else {
+          if (dist > BOT_MAX_ENGAGEMENT_DIST) player.input.forward = true;
+          else if (dist < BOT_MIN_ENGAGEMENT_DIST) player.input.backward = true;
+          if (dist < BOT_MAX_ENGAGEMENT_DIST + 10) {
+            if (player.botStrafeDir === -1) player.input.left = true;
+            else if (player.botStrafeDir === 1) player.input.right = true;
+          }
         }
 
-        // Predictive Firing Logic - Initiative Enhancement
-        // Pick a weapon from the bot's current inventory; fall back to
-        // standard if the chosen slot vanished (ammo ran out last tick).
-        if (player.inventory.length === 0) continue;
-        const slotIdx = (player.botWeaponIndex ?? 0) % player.inventory.length;
-        const slot = player.inventory[slotIdx];
-        const weapon = WEAPONS.find((w) => w.id === slot.weaponId);
-        if (!weapon) {
-          player.botWeaponIndex = 0;
-          continue;
-        }
+        // Aiming (with reaction delay and turret slew)
+        if (now >= (player.botReactionUntil ?? 0)) {
+          const jitter = player.botTargetJitter ?? { x: 0, y: 0, z: 0 };
+          const jitteredPos = {
+            x: targetTank.position.x + jitter.x,
+            y: targetTank.position.y + jitter.y,
+            z: targetTank.position.z + jitter.z,
+          };
+          const solution = solveAimAnglesForTarget(tank, jitteredPos);
 
-        // Only run simulation if cooldown is ready to save performance.
-        // Predator is excluded from the bot pool — it requires the
-        // pilot-camera client takeover, which bots have no concept of;
-        // letting them fire it would just freeze them in place for
-        // 9 s while a missile flew straight ahead.
-        const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
-        if (weapon.behavior === 'predator') {
-          player.botWeaponIndex = (slotIdx + 1) % player.inventory.length;
-          continue;
-        }
-        if (now - prevBotFire >= weapon.cooldown
-          && !(weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now))) {
-          // Dry-run simulation using the current (jittered) aim
-          const result = simulateShot(tank, weapon, this.voxels, allTanks);
+          const turretDiff = (solution.turretRotation - tank.turretRotation + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+          const maxSlew = BOT_TURRET_SPEED * dt;
+          if (Math.abs(turretDiff) < maxSlew) tank.turretRotation = solution.turretRotation;
+          else tank.turretRotation += Math.sign(turretDiff) * maxSlew;
 
-          // Fire! The jitter ensures they only hit 40-60% of the time.
-          this.consumeAmmo(player, weapon.id);
-          player.lastFireByWeapon.set(weapon.id, now);
-          if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
-          this.performFire(tank, player, weapon, targetTank.position, result);
-          // Reshuffle slot index against the (possibly shrunken) inventory.
-          player.botWeaponIndex = player.inventory.length > 0
-            ? Math.floor(Math.random() * player.inventory.length)
-            : 0;
+          const pitchDiff = solution.barrelPitch - tank.barrelPitch;
+          const maxPitchSlew = (BOT_TURRET_SPEED * 0.6) * dt;
+          if (Math.abs(pitchDiff) < maxPitchSlew) tank.barrelPitch = solution.barrelPitch;
+          else tank.barrelPitch += Math.sign(pitchDiff) * maxPitchSlew;
+
+          // Firing (slower than max rate via BOT_FIRE_RATE_MULT)
+          if (player.inventory.length > 0) {
+            const slotIdx = (player.botWeaponIndex ?? 0) % player.inventory.length;
+            const slot = player.inventory[slotIdx];
+            const weapon = WEAPONS.find((w) => w.id === slot.weaponId);
+
+            if (weapon && (slot.ammo === 'infinite' || slot.ammo > 0)) {
+              const prevBotFire = player.lastFireByWeapon.get(weapon.id) ?? 0;
+              const effectiveCooldown = weapon.cooldown * BOT_FIRE_RATE_MULT;
+              const isWeaponReady = now - prevBotFire >= effectiveCooldown
+                && !(weapon.behavior === 'minigun' && this.isWeaponOverheated(player, weapon, now));
+
+              if (!isWeaponReady && now - (player.lastBotWeaponSwitchAt ?? 0) >= BOT_WEAPON_SWITCH_COOLDOWN && player.inventory.length > 1) {
+                player.botWeaponIndex = (slotIdx + 1) % player.inventory.length;
+                player.lastBotWeaponSwitchAt = now;
+              }
+
+              const aimError = Math.abs(turretDiff) + Math.abs(pitchDiff);
+              if (isWeaponReady && aimError < 0.25 && weapon.behavior !== 'predator') {
+                const result = simulateShot(tank, weapon, this.voxels, allTanks);
+                this.consumeAmmo(player, weapon.id);
+                player.lastFireByWeapon.set(weapon.id, now);
+                if (weapon.behavior === 'minigun') this.bumpWeaponHeat(player, weapon, now);
+                this.performFire(tank, player, weapon, targetTank.position, result);
+              }
+            }
+          }
         }
       } else {
-        // No target? Roam the map.
         player.input.forward = true;
+        player.input.left = Math.random() < 0.005;
+        player.input.right = !player.input.left && Math.random() < 0.005;
+        if (now >= (player.botNextDecisionAt ?? 0)) player.botNextDecisionAt = now + 1.5;
+      }
+
+      // Water avoidance
+      const lookX = tank.position.x + Math.sin(tank.bodyRotation) * 6;
+      const lookZ = tank.position.z + Math.cos(tank.bodyRotation) * 6;
+      if (this.physics.getHeight(lookX, lookZ) < 0.2) {
+        player.input.forward = false;
+        player.input.backward = true;
         player.input.left = true;
       }
     }
