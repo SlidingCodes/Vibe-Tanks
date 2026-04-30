@@ -1,10 +1,19 @@
 // Background music — MP3 tracks, rotated randomly on match reset.
 // Uses HTML Audio elements routed through Web Audio API GainNode
 // so the music volume slider controls playback.
+//
+// Tracks are lazy-loaded: an <audio> element is created on first play
+// of that index and given preload='none', so the browser fetches the
+// MP3 only when it is actually about to play. This keeps page weight
+// independent of TRACK_URLS.length — adding a song does not slow boot.
 
 const TRACK_URLS = [
   '/music/song1.mp3',
   '/music/song2.mp3',
+  '/music/song3.mp3',
+  '/music/song4.mp3',
+  '/music/song5.mp3',
+  '/music/song6.mp3',
 ];
 
 // ── State ──
@@ -16,15 +25,9 @@ let playing = false;
 // rotates randomly between matches once a match is in progress.
 let currentTrackIdx = 0;
 
-// Pre-create Audio elements so they can buffer ahead
-const audioElements: HTMLAudioElement[] = TRACK_URLS.map((url) => {
-  const el = new Audio(url);
-  el.preload = 'auto';
-  el.loop = true;
-  return el;
-});
-
-// MediaElementSourceNodes (created once per element, reusable)
+// Lazy-allocated: index stays null until the track has been played at
+// least once. After that the element + source node are reused.
+const audioElements: (HTMLAudioElement | null)[] = TRACK_URLS.map(() => null);
 const sourceNodes: (MediaElementAudioSourceNode | null)[] = TRACK_URLS.map(() => null);
 
 function ensureCtx(): AudioContext {
@@ -38,12 +41,26 @@ function ensureCtx(): AudioContext {
   return ctx;
 }
 
-function connectElement(idx: number): void {
-  if (sourceNodes[idx]) return; // already connected
+function getOrCreateElement(idx: number): HTMLAudioElement {
+  let el = audioElements[idx];
+  if (!el) {
+    el = new Audio();
+    el.preload = 'none';
+    el.loop = true;
+    el.src = TRACK_URLS[idx];
+    audioElements[idx] = el;
+  }
+  return el;
+}
+
+function connectElement(idx: number): HTMLAudioElement {
+  const el = getOrCreateElement(idx);
+  if (sourceNodes[idx]) return el;
   const ac = ensureCtx();
-  const source = ac.createMediaElementSource(audioElements[idx]);
+  const source = ac.createMediaElementSource(el);
   source.connect(musicGain!);
   sourceNodes[idx] = source;
+  return el;
 }
 
 function updateGain(): void {
@@ -74,7 +91,7 @@ export function stopMusic(): void {
   if (!playing) return;
   playing = false;
   for (const el of audioElements) {
-    el.pause();
+    if (el) el.pause();
   }
 }
 
@@ -96,8 +113,10 @@ export function nextTrack(): void {
   if (playing) {
     // Stop all, start new
     for (const el of audioElements) {
-      el.pause();
-      el.currentTime = 0;
+      if (el) {
+        el.pause();
+        el.currentTime = 0;
+      }
     }
     playCurrentTrack();
   }
@@ -106,8 +125,7 @@ export function nextTrack(): void {
 // ── Internal ──
 
 function playCurrentTrack(): void {
-  const el = audioElements[currentTrackIdx];
-  connectElement(currentTrackIdx);
+  const el = connectElement(currentTrackIdx);
   el.currentTime = 0;
   el.play().catch(() => {
     // Autoplay blocked — re-issue play() inside the first user gesture.

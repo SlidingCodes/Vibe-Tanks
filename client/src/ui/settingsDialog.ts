@@ -1,5 +1,5 @@
 import { getVolume, setVolume } from '../audio/sounds';
-import { getMusicVolume, setMusicVolume } from '../audio/music';
+import { getMusicVolume, setMusicVolume, nextTrack, startMusic, isMusicPlaying } from '../audio/music';
 import { CameraPresetId, setCameraPreset } from '../scene/camera';
 import { WEAPONS } from '@shared/weapons';
 import { isFpsCounterVisible, setFpsCounterVisible } from './fpsCounter';
@@ -59,6 +59,7 @@ export function setupSettingsDialog(onExit: () => void): void {
   const musicValue = document.getElementById('settings-music-value') as HTMLSpanElement;
   const sfxSlider = document.getElementById('settings-sfx-slider') as HTMLInputElement;
   const sfxValue = document.getElementById('settings-sfx-value') as HTMLSpanElement;
+  const nextSongBtn = document.getElementById('settings-next-song') as HTMLButtonElement;
   const fsToggle = document.getElementById('settings-fullscreen') as HTMLInputElement;
   const statsToggle = document.getElementById('settings-stats') as HTMLInputElement;
   const cameraGrid = document.getElementById('settings-cameras') as HTMLDivElement;
@@ -84,6 +85,15 @@ export function setupSettingsDialog(onExit: () => void): void {
     setVolume(v);
     sfxValue.textContent = `${Math.round(v * 100)}%`;
     localStorage.setItem(SFX_KEY, String(v));
+  });
+
+  // nextTrack() rotates the index and replays it only when music is
+  // already playing; if it isn't, we bring it up via startMusic() so the
+  // button always produces audible output.
+  nextSongBtn.addEventListener('click', () => {
+    const wasPlaying = isMusicPlaying();
+    nextTrack();
+    if (!wasPlaying) startMusic();
   });
 
   // ── Fullscreen toggle ──
