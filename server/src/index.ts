@@ -8,6 +8,7 @@ import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
 import { isBanned, loadBans } from './admin/bans';
 import { loadHistory, startHistoryFlushLoop, flushHistory } from './admin/history';
+import { loadPlayerMetrics, startPlayerMetricsLoop, recordPlayerJoin } from './admin/playerMetrics';
 import { startInternalServer } from './admin/internalServer';
 import { extractClientIp } from './net/clientIp';
 
@@ -30,7 +31,7 @@ async function main(): Promise<void> {
 
   // Restore the persisted admin state before opening the public socket
   // so a banned client can't squeeze in during the load window.
-  await Promise.all([loadBans(), loadHistory()]);
+  await Promise.all([loadBans(), loadHistory(), loadPlayerMetrics()]);
   startHistoryFlushLoop();
 
   const httpServer = createServer((req, res) => {
@@ -105,6 +106,7 @@ async function main(): Promise<void> {
         }
       }
       room.addPlayer(socket, data.playerName, data.color, data.flagId, data.parachuteId);
+      recordPlayerJoin();
       console.log(`Player ${data.playerName} (${socket.id}) joined ${room.id} (mode=${mode})`);
     });
 
@@ -118,6 +120,13 @@ async function main(): Promise<void> {
   });
 
   startInternalServer(manager, io);
+  startPlayerMetricsLoop(() => {
+    let humans = 0;
+    for (const room of manager.allRooms()) {
+      humans += room.humanCount();
+    }
+    return humans;
+  });
 
   // systemctl stop / docker compose down send SIGTERM and wait
   // TimeoutStopSec (default 90 s) before SIGKILL — plenty of time to

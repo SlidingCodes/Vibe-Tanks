@@ -12,7 +12,9 @@ let ctx: AudioContext | null = null;
 let musicGain: GainNode | null = null;
 let musicVolume = 0.5;
 let playing = false;
-let currentTrackIdx = Math.floor(Math.random() * TRACK_URLS.length);
+// Boot on song1 so the login screen plays a known opener; nextTrack()
+// rotates randomly between matches once a match is in progress.
+let currentTrackIdx = 0;
 
 // Pre-create Audio elements so they can buffer ahead
 const audioElements: HTMLAudioElement[] = TRACK_URLS.map((url) => {
@@ -108,6 +110,14 @@ function playCurrentTrack(): void {
   connectElement(currentTrackIdx);
   el.currentTime = 0;
   el.play().catch(() => {
-    // Autoplay blocked — will start on next user gesture
+    // Autoplay blocked — re-issue play() inside the first user gesture.
+    const retry = (): void => {
+      window.removeEventListener('keydown', retry);
+      window.removeEventListener('pointerdown', retry);
+      ensureCtx();
+      el.play().catch(() => {});
+    };
+    window.addEventListener('keydown', retry, { once: true });
+    window.addEventListener('pointerdown', retry, { once: true });
   });
 }
