@@ -9,13 +9,14 @@ Vibe Tanks is a 3D real-time multiplayer tank game with destructible terrain, WA
 ## Tech stack
 
 - **Client:** Three.js + TypeScript + Vite (port 3000)
-- **Server:** Node.js + TypeScript + Socket.IO (port 3001)
+- **Server:** Node.js + TypeScript + Socket.IO (port 3001 public, port 3010 internal control plane)
+- **Admin:** Standalone Node.js + Express sidecar serving the dashboard (port 3002). Talks to the game server only via the internal control plane — no shared memory, no socket.io join.
 - **Shared:** TypeScript type definitions consumed by both client and server via relative imports
 
 ## Commands
 
 ```bash
-# Install all dependencies (root + server + client via postinstall)
+# Install all dependencies (root + server + client + admin via postinstall)
 npm install
 
 # Run both server and client concurrently
@@ -27,6 +28,11 @@ npm run dev:server
 # Run client only (Vite dev server with proxy to backend)
 npm run dev:client
 
+# Run admin sidecar (requires ADMIN_TOKEN + INTERNAL_TOKEN env vars,
+# and a game server reachable at GAME_INTERNAL_URL — defaults to
+# http://127.0.0.1:3010)
+npm run dev:admin
+
 # Build client for production
 npm run build:client
 
@@ -36,10 +42,9 @@ npm test
 # Re-run tests on change while editing
 npm run test:watch
 
-# Type-check server
+# Type-check server / admin / client
 cd server && npx tsc --noEmit
-
-# Type-check client
+cd admin  && npx tsc --noEmit
 cd client && npx tsc --noEmit
 ```
 
@@ -102,6 +107,25 @@ server/src/
   physics/RapierVoxelWorld.ts  Rapier3D world with per-chunk TriMesh terrain
                                colliders generated from Surface Nets; kinematic
                                character controller driving each tank body
+  admin/internalServer.ts    Loopback HTTP control plane on port 3010 — the
+                             only entry point the admin sidecar uses. Auth via
+                             X-Internal-Token (env INTERNAL_TOKEN, fail-closed)
+  admin/{bans,history,metrics}.ts  In-memory state owned by the game server:
+                             IP ban set (enforced in io.on('connection')),
+                             join/leave/kick ring buffer (CAP=500), and tick
+                             timing windows (timed() wraps sim/broadcast)
+admin/
+  src/index.ts               Bootstrap Express app on port 3002, fail-closed
+                             when ADMIN_TOKEN unset
+  src/routes.ts              /healthz, GET / (dashboard.html), /api/login +
+                             /api/{stats,rooms,history,bans,check-ip} as thin
+                             proxies onto gameClient. requireAdminAuth on /api/*
+  src/auth.ts                Bearer-token gate for the dashboard's public API
+  src/gameClient.ts          fetch() wrapper that calls the game server's
+                             /internal/* with X-Internal-Token; configurable
+                             via GAME_INTERNAL_URL (default 127.0.0.1:3010)
+  public/dashboard.html      Vanilla SPA — login form + polling tables for
+                             stats / rooms / history / bans
 shared/src/
   types/index.ts             All shared interfaces and network event contracts
   weapons.ts                 Weapon definitions
@@ -147,6 +171,7 @@ scripts/
 - **Voxel terrain (single source of truth)**: 200×48×200 uint8 density grid (`VoxelGrid`), cellSize=1, minYCells=-16. Seeded each match from a pure 2D noise sampler (`createTerrainHeightSampler`, presets: default/rolling/craggy). Isosurface at density=128 with sub-cell gradient interpolation, so Surface Nets renders smooth terrain at 1-unit resolution. Craters are `carveSphere` on the grid with organic rim noise; a single `voxel_snapshot` Socket.IO event ships the full Uint8Array to the client on join / match start / match reset, and subsequent in-match carves are replayed deterministically on both ends from `shot_resolved` steps (no per-patch network traffic).
 - **Data-driven weapons**: `WeaponDefinition` configs in `shared/src/weapons.ts` with cooldown values.
 - **Tank mesh hierarchy**: group (body yaw/pitch/roll) > turretGroup (independent Y rotation for aiming) > barrel (X rotation for pitch). Turret rotation is world-space on server, converted to local-space on client by subtracting body yaw. Pitch/roll are authoritative Rapier readback values derived from the voxel-backed TriMesh collider.
+- **Admin dashboard (out-of-process sidecar)**: the dashboard runs as an isolated Node process (`admin/`) so polling traffic from operators never costs the game server a tick. Two-token model: `ADMIN_TOKEN` gates the public dashboard surface (login + `/api/*`); `INTERNAL_TOKEN` (X-Internal-Token header) gates the game server's loopback `/internal/*` control plane on port 3010. Both are fail-closed (unset → 503). Ban set, history ring, and tick metrics live on the game server (state owners); the admin server only proxies through `gameClient.ts`. State mutations (ban / kick) are POSTed back through `/internal/*` so the game server stays authoritative for IP enforcement in `io.on('connection')`.
 
 ## Network flow
 
@@ -174,8 +199,6 @@ scripts/
 
 ## Deployment
 
-`scripts/deploy.sh` runs on the Raspberry Pi host. It fetches `origin/main`, detects which trees changed, and:
-- reinstalls deps if any `package*.json` changed,
-- rebuilds the client only if `client/` or `shared/` changed,
-- restarts `vibe-tanks.service` only if `server/` or `shared/` changed.
-Safe to rerun; no-ops when the local HEAD already matches remote.
+**Pi (systemd, no Docker)**: `scripts/deploy.sh` is invoked by the `deploy.yml` workflow on every push to `main`. It fetches `origin/main`, reinstalls deps if any `package*.json` changed, rebuilds the client, and restarts `vibe-tanks.service`. If `vibe-tanks-admin.service` is installed it gets restarted too; otherwise the script logs and skips (one-time install via `sudo cp scripts/vibe-tanks-admin.service /etc/systemd/system/` + `systemctl edit` for the `ADMIN_TOKEN`/`INTERNAL_TOKEN` drop-in). The game unit's drop-in must also export `INTERNAL_TOKEN` and ideally `INTERNAL_HOST=127.0.0.1` so the control plane is loopback-only on the Pi.
+
+**Hetzner (Docker compose, behind Caddy)**: `release-docker-deploy.yml` triggers on push to the `release` branch. It builds three images via the `Dockerfile` multi-stages (`server-runtime`, `admin-runtime`, `web-runtime`), pushes them to `ghcr.io/<owner>/vibe-tanks-{server,admin,web}:release`, scps `docker-compose.yml` + `Caddyfile` + `scripts/deploy-docker.sh` to the VPS, and runs the deploy script over SSH. The VPS `.env` (in `/opt/vibe-tanks/.env`) needs `SERVER_IMAGE`, `ADMIN_IMAGE`, `WEB_IMAGE`, `DOMAIN`, `ADMIN_TOKEN`, `INTERNAL_TOKEN`. Caddy serves the game client on `<domain>` and the admin dashboard on `admin.<domain>` (both with auto-TLS); only port 80/443 are mapped to the host, the 3001 / 3002 / 3010 traffic is internal to the docker network.

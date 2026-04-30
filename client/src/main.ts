@@ -23,6 +23,7 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
+  setSelfDestructPulse,
 } from './entities/tank';
 import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
@@ -38,17 +39,18 @@ import { FireRenderer } from './scene/fire';
 import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
 import { createPickupScene, PickupSceneHandle } from './scene/pickups';
+import { createVibeJamPortal, VibeJamPortalHandle } from './scene/vibeJamPortal';
 
 
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
 import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
-import { showLogin } from './ui/login';
+import { showLogin, tryAutoLoginFromPortal } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getSelfDestructHoldProgress, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
@@ -377,11 +379,16 @@ const initialLoginError = (() => {
     if (!reason) return undefined;
     sessionStorage.removeItem('vt.kickReason');
     if (reason === 'idle') return 'You were kicked for inactivity.';
+    if (reason === 'banned') return 'You have been banned from this server.';
     return undefined;
   } catch { return undefined; }
 })();
-// Block until the player has picked a name + color from the login overlay.
-let login = await showLogin(initialLoginError);
+// Vibe Jam 2026 webring spec: portal arrivals must skip every input screen.
+// If `?portal=true` is present we build a LoginResult from forwarded params
+// + saved prefs + IP→country flag (same defaults the overlay would pick),
+// and bypass the overlay entirely.
+const portalLogin = await tryAutoLoginFromPortal();
+let login = portalLogin ?? await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
@@ -413,6 +420,7 @@ socket.on('join_error', async ({ reason }) => {
       case 'cap_reached':    return 'Server is at capacity. Try again in a moment.';
       case 'missing_code':   return 'Enter a 4-letter invite code.';
       case 'too_many_rooms': return 'You already have 2 private rooms running. Close one first.';
+      case 'name_taken':     return 'That name is already taken in this room. Pick a different one.';
       default:               return 'Could not join. Try again.';
     }
   })();
@@ -489,6 +497,10 @@ setInterval(() => {
   if (socket.connected) socket.emit('ping', performance.now());
 }, 2000);
 
+// Server-driven probe for the admin dashboard's per-player latency
+// readout. We just echo the server's timestamp back unchanged.
+socket.on('srv_ping', (t: number) => socket.emit('srv_pong', t));
+
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
@@ -556,7 +568,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
   syncSoldiers(scene, snap.soldiers ?? []);
   refreshPilotingMissile(snap.projectiles);
-  hud.updateScoreboard(snap.tanks);
+  hud.updateScoreboard(snap.tanks, myId);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   syncLocalInventory(myTank);
@@ -687,6 +699,7 @@ let trackDecal: TrackDecalHandle | null = null;
 const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
+let vibeJamPortal: VibeJamPortalHandle | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
 const pickupScene: PickupSceneHandle = createPickupScene(scene);
 
@@ -750,6 +763,13 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
+  // Vibe Jam 2026 portal — fixed corner of the map. Rebuilt on every voxel
+  // snapshot so it sits on the correct terrain height after a match reset.
+  if (vibeJamPortal) {
+    vibeJamPortal.dispose();
+    vibeJamPortal = null;
+  }
+  vibeJamPortal = createVibeJamPortal(scene, worldW, worldH);
   // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
   // snapshot so it binds to the current grid (match reset regenerates it).
   if (fireRenderer) fireRenderer.dispose(scene);
@@ -1041,7 +1061,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
-  hud.updateScoreboard(tanks);
+  hud.updateScoreboard(tanks, myId);
   syncLocalInventory(myTank);
 
   if (myTank) {
@@ -1740,6 +1760,22 @@ function animate(): void {
         socket.emit('predator_detonate');
       }
     }
+
+    // R-key self-destruct. Gated on (alive && not piloting) so the key
+    // is silently ignored when it can't fire — server validates again,
+    // but consuming the latch here prevents a queued-up press from
+    // firing the moment a respawn lands.
+    if (consumeSelfDestruct()) {
+      if (predictedState?.alive && !isPiloting) {
+        socket.emit('self_destruct_request');
+      }
+    }
+    if (myId) {
+      const sdProgress = (predictedState?.alive && !isPiloting)
+        ? getSelfDestructHoldProgress()
+        : 0;
+      setSelfDestructPulse(myId, sdProgress);
+    }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
@@ -2077,6 +2113,25 @@ function animate(): void {
 
 
   surfaceNets?.flushDirtyChunks();
+
+  // Vibe Jam 2026 portal — animate particles + collision-check the local
+  // tank. Skipped while the local tank is dead/missing so the redirect can
+  // only fire when the player is actually controlling a tank.
+  if (vibeJamPortal) {
+    const localTankMesh = predictedState && predictedState.alive ? getAllTankMeshes().get(myId) : undefined;
+    vibeJamPortal.update(localTankMesh?.group ?? null, () => ({
+      username: login.name,
+      color: login.color,
+      hp: predictedState?.hp,
+      speedX: predictedState?.linVel.x,
+      speedY: predictedState?.linVel.y,
+      speedZ: predictedState?.linVel.z,
+      rotationX: predictedState?.bodyPitch,
+      rotationY: predictedState?.bodyRotation,
+      rotationZ: predictedState?.bodyRoll,
+    }));
+  }
+
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }

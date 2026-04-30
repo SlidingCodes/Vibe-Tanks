@@ -11,6 +11,13 @@ let weaponCount = 1;
  *  pilot mode for manual self-detonation so a held key produces one
  *  detonation, not a stream of events. */
 let spaceJustPressed = false;
+/** Latched to true after R is held for SELF_DESTRUCT_HOLD_MS. Cleared by
+ *  `consumeSelfDestruct()`. A pending hold timer is cancelled on keyup so
+ *  releasing early does nothing. */
+let selfDestructJustPressed = false;
+let selfDestructHoldTimer: ReturnType<typeof setTimeout> | null = null;
+let selfDestructHoldStart: number | null = null;
+const SELF_DESTRUCT_HOLD_MS = 2000;
 
 export function setWeaponCount(count: number): void {
   weaponCount = count;
@@ -31,6 +38,14 @@ window.addEventListener('keydown', (e) => {
     // viewport but body scroll is still possible on some layouts.
     e.preventDefault();
   }
+  if (!keys[e.code] && e.code === 'KeyR' && selfDestructHoldTimer === null) {
+    selfDestructHoldStart = performance.now();
+    selfDestructHoldTimer = setTimeout(() => {
+      selfDestructJustPressed = true;
+      selfDestructHoldTimer = null;
+      selfDestructHoldStart = null;
+    }, SELF_DESTRUCT_HOLD_MS);
+  }
 
   keys[e.code] = true;
 });
@@ -47,7 +62,14 @@ window.addEventListener('wheel', (e) => {
   currentWeaponSlot = ((currentWeaponSlot + dir) % weaponCount + weaponCount) % weaponCount;
   pendingWeaponSlot = currentWeaponSlot;
 });
-window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+window.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  if (e.code === 'KeyR' && selfDestructHoldTimer !== null) {
+    clearTimeout(selfDestructHoldTimer);
+    selfDestructHoldTimer = null;
+    selfDestructHoldStart = null;
+  }
+});
 
 /** Raw input keys — no seq. The caller (main.ts physics loop) stamps the
  *  monotonic tick counter just before sending/applying, so that the seq
@@ -124,6 +146,20 @@ export function consumeSpace(): boolean {
     return true;
   }
   return false;
+}
+
+export function consumeSelfDestruct(): boolean {
+  if (selfDestructJustPressed) {
+    selfDestructJustPressed = false;
+    return true;
+  }
+  return false;
+}
+
+/** Returns 0 when R is not held, 1 when the 2s hold is complete. */
+export function getSelfDestructHoldProgress(): number {
+  if (selfDestructHoldStart === null) return 0;
+  return Math.min(1, (performance.now() - selfDestructHoldStart) / SELF_DESTRUCT_HOLD_MS);
 }
 
 export function consumeWeaponSlot(): number | null {

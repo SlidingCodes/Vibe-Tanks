@@ -16,6 +16,8 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Vibe Tanks" />
+  <!-- Vibe Jam 2026 widget (mandatory entrant tracker) -->
+  <script async src="https://vibej.am/2026/widget.js"></script>
   <style>
     * {
       margin: 0;
@@ -149,6 +151,20 @@
       display: flex;
       align-items: center;
       gap: 6px;
+    }
+
+    /* Local player's row in the scoreboard. The bordered "tag" plus a
+       larger, bolder font makes the personal score a glance-away check
+       from anywhere on screen, without taking the centre of the HUD. */
+    #scoreboard div.scoreboard-me {
+      font-size: 17px;
+      font-weight: 700;
+      padding: 3px 9px 3px 7px;
+      border-radius: 4px;
+      border: 1.5px solid currentColor;
+      background: rgba(0, 0, 0, 0.45);
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.55);
+      letter-spacing: 0.3px;
     }
 
     .sb-flag {
@@ -2638,8 +2654,7 @@
     </div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
-    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch
-      weapon</div>
+    <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch weapon | Hold R self-destruct</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
   </div>
   <div id="kill-overlay">

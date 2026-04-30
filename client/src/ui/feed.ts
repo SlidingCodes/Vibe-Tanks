@@ -39,6 +39,8 @@ function renderEvent(ev: MatchEvent): string {
       return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">left</span>`;
     case 'suicide':
       return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">blew themself up</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
+    case 'self_destruct':
+      return `${nameSpan(ev.name, ev.color)} <span class="feed-verb">self-destructed</span> <span class="feed-dmg">-100</span>`;
     case 'kill':
       return `${nameSpan(ev.killerName, ev.killerColor)} <span class="feed-verb">killed</span> ${nameSpan(ev.victimName, ev.victimColor)} <span class="feed-dmg">-${ev.damage}</span> <span class="feed-weapon">${weaponName(ev.weaponId)}</span>`;
     case 'reset':

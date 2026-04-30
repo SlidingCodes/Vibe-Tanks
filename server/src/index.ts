@@ -6,6 +6,10 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
+import { isBanned, loadBans } from './admin/bans';
+import { loadHistory, startHistoryFlushLoop, flushHistory } from './admin/history';
+import { startInternalServer } from './admin/internalServer';
+import { extractClientIp } from './net/clientIp';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
 // swallowed by default — the process stays alive but the tick is dead,
@@ -23,6 +27,11 @@ process.on('unhandledRejection', (err) => {
 async function main(): Promise<void> {
   // Rapier wasm must be loaded before any RapierVoxelWorld is constructed.
   await initRapier();
+
+  // Restore the persisted admin state before opening the public socket
+  // so a banned client can't squeeze in during the load window.
+  await Promise.all([loadBans(), loadHistory()]);
+  startHistoryFlushLoop();
 
   const httpServer = createServer((req, res) => {
     if (req.url === '/healthz') {
@@ -49,17 +58,23 @@ async function main(): Promise<void> {
   const manager = new RoomManager(io);
 
   io.on('connection', (socket) => {
+    // Reject banned IPs at the door so they don't even get the
+    // chance to fire join_room. The 'kicked' event is the only
+    // socket-level signal the client knows how to handle (reload
+    // → login overlay with the parlante reason), so we reuse it.
+    const ip = extractClientIp(socket);
+    if (ip && isBanned(ip)) {
+      socket.emit('kicked', { reason: 'banned' });
+      socket.disconnect(true);
+      return;
+    }
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
       const mode = data.mode ?? 'quick';
       let room: Room | null = null;
       if (mode === 'create_private') {
-        // Use socket.handshake.address as the rate-limit key. It's the
-        // raw remote address — fine for direct connections; behind a
-        // reverse proxy you'd front this with a trust-proxy layer that
-        // rewrites it from X-Forwarded-For.
-        const ip = socket.handshake.address;
+        const ip = extractClientIp(socket);
         const result = manager.createPrivate(ip, data.settings);
         if (!(result instanceof Room)) {
           socket.emit('join_error', { reason: result });
@@ -101,6 +116,20 @@ async function main(): Promise<void> {
   httpServer.listen(SERVER_PORT, () => {
     console.log(`Vibe Tanks server running on port ${SERVER_PORT}`);
   });
+
+  startInternalServer(manager, io);
+
+  // systemctl stop / docker compose down send SIGTERM and wait
+  // TimeoutStopSec (default 90 s) before SIGKILL — plenty of time to
+  // flush the pending history events. Bans are write-through so they
+  // need no shutdown hook.
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`[shutdown] received ${signal}, flushing history...`);
+    try { await flushHistory(); } catch { /* already logged */ }
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 main().catch((err) => {

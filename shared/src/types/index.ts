@@ -482,7 +482,8 @@ export type JoinErrorReason =
   | 'cap_reached'
   | 'missing_code'
   | 'invalid_settings'
-  | 'too_many_rooms';
+  | 'too_many_rooms'
+  | 'name_taken';
 
 /** Per-room tunables passed by the creator of a private room. Public
  *  rooms always use the defaults. */
@@ -610,9 +611,18 @@ export interface ClientEvents {
    *  position with the standard blast radius / damage. No-op if the
    *  player isn't currently piloting. */
   predator_detonate: () => void;
+  /** Tank self-destruct (R key). Detonates at the tank's current
+   *  position, damages nearby players within SELF_DESTRUCT_RADIUS,
+   *  applies a fixed score penalty, and kills the player. Damage
+   *  inflicted credits score normally and can offset the penalty. */
+  self_destruct_request: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
+  /** Server-driven RTT probe response: echoes the server timestamp back
+   *  unchanged so the server can compute the round-trip latency to this
+   *  client (surfaced in the admin dashboard). */
+  srv_pong: (t: number) => void;
 }
 
 // ── Match events (server → client feed) ──
@@ -621,6 +631,7 @@ export type MatchEvent =
   | { kind: 'leave'; name: string; color: string }
   | { kind: 'kill'; killerId: PlayerId; victimId: PlayerId; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
   | { kind: 'suicide'; victimId: PlayerId; name: string; color: string; weaponId: string }
+  | { kind: 'self_destruct'; victimId: PlayerId; name: string; color: string }
   | { kind: 'reset' };
 
 // ── Network events: server → client ──
@@ -650,6 +661,10 @@ export interface ServerEvents {
   damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
+  /** Server-driven RTT probe stamped with the server's Date.now(). The
+   *  client must echo it back via `srv_pong` so the server can record
+   *  the per-player latency for the admin dashboard. */
+  srv_ping: (t: number) => void;
   /** Fired when a new pickup drops into the world. */
   pickup_spawned: (pickup: PickupState) => void;
   /** Fired when a tank collects (or the pickup times out).
@@ -695,5 +710,5 @@ export interface ServerEvents {
   /** Server is about to disconnect this socket and wants the client to
    *  surface a reason instead of a silent dropout. The client should
    *  reload the page so the player lands back on the login overlay. */
-  kicked: (data: { reason: 'idle' }) => void;
+  kicked: (data: { reason: 'idle' | 'banned' }) => void;
 }

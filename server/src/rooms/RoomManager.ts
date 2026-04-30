@@ -39,6 +39,12 @@ export class RoomManager {
 
   constructor(private io: Server<ClientEvents, ServerEvents>) {}
 
+  /** Read-only enumeration of currently-active rooms. Used by the
+   *  admin dashboard to render the rooms / players table. */
+  allRooms(): Room[] {
+    return [...this.rooms.values()];
+  }
+
   /** Quick-join entry point. Returns the first public room with at least
    *  one human seat free; otherwise spawns a fresh public room. Returns
    *  null only when the cap is hit, in which case the caller should
