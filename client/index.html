@@ -1654,6 +1654,26 @@
       font-variant-numeric: tabular-nums;
     }
 
+    #settings-next-song {
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      background: rgba(8, 10, 6, 0.85);
+      color: #c0b890;
+      border: 1px solid rgba(120, 130, 100, 0.4);
+      border-radius: 2px;
+      cursor: pointer;
+    }
+
+    #settings-next-song:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
     .settings-toggle-row {
       display: flex;
       align-items: center;
@@ -2912,6 +2932,7 @@
           <input id="settings-sfx-slider" type="range" min="0" max="1" step="0.01" value="1" />
           <span class="slider-value" id="settings-sfx-value">100%</span>
         </label>
+        <button id="settings-next-song" type="button">⏭ NEXT SONG</button>
       </div>
       <div class="settings-section">
         <h3>DISPLAY</h3>
