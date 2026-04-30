@@ -92,6 +92,7 @@ import {
 } from '../game/Simulation';
 import { pushHistory } from '../admin/history';
 import { timed } from '../admin/metrics';
+import { extractClientIp } from '../net/clientIp';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
@@ -180,10 +181,10 @@ interface PlayerState {
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
-  /** Raw socket.handshake.address captured at addPlayer time. Used by
-   *  the admin dashboard for the rooms / history views and by the ban
-   *  check on connection. Empty string for bots (they don't have a
-   *  socket). */
+  /** Original client IP captured at addPlayer time via extractClientIp
+   *  (CF-Connecting-IP / X-Forwarded-For / TCP peer). Used by the admin
+   *  dashboard for the rooms / history views and by the ban check on
+   *  connection. Empty string for bots (they don't have a socket). */
   ip: string;
   botWeaponIndex?: number;
   botTargetId?: PlayerId | null;
@@ -611,7 +612,7 @@ export class Room {
 
     const playerId = socket.id;
 
-    const ip = socket.handshake.address ?? '';
+    const ip = extractClientIp(socket);
 
     const nowSec = Date.now() / 1000;
     const snap = this.inventoryByName.get(nameKey);
