@@ -10,6 +10,10 @@
 const TRACK_URLS = [
   '/music/song1.mp3',
   '/music/song2.mp3',
+  '/music/song3.mp3',
+  '/music/song4.mp3',
+  '/music/song5.mp3',
+  '/music/song6.mp3',
 ];
 
 // ── State ──
