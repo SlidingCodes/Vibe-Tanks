@@ -3,6 +3,7 @@ import { getMusicVolume, setMusicVolume, nextTrack, startMusic, isMusicPlaying }
 import { CameraPresetId, setCameraPreset } from '../scene/camera';
 import { WEAPONS } from '@shared/weapons';
 import { isFpsCounterVisible, setFpsCounterVisible } from './fpsCounter';
+import { Quality, getQuality, setQuality } from '../quality';
 
 const MUSIC_KEY = 'vt.musicVolume';
 const SFX_KEY = 'vt.sfxVolume';
@@ -17,10 +18,14 @@ interface FsEl extends HTMLElement {
 }
 
 const PRESETS: { id: CameraPresetId; label: string }[] = [
-  { id: 'classic', label: 'Classic' },
-  { id: 'wide', label: 'Wide FOV' },
   { id: 'tactical', label: 'Tactical' },
-  { id: 'first_person', label: 'First Person' },
+  { id: 'wide', label: 'Wide FOV' },
+];
+
+const QUALITY_OPTIONS: { id: Quality; label: string }[] = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'low', label: 'Pixel-Art' },
+  { id: 'high', label: 'High' },
 ];
 
 /** One-stop modal that consolidates audio sliders, fullscreen toggle,
@@ -40,7 +45,9 @@ export function setupSettingsDialog(onExit: () => void): void {
   const sfxVol = clampVol(parseFloat(localStorage.getItem(SFX_KEY) ?? '1.0'), 1.0);
   setMusicVolume(musicVol);
   setVolume(sfxVol);
-  const savedPreset = (localStorage.getItem(PRESET_KEY) as CameraPresetId | null) ?? 'tactical';
+  const storedPreset = localStorage.getItem(PRESET_KEY) as CameraPresetId | null;
+  const savedPreset: CameraPresetId =
+    storedPreset && PRESETS.some((p) => p.id === storedPreset) ? storedPreset : 'tactical';
   setCameraPreset(savedPreset);
 
   const overlay = document.getElementById('settings-overlay') as HTMLDivElement;
@@ -152,6 +159,42 @@ export function setupSettingsDialog(onExit: () => void): void {
       );
     });
     cameraGrid.appendChild(btn);
+  }
+
+  // ── Graphics quality picker ──
+  // Antialias and the texture filter (linear ↔ nearest) are baked at
+  // boot — flipping the preset surfaces a "Reload to apply" hint that
+  // calls out the constructor-fixed parts so the player isn't confused
+  // when the world doesn't immediately go pixelated.
+  const qualityGrid = document.getElementById('settings-quality') as HTMLDivElement | null;
+  const qualityHint = document.getElementById('settings-quality-hint') as HTMLDivElement | null;
+  if (qualityGrid) {
+    const initialQuality = getQuality();
+    qualityGrid.innerHTML = '';
+    for (const opt of QUALITY_OPTIONS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'settings-cam-btn' + (opt.id === initialQuality ? ' selected' : '');
+      btn.textContent = opt.label;
+      btn.dataset.quality = opt.id;
+      btn.addEventListener('click', () => {
+        const before = getQuality();
+        if (before === opt.id) return;
+        setQuality(opt.id);
+        qualityGrid.querySelectorAll('.settings-cam-btn').forEach((el) =>
+          el.classList.toggle('selected', (el as HTMLElement).dataset.quality === opt.id),
+        );
+        // Antialias + nearest-filter changes are constructor-fixed.
+        // Surface the reload hint when the user moves between presets
+        // that disagree on those (low ↔ anything-else covers both).
+        if (qualityHint) {
+          const constructorFlip =
+            (before === 'low' && opt.id !== 'low') || (before !== 'low' && opt.id === 'low');
+          qualityHint.style.display = constructorFlip ? 'block' : 'none';
+        }
+      });
+      qualityGrid.appendChild(btn);
+    }
   }
 
   // ── Weapon guide (data-driven from WEAPONS so it picks up new ones) ──
