@@ -18,10 +18,8 @@ interface FsEl extends HTMLElement {
 }
 
 const PRESETS: { id: CameraPresetId; label: string }[] = [
-  { id: 'classic', label: 'Classic' },
-  { id: 'wide', label: 'Wide FOV' },
   { id: 'tactical', label: 'Tactical' },
-  { id: 'first_person', label: 'First Person' },
+  { id: 'wide', label: 'Wide FOV' },
 ];
 
 const QUALITY_OPTIONS: { id: Quality; label: string }[] = [
@@ -47,7 +45,9 @@ export function setupSettingsDialog(onExit: () => void): void {
   const sfxVol = clampVol(parseFloat(localStorage.getItem(SFX_KEY) ?? '1.0'), 1.0);
   setMusicVolume(musicVol);
   setVolume(sfxVol);
-  const savedPreset = (localStorage.getItem(PRESET_KEY) as CameraPresetId | null) ?? 'tactical';
+  const storedPreset = localStorage.getItem(PRESET_KEY) as CameraPresetId | null;
+  const savedPreset: CameraPresetId =
+    storedPreset && PRESETS.some((p) => p.id === storedPreset) ? storedPreset : 'tactical';
   setCameraPreset(savedPreset);
 
   const overlay = document.getElementById('settings-overlay') as HTMLDivElement;
