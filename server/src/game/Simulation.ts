@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   PlayerId,
   ShotResult,
@@ -152,6 +153,20 @@ export function cloneVec3(v: Vec3): Vec3 {
   return { x: v.x, y: v.y, z: v.z };
 }
 
+export interface StepExtras {
+  terrainOp?: TerrainOp;
+  /** Shell id for live-tracked ballistic steps. When set, the room registers
+   *  a LiveShell against this id; `shell_intercepted` events use it to
+   *  retarget the client visual on early detonation. */
+  shellId?: string;
+  /** Damage / terrain damage the room's live tracker applies at the
+   *  detonation. Only set on live-tracked steps; precomputed legacy paths
+   *  (mortar landings, drill bursts, etc.) leave them undefined and apply
+   *  damage inline. */
+  damage?: number;
+  terrainDamage?: number;
+}
+
 export function makeStep(
   startDelay: number,
   trajectory: Vec3[],
@@ -160,7 +175,7 @@ export function makeStep(
   carveTerrain: boolean,
   blastRadius: number,
   visualStyle: ShotVisualStyle,
-  terrainOp?: TerrainOp,
+  extrasOrTerrainOp?: TerrainOp | StepExtras,
 ): ShotStep {
   const step: ShotStep = {
     startDelay,
@@ -171,7 +186,19 @@ export function makeStep(
     blastRadius,
     visualStyle,
   };
-  if (terrainOp !== undefined) step.terrainOp = terrainOp;
+  if (extrasOrTerrainOp !== undefined) {
+    // Backward-compatible: legacy callers pass a TerrainOp directly. New
+    // callers (simulate*Shot post live-shell refactor) pass a StepExtras
+    // bag with shellId/damage/terrainDamage and optionally a terrainOp.
+    if ('kind' in extrasOrTerrainOp) {
+      step.terrainOp = extrasOrTerrainOp;
+    } else {
+      if (extrasOrTerrainOp.terrainOp !== undefined) step.terrainOp = extrasOrTerrainOp.terrainOp;
+      if (extrasOrTerrainOp.shellId !== undefined) step.shellId = extrasOrTerrainOp.shellId;
+      if (extrasOrTerrainOp.damage !== undefined) step.damage = extrasOrTerrainOp.damage;
+      if (extrasOrTerrainOp.terrainDamage !== undefined) step.terrainDamage = extrasOrTerrainOp.terrainDamage;
+    }
+  }
   return step;
 }
 
@@ -500,87 +527,93 @@ function simulateStandardShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
-  allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, terrain, {
-    hitCandidates: hitCandidatesFor(shooter, allTanks),
-  });
-  const carveTerrain = applySegmentImpact(
-    segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
-  );
-
-  return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'standard'),
-  ], damageTotals, allTanks);
+  // Trajectory is purely geometric: gravity + terrain only. Tank intersection
+  // is checked tick-by-tick by the room's live shell tracker against current
+  // tank positions, not against fire-time snapshots — that's the whole point
+  // of this refactor (a moving target should be able to dodge).
+  const segment = simulateSegment(startPos, startVel, terrain);
+  // Live-tracked: damage applied at the live impact moment by the room.
+  // carveTerrain is true so the carve happens at detonation.
+  return createShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', weapon.terrainDamage > 0, weapon.blastRadius, 'standard', {
+      shellId: randomUUID(),
+      damage: weapon.damage,
+      terrainDamage: weapon.terrainDamage,
+    }),
+  ]);
 }
 
 function simulateAirburstShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
-  allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
   const segment = simulateSegment(startPos, startVel, terrain, {
     airburstHeight: weapon.behaviorConfig?.airburstHeight ?? 2.5,
-    hitCandidates: hitCandidatesFor(shooter, allTanks),
   });
 
-  // Airburst detonates mid-air on its own, but a tank body in the way
-  // triggers the same explosion slightly earlier. Route through the
-  // shared resolver so impulses/direct-hit bonuses land consistently.
+  // Airburst by design detonates mid-air; only a terrain impact carves
+  // ground. The flag below stays consistent with the legacy behaviour:
+  // carve only when the round actually hit dirt.
+  const carveTerrain = segment.reason === 'impact' && weapon.terrainDamage > 0;
   const terrainDamage = segment.reason === 'impact' ? weapon.terrainDamage : 0;
-  let carveTerrain: boolean;
-  if (segment.reason === 'direct_hit' || segment.reason === 'impact') {
-    carveTerrain = applySegmentImpact(
-      segment, weapon.blastRadius, weapon.damage, terrainDamage, allTanks, damageTotals,
-    );
-  } else {
-    carveTerrain = applyImpact({
-      point: segment.endPoint,
-      blastRadius: weapon.blastRadius,
+  return createShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'big_blast', {
+      shellId: randomUUID(),
       damage: weapon.damage,
-      terrainDamage: 0,
-    }, allTanks, damageTotals);
-  }
-
-  return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'big_blast'),
-  ], damageTotals, allTanks);
+      terrainDamage,
+    }),
+  ]);
 }
 
 function simulateSplitShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
-  allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
   const splitTime = weapon.behaviorConfig?.splitTime ?? 0.7;
-  const candidates = hitCandidatesFor(shooter, allTanks);
-  const segment = simulateSegment(startPos, startVel, terrain, { splitTime, hitCandidates: candidates });
+  const segment = simulateSegment(startPos, startVel, terrain, { splitTime });
 
+  // Parent only — fragments are spawned by the room's live tracker when the
+  // parent reaches its split moment naturally. If the parent is intercepted
+  // (terrain hit before splitTime, or tank intersect mid-flight), no
+  // fragments fire — same intent as a fizzling cluster shell.
   if (segment.reason !== 'split') {
-    const carveTerrain = applySegmentImpact(
-      segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
-    );
-
-    return createPredictedShotResult(shooter.playerId, weapon.id, [
-      makeStep(0, segment.trajectory, segment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'splitter_parent'),
-    ], damageTotals, allTanks);
+    return createShotResult(shooter.playerId, weapon.id, [
+      makeStep(0, segment.trajectory, segment.endPoint, 'impact', weapon.terrainDamage > 0, weapon.blastRadius, 'splitter_parent', {
+        shellId: randomUUID(),
+        damage: weapon.damage,
+        terrainDamage: weapon.terrainDamage,
+      }),
+    ]);
   }
 
-  const steps: ShotStep[] = [
-    makeStep(0, segment.trajectory, segment.endPoint, 'split', false, 0, 'splitter_parent'),
-  ];
+  return createShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, segment.trajectory, segment.endPoint, 'split', false, 0, 'splitter_parent', {
+      shellId: randomUUID(),
+      damage: 0,
+      terrainDamage: 0,
+    }),
+  ]);
+}
 
+/** Spawn fragment shells from a parent splitter that reached its split
+ *  point naturally. Pure geometric trajectories; the room registers each
+ *  fragment as its own LiveShell. */
+export function planSplitFragments(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  terrain: SimulationTerrain,
+  splitPoint: Vec3,
+  splitVelocity: Vec3,
+): ShotStep[] {
   const fragmentCount = weapon.behaviorConfig?.fragmentCount ?? 3;
   const fragmentSpread = weapon.behaviorConfig?.fragmentSpread ?? 0.34;
   const fragmentSpeedScale = weapon.behaviorConfig?.fragmentSpeedScale ?? 0.9;
@@ -589,28 +622,31 @@ function simulateSplitShot(
   const fragmentTerrainDamage = weapon.behaviorConfig?.fragmentTerrainDamage ?? weapon.terrainDamage;
   const half = (fragmentCount - 1) / 2;
 
+  const steps: ShotStep[] = [];
   for (let i = 0; i < fragmentCount; i++) {
     const yawOffset = (i - half) * fragmentSpread;
-    const fragmentVelocity = makeFragmentVelocity(segment.endVelocity, yawOffset, fragmentSpeedScale);
-    const fragmentSegment = simulateSegment(segment.endPoint, fragmentVelocity, terrain, {
-      hitCandidates: candidates,
-    });
-    const carveTerrain = applySegmentImpact(
-      fragmentSegment, fragmentBlastRadius, fragmentDamage, fragmentTerrainDamage, allTanks, damageTotals,
-    );
-
+    const fragmentVelocity = makeFragmentVelocity(splitVelocity, yawOffset, fragmentSpeedScale);
+    const fragmentSegment = simulateSegment(splitPoint, fragmentVelocity, terrain);
     steps.push(makeStep(
-      segment.elapsed,
+      0,
       fragmentSegment.trajectory,
       fragmentSegment.endPoint,
       'impact',
-      carveTerrain,
+      fragmentTerrainDamage > 0,
       fragmentBlastRadius,
       'splitter_fragment',
+      {
+        shellId: randomUUID(),
+        damage: fragmentDamage,
+        terrainDamage: fragmentTerrainDamage,
+      },
     ));
   }
-
-  return createPredictedShotResult(shooter.playerId, weapon.id, steps, damageTotals, allTanks);
+  // Suppress unused-param warning when the helper is used purely for
+  // weapon-driven config (no shooter dependence beyond the muzzle the
+  // parent already departed from).
+  void shooter;
+  return steps;
 }
 
 /** Range (m) within which the bouncer's bounce snaps its outgoing XZ
@@ -648,37 +684,56 @@ function simulateBounceShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
-  allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
-  const candidates = hitCandidatesFor(shooter, allTanks);
-  const firstSegment = simulateSegment(startPos, startVel, terrain, { hitCandidates: candidates });
+  const firstSegment = simulateSegment(startPos, startVel, terrain);
 
   if (firstSegment.reason !== 'impact' || (weapon.behaviorConfig?.bounceCount ?? 1) <= 0) {
-    // Either no bounces configured, direct_hit, or bounds exit.
-    const carveTerrain = applySegmentImpact(
-      firstSegment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
-    );
-
-    return createPredictedShotResult(shooter.playerId, weapon.id, [
-      makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'bouncer_parent'),
-    ], damageTotals, allTanks);
+    return createShotResult(shooter.playerId, weapon.id, [
+      makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'impact', weapon.terrainDamage > 0, weapon.blastRadius, 'bouncer_parent', {
+        shellId: randomUUID(),
+        damage: weapon.damage,
+        terrainDamage: weapon.terrainDamage,
+      }),
+    ]);
   }
 
-  const impactNormal = terrain.getSurfaceNormal(firstSegment.endPoint.x, firstSegment.endPoint.z);
+  // Parent only. The room's live tracker spawns the bounce-segment via
+  // planBounceSegment when the parent reaches terrain naturally. If the
+  // parent is intercepted by a tank mid-flight, the bounce is skipped and
+  // the parent detonates as a regular impact at the interception point.
+  return createShotResult(shooter.playerId, weapon.id, [
+    makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', false, 0, 'bouncer_parent', {
+      shellId: randomUUID(),
+      damage: 0,
+      terrainDamage: 0,
+    }),
+  ]);
+}
+
+/** Spawn the bounce-segment of a bouncer that reached terrain naturally.
+ *  Reflects the parent's end velocity off the local surface normal,
+ *  optionally retargets the outgoing XZ heading toward the nearest enemy,
+ *  and runs a fresh geometric segment from the bounce origin. */
+export function planBounceSegment(
+  shooter: TankState,
+  weapon: WeaponDefinition,
+  terrain: SimulationTerrain,
+  parentEndPoint: Vec3,
+  parentEndVelocity: Vec3,
+  allTanks: TankState[],
+): ShotStep {
+  const impactNormal = terrain.getSurfaceNormal(parentEndPoint.x, parentEndPoint.z);
   const damping = weapon.behaviorConfig?.bounceDamping ?? 0.72;
-  let bouncedVelocity = reflectVelocity(firstSegment.endVelocity, impactNormal, damping);
-  // Smart bounce: snap the outgoing XZ direction to the nearest enemy if any
-  // is within range. Preserves the magnitude of the geometric bounce, the
-  // Y component (so the shell still arcs up and back down), and damping —
-  // only the horizontal heading is rewritten so the second segment steers
-  // toward a target instead of off a useless wall.
-  const target = findNearestEnemy(shooter.playerId, firstSegment.endPoint, allTanks, BOUNCER_RETARGET_RADIUS);
+  let bouncedVelocity = reflectVelocity(parentEndVelocity, impactNormal, damping);
+
+  // Smart-bounce retarget — uses *current* tank positions so it actually
+  // tracks moving targets, unlike the old fire-time snapshot.
+  const target = findNearestEnemy(shooter.playerId, parentEndPoint, allTanks, BOUNCER_RETARGET_RADIUS);
   if (target) {
-    const tx = target.position.x - firstSegment.endPoint.x;
-    const tz = target.position.z - firstSegment.endPoint.z;
+    const tx = target.position.x - parentEndPoint.x;
+    const tz = target.position.z - parentEndPoint.z;
     const horizLen = Math.sqrt(tx * tx + tz * tz);
     if (horizLen > 1e-3) {
       const horizSpeed = Math.sqrt(bouncedVelocity.x * bouncedVelocity.x + bouncedVelocity.z * bouncedVelocity.z);
@@ -689,47 +744,38 @@ function simulateBounceShot(
       };
     }
   }
-  const bounceStart = add(firstSegment.endPoint, scale(impactNormal, 0.25));
-  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain, { hitCandidates: candidates });
-  const carveTerrain = applySegmentImpact(
-    secondSegment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
-  );
 
-  return createPredictedShotResult(shooter.playerId, weapon.id, [
-    makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', false, 0, 'bouncer_parent'),
-    makeStep(firstSegment.elapsed, secondSegment.trajectory, secondSegment.endPoint, 'impact', carveTerrain, weapon.blastRadius, 'bouncer_bounce'),
-  ], damageTotals, allTanks);
+  const bounceStart = add(parentEndPoint, scale(impactNormal, 0.25));
+  const secondSegment = simulateSegment(bounceStart, bouncedVelocity, terrain);
+  return makeStep(
+    0,
+    secondSegment.trajectory,
+    secondSegment.endPoint,
+    'impact',
+    weapon.terrainDamage > 0,
+    weapon.blastRadius,
+    'bouncer_bounce',
+    {
+      shellId: randomUUID(),
+      damage: weapon.damage,
+      terrainDamage: weapon.terrainDamage,
+    },
+  );
 }
 
 function simulateDiggerShot(
   shooter: TankState,
   weapon: WeaponDefinition,
   terrain: SimulationTerrain,
-  allTanks: TankState[],
 ): ShotResult {
   const startPos = createMuzzlePosition(shooter);
   const startVel = createInitialVelocity(shooter, weapon.projectileSpeed);
-  const damageTotals: DamageTotals = new Map();
-  const segment = simulateSegment(startPos, startVel, terrain, {
-    hitCandidates: hitCandidatesFor(shooter, allTanks),
-  });
-
-  // Shell damage always lands (direct hits use blastRadius falloff, terrain
-  // impacts carve a small entry crater) — the cone op below extends the
-  // excavation forward so a buried tank can open a proper exit tunnel by
-  // firing into the wall in front of it.
-  const baseCarve = applySegmentImpact(
-    segment, weapon.blastRadius, weapon.damage, weapon.terrainDamage, allTanks, damageTotals,
-  );
+  const segment = simulateSegment(startPos, startVel, terrain);
 
   // Capsule axis follows the shell's final velocity so the tunnel burrows
   // along the incoming flight line. If the shell stopped (bounds exit or
-  // direct_hit at near-zero), fall back to the shot direction to avoid
-  // a degenerate zero-length axis. We keep the axis mostly horizontal by
-  // leaving its Y component in place — a tank driving a steeply-angled
-  // tunnel can't climb >89° anyway, and a horizontal tunnel reads better
-  // on flat ground. Callers are welcome to lower the Y component if a
-  // future variant should plunge diagonally.
+  // intercepted at near-zero), fall back to the shot direction to avoid
+  // a degenerate zero-length axis.
   const vlen = Math.sqrt(
     segment.endVelocity.x ** 2 + segment.endVelocity.y ** 2 + segment.endVelocity.z ** 2,
   );
@@ -743,25 +789,29 @@ function simulateDiggerShot(
 
   const tunnelLength = weapon.behaviorConfig?.diggerTunnelLength ?? 10;
   const tunnelRadius = weapon.behaviorConfig?.diggerTunnelRadius ?? 3.5;
-
   // Only attach the capsule op when the shell actually reached terrain —
-  // a direct-hit on a tank should still crater via the normal sphere carve.
+  // a tank-intercept mid-flight should crater via the normal sphere carve.
   const terrainOp: TerrainOp | undefined = segment.reason === 'impact'
     ? { kind: 'carve_capsule', axis, length: tunnelLength, radius: tunnelRadius }
     : undefined;
 
-  return createPredictedShotResult(shooter.playerId, weapon.id, [
+  return createShotResult(shooter.playerId, weapon.id, [
     makeStep(
       0,
       segment.trajectory,
       segment.endPoint,
       'impact',
-      baseCarve || terrainOp !== undefined,
+      weapon.terrainDamage > 0 || terrainOp !== undefined,
       weapon.blastRadius,
       'digger_shell',
-      terrainOp,
+      {
+        shellId: randomUUID(),
+        damage: weapon.damage,
+        terrainDamage: weapon.terrainDamage,
+        terrainOp,
+      },
     ),
-  ], damageTotals, allTanks);
+  ]);
 }
 
 function simulateWallShot(
@@ -1004,7 +1054,14 @@ export function buildImpactResult(
   ], damageTotals);
 }
 
-/** Simulate a projectile from a tank's turret and return the result */
+/** Simulate a projectile from a tank's turret and return the result.
+ *  Ballistic variants (standard / airburst / split / bounce / digger)
+ *  return trajectory geometry only; their damage is applied by the room's
+ *  live shell tracker at the actual impact moment, against current tank
+ *  positions, so a target that walks out of the blast radius before the
+ *  shell lands no longer takes damage. Hitscan / instant variants
+ *  (rail / minigun) and pure-terrain ones (wall / ramp) keep precomputed
+ *  damage since they have no flight-time gap that can be exploited. */
 export function simulateShot(
   shooter: TankState,
   weapon: WeaponDefinition,
@@ -1013,23 +1070,23 @@ export function simulateShot(
 ): ShotResult {
   switch (weapon.behavior) {
     case 'airburst':
-      return simulateAirburstShot(shooter, weapon, terrain, allTanks);
+      return simulateAirburstShot(shooter, weapon, terrain);
     case 'split':
-      return simulateSplitShot(shooter, weapon, terrain, allTanks);
+      return simulateSplitShot(shooter, weapon, terrain);
     case 'bounce':
-      return simulateBounceShot(shooter, weapon, terrain, allTanks);
+      return simulateBounceShot(shooter, weapon, terrain);
     case 'rail':
       return simulateRailShot(shooter, weapon, terrain, allTanks);
     case 'minigun':
       return simulateMinigunShot(shooter, weapon, terrain, allTanks);
     case 'digger':
-      return simulateDiggerShot(shooter, weapon, terrain, allTanks);
+      return simulateDiggerShot(shooter, weapon, terrain);
     case 'wall':
       return simulateWallShot(shooter, weapon, terrain);
     case 'ramp':
       return simulateRampShot(shooter, weapon, terrain);
     case 'standard':
     default:
-      return simulateStandardShot(shooter, weapon, terrain, allTanks);
+      return simulateStandardShot(shooter, weapon, terrain);
   }
 }

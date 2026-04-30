@@ -564,6 +564,22 @@ export interface ShotStep {
    *  committer carves a sphere of `blastRadius` at `endPoint`, matching
    *  every pre-terraforming weapon's behaviour. */
   terrainOp?: TerrainOp;
+  /** Server-assigned id for live shells. Set by simulateShot for ballistic
+   *  steps that the server tracks tick-by-tick; the client stores it on the
+   *  ActiveShotStep so a `shell_intercepted` event can find the in-flight
+   *  visual and cut its animation at the actual detonation point. Steps for
+   *  weapons that don't go through the live tracker (rail/minigun beams,
+   *  drill burst, mortar markers, mine deploy/burst) leave it undefined. */
+  shellId?: string;
+  /** Damage applied at the step's impact when the live tracker detonates
+   *  this shell. Server-only — the client doesn't read it. Optional so
+   *  precomputed legacy paths (mortar landings, drill bursts, mines, etc.)
+   *  that don't ride on the live tracker can omit it. */
+  damage?: number;
+  /** Terrain damage at this step's impact. Same scope as `damage` — only
+   *  set on live-tracked ballistic steps; precomputed paths use their own
+   *  inline values. */
+  terrainDamage?: number;
 }
 
 export interface DamageHit {
@@ -655,10 +671,19 @@ export interface ServerEvents {
    *  intensity or owner changed since the last tick are included. */
   fire_update: (update: FireUpdate) => void;
   /** Per-tick damage events from continuous sources (fire, future gas, etc.)
-   *  that don't ride on a shot_resolved. Each entry drives a floating
-   *  damage-number popup and hit-marker on the client, mirroring the
-   *  experience of direct-hit weapons. */
-  damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
+   *  and from live-tracked ballistic shells at their actual detonation
+   *  moment. Each entry drives a floating damage-number popup and a hit-
+   *  marker on the client. `shooterId` is set for events tied to a single
+   *  player-controlled shot so the client can play hit-marker SFX + camera
+   *  shake locally for the shooter; omitted (or null) for ambient sources
+   *  like napalm patches where attribution would be diffuse. */
+  damage_applied: (data: { weaponId: string; hits: DamageHit[]; shooterId?: PlayerId }) => void;
+  /** Live-tracked shell detonated before reaching its precomputed endpoint
+   *  (tank intersected the path mid-flight) — the client uses `shellId` to
+   *  find the in-flight projectile visual, retargets its endpoint to
+   *  `point`, and triggers the explosion there instead of at the original
+   *  precomputed endpoint. */
+  shell_intercepted: (data: { shellId: string; point: Vec3 }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
   /** Server-driven RTT probe stamped with the server's Date.now(). The

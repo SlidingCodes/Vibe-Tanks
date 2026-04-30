@@ -25,7 +25,7 @@ import {
   setTankBuriedOutlineVisible,
   setSelfDestructPulse,
 } from './entities/tank';
-import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { cutShell, getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
@@ -837,19 +837,25 @@ socket.on('fire_update', (update: FireUpdate) => {
   if (fireRenderer) fireRenderer.applyUpdate(update.cells);
 });
 
-// Continuous-damage sources (napalm fire, future gas zones, etc.) don't
-// ride on shot_resolved, so they emit this dedicated event to drive the
-// usual floating damage-number popups + hit-marker audio.
+// Live-tracked ballistic shells + continuous-damage sources (napalm fire,
+// future gas zones) drive popups via this event. shooterId is set on
+// player-attributed hits so the local shooter gets hit-marker SFX +
+// camera shake just like the legacy shot_resolved path used to give them.
 socket.on('damage_applied', (data) => {
   for (const hit of data.hits) {
     const mesh = getAllTankMeshes().get(hit.playerId);
     if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed, hit.shielded);
   }
-  if (myId && data.hits.some((h) => h.playerId !== myId)) {
-    // At least one non-self hit — play hit marker for the local shooter
-    // if they own the napalm patch. (We can't easily attribute the
-    // shooter here, so play conservatively only when damage hit others.)
+  if (data.shooterId && data.shooterId === myId && data.hits.length > 0) {
+    playHitMarker();
+    const anyKill = data.hits.some((h) => h.killed);
+    triggerHitFeedback(anyKill);
+    addImpactCameraShake(anyKill ? 0.45 : 0.28, 0.2);
   }
+});
+
+socket.on('shell_intercepted', ({ shellId, point }) => {
+  cutShell(shellId, point);
 });
 
 socket.on('state_update', (state: RoomStateUpdate) => {

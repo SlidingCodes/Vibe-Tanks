@@ -16,6 +16,7 @@ import {
   ServerEvents,
   ShotResult,
   ShotStep,
+  ShotVisualStyle,
   SoldierState,
   TankState,
   TerrainOp,
@@ -86,7 +87,9 @@ import {
   createMuzzlePosition,
   createShotResult,
   makeStep,
+  planBounceSegment,
   planDrillShot,
+  planSplitFragments,
   simulateSegment,
   simulateShot,
 } from '../game/Simulation';
@@ -339,6 +342,59 @@ interface ActivePickupRuntime extends PickupState {
   wire: PickupState;
 }
 
+/** Sphere radius used by the live shell tracker for direct-hit detection.
+ *  Matches the legacy fire-time check in simulateSegment so the threshold
+ *  for "shell intersected a tank body" is identical — only the timing
+ *  changes (tick-by-tick vs precomputed). */
+const LIVE_SHELL_DIRECT_HIT_RADIUS = 1.1;
+const LIVE_SHELL_DIRECT_HIT_RADIUS_SQ = LIVE_SHELL_DIRECT_HIT_RADIUS * LIVE_SHELL_DIRECT_HIT_RADIUS;
+/** Vertical offset to the tank body centre — same value the original
+ *  simulateSegment used (matches BODY_Y_OFFSET on the Rapier side). */
+const LIVE_SHELL_BODY_OFFSET_Y = 0.8;
+/** Per-sample period of the shell trajectory data. Mirrors the
+ *  SAMPLE_EVERY_TICKS / SIM_DT product in Simulation.ts so the live tracker
+ *  interpolates the same point grid the client renders. */
+const LIVE_SHELL_SECONDS_PER_SAMPLE = 4 / 60;
+
+interface LiveShell {
+  shellId: string;
+  ownerId: PlayerId;
+  weaponId: string;
+  /** Snapshot of the shooter at fire time. Used by chain helpers
+   *  (planSplitFragments / planBounceSegment) at natural termination —
+   *  the parent owner is what matters, not their current state. */
+  shooter: TankState;
+  /** Pre-computed trajectory points (every LIVE_SHELL_SECONDS_PER_SAMPLE
+   *  seconds). The tracker interpolates between consecutive points to get
+   *  the shell's current position each tick — accurate to within a sample
+   *  width, which is below LIVE_SHELL_DIRECT_HIT_RADIUS so we won't tunnel
+   *  through tanks. */
+  trajectory: Vec3[];
+  endPoint: Vec3;
+  /** Total flight time in seconds. Once elapsed >= this, the shell has
+   *  reached its precomputed endpoint and triggers `terminalEvent`. */
+  totalFlightSeconds: number;
+  elapsed: number;
+  /** Detonation parameters applied at *whichever* impact moment fires —
+   *  whether the shell hit a tank mid-flight (early) or reached endPoint
+   *  naturally. damage / terrainDamage / blastRadius come from the weapon
+   *  via the live step. */
+  damage: number;
+  terrainDamage: number;
+  blastRadius: number;
+  visualStyle: ShotVisualStyle;
+  /** What to do when the shell reaches its precomputed endpoint without
+   *  being intercepted: 'impact' detonates here; 'split' spawns fragments;
+   *  'bounce' spawns the bounce-segment shell. Intercepted shells always
+   *  detonate at the interception point regardless of this value. */
+  terminalEvent: 'impact' | 'split' | 'bounce';
+  /** Optional terrain op committed at detonation. Defaults to a sphere
+   *  carve when undefined and `carveTerrain` was true on the originating
+   *  step. */
+  terrainOp?: TerrainOp;
+  carveTerrain: boolean;
+}
+
 export interface RoomOptions {
   /** When true, the room is hidden from quick-join and is only reachable
    *  via its invite code. */
@@ -416,6 +472,14 @@ export class Room {
   /** Timeouts for in-flight shots (crater apply + damage). Cleared on reset
    *  so patches from the old terrain don't land on the regenerated map. */
   private pendingShotTimeouts: Set<ReturnType<typeof setTimeout>> = new Set();
+  /** In-flight live-tracked ballistic shells. Each shell advances tick-by-tick
+   *  in tickLiveShells; tank intersection is checked against the *current*
+   *  authoritative tank positions (not the fire-time snapshot), so a target
+   *  that moves clear of the shell's path before it lands no longer takes
+   *  damage. Also handles the chain spawn for split/bounce parents that
+   *  reach their natural end. Cleared on match reset so a shell from the
+   *  old terrain can't detonate against the new map. */
+  private liveShells: Map<string, LiveShell> = new Map();
   /** True for rooms created via an invite code. Public quick-join skips
    *  these so a private lobby doesn't accidentally pull in strangers. */
   readonly private: boolean;
@@ -512,6 +576,7 @@ export class Room {
 
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
+    this.liveShells.clear();
     // simTime MUST be reset before clearCombatState: the latter stamps
     // nextPickupSpawnAt = simTime + PICKUP_SPAWN_INTERVAL, and with the
     // old ~300 s simTime still in play it ended up 315 s into match N+1
@@ -830,6 +895,7 @@ export class Room {
       this.scheduledStrikes = [];
       for (const timeout of this.pendingShotTimeouts) clearTimeout(timeout);
       this.pendingShotTimeouts.clear();
+      this.liveShells.clear();
       // Drop the bots that were keeping the empty room "populated"; with
       // no humans they're just burning CPU.
       const bots = Array.from(this.players.entries()).filter(([_, p]) => p.isBot);
@@ -859,6 +925,7 @@ export class Room {
     if (this.resetTimeout) { clearTimeout(this.resetTimeout); this.resetTimeout = null; }
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
+    this.liveShells.clear();
     this.scheduledStrikes = [];
     this.activeProjectiles.clear();
     this.activeHazards.clear();
@@ -1370,37 +1437,304 @@ export class Room {
   private scheduleShotResult(result: ShotResult, ownerId: PlayerId, weaponId: string): number {
     this.io.to(this.id).emit('shot_resolved', result);
 
+    const shooter = this.tanks.get(ownerId);
+
     let lastImpactSeconds = 0;
     for (const step of result.steps) {
       const flightSeconds = this.getStepFlightSeconds(step);
       lastImpactSeconds = Math.max(lastImpactSeconds, flightSeconds);
-      const timeout = setTimeout(() => {
-        this.pendingShotTimeouts.delete(timeout);
-        if (step.carveTerrain) {
-          this.applyTerrainStep(step);
-          this.regroundAliveTanks();
-        }
-        // Chain-trigger any mine whose centre lies inside this step's
-        // blast — fires whether or not the step actually carves, so a
-        // direct-hit shell with a non-zero blastRadius still detonates
-        // mines in the splash without needing a terrain crater.
-        if (step.blastRadius > 0) {
-          this.triggerMinesInBlast(step.endPoint, step.blastRadius);
-          // Soldiers within the blast die unless they belong to the
-          // shooter (no friendly fire on your own squad).
-          this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
-        }
-      }, flightSeconds * 1000);
-      this.pendingShotTimeouts.add(timeout);
+
+      if (step.shellId !== undefined && shooter) {
+        // Live-tracked ballistic step. Register a LiveShell; tickLiveShells
+        // advances it each sim tick and detonates against current tank
+        // positions — so a target that walks out of the blast no longer
+        // takes damage, and one that walks into it does. Terminal action
+        // (impact / split / bounce) is driven by the step's eventType.
+        const totalFlightSeconds = Math.max(
+          0,
+          (step.trajectory.length - 1) * LIVE_SHELL_SECONDS_PER_SAMPLE,
+        );
+        this.liveShells.set(step.shellId, {
+          shellId: step.shellId,
+          ownerId,
+          weaponId,
+          shooter,
+          trajectory: step.trajectory,
+          endPoint: step.endPoint,
+          totalFlightSeconds,
+          // Negative elapsed counts down through any startDelay (used for
+          // bouncer secondary segments emitted as a follow-up shot_resolved
+          // — main flow has startDelay 0 since the parent emit was the
+          // gate).
+          elapsed: -step.startDelay,
+          damage: step.damage ?? 0,
+          terrainDamage: step.terrainDamage ?? 0,
+          blastRadius: step.blastRadius,
+          visualStyle: step.visualStyle,
+          terminalEvent: step.eventType === 'split' ? 'split'
+                       : step.eventType === 'bounce' ? 'bounce'
+                       : 'impact',
+          terrainOp: step.terrainOp,
+          carveTerrain: step.carveTerrain,
+        });
+      } else {
+        // Legacy precomputed step (napalm shell impact, drill burst, mortar
+        // landings, etc.). Commit the step's terrain op + chain mines/
+        // soldiers at flight completion exactly as before.
+        const timeout = setTimeout(() => {
+          this.pendingShotTimeouts.delete(timeout);
+          if (step.carveTerrain) {
+            this.applyTerrainStep(step);
+            this.regroundAliveTanks();
+          }
+          if (step.blastRadius > 0) {
+            this.triggerMinesInBlast(step.endPoint, step.blastRadius);
+            this.damageSoldiersInBlast(step.endPoint, step.blastRadius, ownerId);
+          }
+        }, flightSeconds * 1000);
+        this.pendingShotTimeouts.add(timeout);
+      }
     }
 
-    const damageTimeout = setTimeout(() => {
-      this.pendingShotTimeouts.delete(damageTimeout);
-      this.applyResolvedDamage(ownerId, weaponId, result.damageDealt, result.impulses);
-    }, lastImpactSeconds * 1000);
-    this.pendingShotTimeouts.add(damageTimeout);
+    // Apply precomputed damage only when supplied. Live-tracked shots leave
+    // damageDealt empty and resolve damage dynamically in tickLiveShells; the
+    // legacy paths (napalm/mortar/etc.) keep populating it and need this
+    // delayed commit to match the visual impact moment.
+    if (result.damageDealt.length > 0 || (result.impulses && result.impulses.length > 0)) {
+      const damageTimeout = setTimeout(() => {
+        this.pendingShotTimeouts.delete(damageTimeout);
+        this.applyResolvedDamage(ownerId, weaponId, result.damageDealt, result.impulses);
+      }, lastImpactSeconds * 1000);
+      this.pendingShotTimeouts.add(damageTimeout);
+    }
 
     return lastImpactSeconds;
+  }
+
+  /** Tick the live shell registry — one entry per in-flight ballistic
+   *  shell that the room has authoritative control over. Each shell:
+   *   1) advances its `elapsed` clock by `dt` (skipping ticks while the
+   *      step is still inside its `startDelay` window).
+   *   2) interpolates its current world position from the precomputed
+   *      sample-grid trajectory.
+   *   3) tests sphere intersection against currently-alive non-owner tanks.
+   *      A hit detonates the shell at the shell's current position with
+   *      a direct-hit damage bonus on the intersected tank. The client is
+   *      told via `shell_intercepted` to retarget the visual.
+   *   4) on natural completion (elapsed >= total), runs the terminalEvent —
+   *      'impact' detonates the shell at endPoint vs current positions;
+   *      'split' spawns the configured fragments via planSplitFragments and
+   *      emits a follow-up shot_resolved; 'bounce' spawns the bounce-segment
+   *      via planBounceSegment with the same emit. */
+  private tickLiveShells(dt: number): void {
+    if (this.liveShells.size === 0) return;
+    for (const shell of [...this.liveShells.values()]) {
+      shell.elapsed += dt;
+      // Still warming up (chained shells emitted with a startDelay); skip
+      // both the live position lookup and the tank-intersection check.
+      if (shell.elapsed < 0) continue;
+
+      // Natural completion takes priority. Past the precomputed endpoint
+      // there's no more trajectory to sample, so terminate this tick.
+      if (shell.elapsed >= shell.totalFlightSeconds) {
+        this.completeLiveShellNaturally(shell);
+        continue;
+      }
+
+      // Interpolate position along the per-sample trajectory. Step indices
+      // are clamped so a tiny floating overshoot in the comparison above
+      // doesn't tunnel out the array bounds.
+      const sampleIdx = shell.elapsed / LIVE_SHELL_SECONDS_PER_SAMPLE;
+      const i = Math.max(0, Math.min(shell.trajectory.length - 2, Math.floor(sampleIdx)));
+      const f = Math.max(0, Math.min(1, sampleIdx - i));
+      const a = shell.trajectory[i];
+      const b = shell.trajectory[i + 1] ?? shell.endPoint;
+      const pos: Vec3 = {
+        x: a.x + (b.x - a.x) * f,
+        y: a.y + (b.y - a.y) * f,
+        z: a.z + (b.z - a.z) * f,
+      };
+
+      // Tank intersection vs *current* positions — the whole point of the
+      // live tracker. A target that has dodged out of the path will not
+      // trigger here; a target that walks into the path will.
+      let hitTankId: PlayerId | null = null;
+      for (const tank of this.tanks.values()) {
+        if (!tank.alive) continue;
+        if (tank.playerId === shell.ownerId) continue;
+        const dx = pos.x - tank.position.x;
+        const dy = pos.y - (tank.position.y + LIVE_SHELL_BODY_OFFSET_Y);
+        const dz = pos.z - tank.position.z;
+        if (dx * dx + dy * dy + dz * dz <= LIVE_SHELL_DIRECT_HIT_RADIUS_SQ) {
+          hitTankId = tank.playerId;
+          break;
+        }
+      }
+      if (hitTankId) {
+        this.detonateLiveShell(shell, pos, hitTankId);
+      }
+    }
+  }
+
+  /** Drive the natural endpoint: detonate (impact) at the precomputed
+   *  endpoint vs current tank positions, or spawn the chain shell for
+   *  split / bounce parents. The shell is removed from the registry in all
+   *  cases — chain helpers register fresh shells. */
+  private completeLiveShellNaturally(shell: LiveShell): void {
+    if (shell.terminalEvent === 'impact') {
+      this.detonateLiveShell(shell, shell.endPoint, null);
+      return;
+    }
+
+    this.liveShells.delete(shell.shellId);
+
+    const weapon = WEAPONS.find((w) => w.id === shell.weaponId);
+    if (!weapon) return;
+
+    if (shell.terminalEvent === 'split') {
+      // Reconstruct end velocity by sampling the last two trajectory points;
+      // simulateSegment doesn't expose the dense per-tick velocity, but
+      // sample-grid finite differences are within a percent for fragment
+      // dispersion purposes.
+      const traj = shell.trajectory;
+      const last = traj[traj.length - 1];
+      const prev = traj[traj.length - 2] ?? last;
+      const endVelocity: Vec3 = {
+        x: (last.x - prev.x) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+        y: (last.y - prev.y) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+        z: (last.z - prev.z) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+      };
+      const fragmentSteps = planSplitFragments(
+        shell.shooter,
+        weapon,
+        this.voxels,
+        shell.endPoint,
+        endVelocity,
+      );
+      const followUp: ShotResult = {
+        shooterId: shell.ownerId,
+        weaponId: shell.weaponId,
+        steps: fragmentSteps,
+        damageDealt: [],
+      };
+      this.scheduleShotResult(followUp, shell.ownerId, shell.weaponId);
+      return;
+    }
+
+    if (shell.terminalEvent === 'bounce') {
+      const traj = shell.trajectory;
+      const last = traj[traj.length - 1];
+      const prev = traj[traj.length - 2] ?? last;
+      const endVelocity: Vec3 = {
+        x: (last.x - prev.x) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+        y: (last.y - prev.y) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+        z: (last.z - prev.z) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+      };
+      const bounceStep = planBounceSegment(
+        shell.shooter,
+        weapon,
+        this.voxels,
+        shell.endPoint,
+        endVelocity,
+        this.tankList,
+      );
+      const followUp: ShotResult = {
+        shooterId: shell.ownerId,
+        weaponId: shell.weaponId,
+        steps: [bounceStep],
+        damageDealt: [],
+      };
+      this.scheduleShotResult(followUp, shell.ownerId, shell.weaponId);
+      return;
+    }
+  }
+
+  /** Detonate a live shell at `point` (the actual impact location, which
+   *  may differ from shell.endPoint when intercepted mid-flight). Applies
+   *  blast damage / impulses against current tank positions, commits the
+   *  terrain op, triggers chain mines + damages soldiers in the splash,
+   *  and tells clients to cut the shell visual when intercepted. */
+  private detonateLiveShell(shell: LiveShell, point: Vec3, directHitTankId: PlayerId | null): void {
+    if (!this.liveShells.has(shell.shellId)) return; // already handled
+    this.liveShells.delete(shell.shellId);
+
+    const intercepted = directHitTankId !== null;
+
+    // 1. Damage + impulses vs *current* positions. applyImpact returns
+    //    whether the impact wants to carve terrain, but we already know
+    //    that from the shell.terrainDamage / carveTerrain pair so the
+    //    return is informational only here.
+    const damageTotals: DamageTotals = new Map();
+    if (shell.damage > 0 || shell.terrainDamage > 0) {
+      applyImpact({
+        point,
+        blastRadius: shell.blastRadius,
+        damage: shell.damage,
+        terrainDamage: shell.terrainDamage,
+        directHitTankId,
+      }, this.tankList, damageTotals);
+    }
+
+    // 2. Pack a damageDealt array (resolving kill flags / shield absorbs
+    //    against current HP) so applyResolvedDamage's accounting (kill
+    //    feed, score, deaths) lands correctly.
+    const damageDealt: { playerId: PlayerId; damage: number; killed: boolean; shielded?: boolean }[] = [];
+    const impulses: { playerId: PlayerId; impulse: Vec3 }[] = [];
+    for (const [pid, totals] of damageTotals) {
+      const victim = this.tanks.get(pid);
+      const killed = victim ? totals.damage >= victim.hp : false;
+      const shielded = victim?.shieldActive ? true : undefined;
+      damageDealt.push({ playerId: pid, damage: totals.damage, killed, shielded });
+      const impLenSq = totals.impulse.x ** 2 + totals.impulse.y ** 2 + totals.impulse.z ** 2;
+      if (impLenSq > 1e-4) impulses.push({ playerId: pid, impulse: totals.impulse });
+    }
+
+    this.applyResolvedDamage(shell.ownerId, shell.weaponId, damageDealt, impulses);
+
+    if (damageDealt.length > 0) {
+      this.io.to(this.id).emit('damage_applied', {
+        weaponId: shell.weaponId,
+        hits: damageDealt,
+        shooterId: shell.ownerId,
+      });
+    }
+
+    // 3. Terrain op. When intercepted mid-flight, fall back to a sphere
+    //    carve at the actual point — a tank-mounted detonation shouldn't
+    //    suddenly grow a tunnel/wall/ramp at someone's feet.
+    if (shell.carveTerrain) {
+      const op: TerrainOp = intercepted
+        ? { kind: 'carve_sphere' }
+        : (shell.terrainOp ?? { kind: 'carve_sphere' });
+      this.applyTerrainStep({
+        startDelay: 0,
+        trajectory: [point],
+        endPoint: point,
+        eventType: 'impact',
+        carveTerrain: true,
+        blastRadius: shell.blastRadius,
+        visualStyle: shell.visualStyle,
+        terrainOp: op,
+      });
+      this.regroundAliveTanks();
+    }
+
+    // 4. Chain mines + damage soldiers in the blast (same hooks the legacy
+    //    path uses).
+    if (shell.blastRadius > 0) {
+      this.triggerMinesInBlast(point, shell.blastRadius);
+      this.damageSoldiersInBlast(point, shell.blastRadius, shell.ownerId);
+    }
+
+    // 5. Tell the client to cut the in-flight visual when intercepted —
+    //    natural endpoints already match the precomputed `endPoint` the
+    //    client animates to, so no re-target is needed.
+    if (intercepted) {
+      this.io.to(this.id).emit('shell_intercepted', {
+        shellId: shell.shellId,
+        point,
+      });
+    }
   }
 
   private emitShotResultNow(result: ShotResult, ownerId: PlayerId, weaponId: string): void {
@@ -2219,6 +2553,7 @@ export class Room {
       this.tickMovement(simDt);
       this.tickProjectiles(simDt);
       this.tickPredatorMissiles(simDt);
+      this.tickLiveShells(simDt);
       this.tickHazards(simDt);
       this.tickSoldiers(simDt);
       this.tickScheduledStrikes();
