@@ -5,7 +5,25 @@
 	route {
 		reverse_proxy /socket.io* server:3001
 		reverse_proxy /healthz server:3001
+		# Admin dashboard sits behind ADMIN_TOKEN on the server side; the
+		# /admin/* surface is also reachable on the main domain so a
+		# subdomain isn't strictly required. If you'd rather host it on
+		# its own subdomain, see the admin.{$DOMAIN} block below.
+		reverse_proxy /admin* server:3001
 		try_files {path} /index.html
 		file_server
 	}
+}
+
+# Optional dedicated subdomain for the admin dashboard. Caddy auto-
+# provisions a TLS cert if DNS for `admin.<your-domain>` points at this
+# host; otherwise drop this block and use the path-based /admin instead.
+admin.{$DOMAIN:localhost} {
+	encode zstd gzip
+	# The server's /admin handler matches paths starting with /admin, so
+	# we rewrite the subdomain root onto /admin/<path>. That way the
+	# admin URL is just `https://admin.<domain>/` instead of
+	# `/admin/`, and the same handler powers both surfaces.
+	rewrite * /admin{path}
+	reverse_proxy server:3001
 }

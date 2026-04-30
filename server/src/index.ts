@@ -6,6 +6,8 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
+import { handleAdminRequest } from './admin/routes';
+import { isBanned } from './admin/bans';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
 // swallowed by default — the process stays alive but the tick is dead,
@@ -35,6 +37,20 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (req.url?.startsWith('/admin')) {
+      // Async handler — fire and forget; it always sends a response
+      // before resolving, errors are logged but not bubbled (the HTTP
+      // listener doesn't await us).
+      handleAdminRequest(req, res, manager, io).catch((err) => {
+        console.error('[admin] request error:', err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'internal_error' }));
+        }
+      });
+      return;
+    }
+
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('not found');
   });
@@ -49,6 +65,16 @@ async function main(): Promise<void> {
   const manager = new RoomManager(io);
 
   io.on('connection', (socket) => {
+    // Reject banned IPs at the door so they don't even get the
+    // chance to fire join_room. The 'kicked' event is the only
+    // socket-level signal the client knows how to handle (reload
+    // → login overlay with the parlante reason), so we reuse it.
+    const ip = socket.handshake.address;
+    if (ip && isBanned(ip)) {
+      socket.emit('kicked', { reason: 'banned' });
+      socket.disconnect(true);
+      return;
+    }
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {

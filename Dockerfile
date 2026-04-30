@@ -13,6 +13,12 @@ RUN npm ci --prefix server && ln -s /app/server/node_modules /app/node_modules
 COPY server server
 COPY shared shared
 RUN npm run build --prefix server
+# tsc only compiles .ts/.json — copy the admin dashboard SPA into the
+# compiled tree so the runtime image can serve it without bringing
+# the whole src/. Server tsconfig has rootDir=".." so the source
+# `server/src/admin/routes.ts` lands at
+# `dist/server/src/admin/routes.js`; place dashboard.html alongside.
+RUN cp /app/server/src/admin/dashboard.html /app/server/dist/server/src/admin/dashboard.html
 
 FROM node:20-bookworm-slim AS server-runtime
 WORKDIR /app

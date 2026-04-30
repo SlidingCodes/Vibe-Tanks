@@ -4,6 +4,11 @@ services:
     expose:
       - "3001"
     restart: unless-stopped
+    # The admin dashboard is gated by ADMIN_TOKEN. Set it in the deploy
+    # host's `.env` (alongside SERVER_IMAGE / WEB_IMAGE / DOMAIN). When
+    # unset, every /admin/* request returns 503 — fail-closed.
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     healthcheck:
       test:
         [

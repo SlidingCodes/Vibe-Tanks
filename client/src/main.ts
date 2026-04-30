@@ -350,6 +350,7 @@ const initialLoginError = (() => {
     if (!reason) return undefined;
     sessionStorage.removeItem('vt.kickReason');
     if (reason === 'idle') return 'You were kicked for inactivity.';
+    if (reason === 'banned') return 'You have been banned from this server.';
     return undefined;
   } catch { return undefined; }
 })();

@@ -702,5 +702,5 @@ export interface ServerEvents {
   /** Server is about to disconnect this socket and wants the client to
    *  surface a reason instead of a silent dropout. The client should
    *  reload the page so the player lands back on the login overlay. */
-  kicked: (data: { reason: 'idle' }) => void;
+  kicked: (data: { reason: 'idle' | 'banned' }) => void;
 }
