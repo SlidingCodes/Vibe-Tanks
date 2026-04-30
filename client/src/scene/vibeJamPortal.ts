@@ -183,14 +183,16 @@ export function createVibeJamPortal(
   const qs = new URLSearchParams(window.location.search);
   const arrivedViaPortal = qs.get('portal') === 'true' || qs.get('portal') === '1';
 
-  // Fixed corner of the map: offset 30 units inward from the (+x, +z) corner
-  // so the portal sits on land, not on the underwater taper at the world edge.
-  const exitX = worldW - 30;
-  const exitZ = worldH - 30;
+  // Right at the (+x, +z) corner of the map — close enough to look like it
+  // hovers over the ocean. Inset is just `radius + tube` so the AABB doesn't
+  // poke past the world edge.
+  const cornerInset = TORUS_MAJOR_R + TORUS_TUBE_R + 0.5;
+  const exitX = worldW - cornerInset;
+  const exitZ = worldH - cornerInset;
   const exitGroundY = getTerrainHeight(exitX, exitZ);
-  // Lift so the bottom of the torus sits on the ground (radius + tube + small
-  // clearance). Also clamp so the bottom stays above sea level — random
-  // craters on this corner would otherwise leave the portal half-submerged.
+  // The world edge tapers to ~5 units below sea level, so the ground is
+  // submerged here — clamp the center so the bottom of the torus sits just
+  // above sea level rather than hovering over an underwater seabed.
   const minCenterY = SEA_LEVEL + TORUS_MAJOR_R + TORUS_TUBE_R + 1.0;
   const exitY = Math.max(exitGroundY + TORUS_MAJOR_R + TORUS_TUBE_R + 0.4, minCenterY);
 
@@ -207,8 +209,8 @@ export function createVibeJamPortal(
     // Place the start portal in the opposite corner so it's discoverable but
     // doesn't overlap a tank that just spawned. The server picks the spawn,
     // we don't know it here — the corner is a stable fallback.
-    const startX = 30;
-    const startZ = 30;
+    const startX = cornerInset;
+    const startZ = cornerInset;
     const startGroundY = getTerrainHeight(startX, startZ);
     const startY = Math.max(
       startGroundY + TORUS_MAJOR_R + TORUS_TUBE_R + 0.4,
