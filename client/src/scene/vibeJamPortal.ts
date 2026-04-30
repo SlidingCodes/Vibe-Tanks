@@ -100,19 +100,19 @@ function makePortal(opts: {
     }
     const labelTex = new THREE.CanvasTexture(canvas);
     labelTex.colorSpace = THREE.SRGBColorSpace;
-    const labelMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(14, 2.6),
-      new THREE.MeshBasicMaterial({
+    // Sprite billboards to the camera every frame, so the text reads the
+    // same from any approach angle. A DoubleSide PlaneGeometry would have
+    // shown the texture mirrored from the back face.
+    const labelSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
         map: labelTex,
         transparent: true,
-        side: THREE.DoubleSide,
         depthWrite: false,
       }),
     );
-    // Lift the label above the torus along the ring's local +Y axis. The
-    // material is double-sided so the label reads from either approach.
-    labelMesh.position.set(0, TORUS_MAJOR_R + 2.5, 0);
-    group.add(labelMesh);
+    labelSprite.scale.set(14, 2.6, 1);
+    labelSprite.position.set(0, TORUS_MAJOR_R + 2.5, 0);
+    group.add(labelSprite);
   }
 
   // Swirling particle ring around the torus.
@@ -171,6 +171,10 @@ function disposePortal(scene: THREE.Scene, p: PortalMesh): void {
     } else if (obj instanceof THREE.Points) {
       obj.geometry.dispose();
       (obj.material as THREE.Material).dispose();
+    } else if (obj instanceof THREE.Sprite) {
+      const mat = obj.material as THREE.SpriteMaterial;
+      if (mat.map) mat.map.dispose();
+      mat.dispose();
     }
   });
 }
