@@ -357,8 +357,9 @@ const initialLoginError = (() => {
 })();
 // Vibe Jam 2026 webring spec: portal arrivals must skip every input screen.
 // If `?portal=true` is present we build a LoginResult from forwarded params
-// (with random fallbacks) and bypass the overlay entirely.
-const portalLogin = tryAutoLoginFromPortal();
+// + saved prefs + IP→country flag (same defaults the overlay would pick),
+// and bypass the overlay entirely.
+const portalLogin = await tryAutoLoginFromPortal();
 let login = portalLogin ?? await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay

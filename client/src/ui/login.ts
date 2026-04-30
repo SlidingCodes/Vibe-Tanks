@@ -362,36 +362,86 @@ function pickRandomName(): string {
 
 /** Vibe Jam 2026 webring requires that portal arrivals skip every input
  *  screen. When `?portal=true` is present we synthesise a LoginResult from
- *  the forwarded params (`username`, `color`) with random fallbacks for
- *  fields the webring spec doesn't carry, hide the overlay, and resolve
- *  immediately — no name picker, no color swatches, no waiting room. */
-export function tryAutoLoginFromPortal(): LoginResult | null {
+ *  the forwarded params (`username`, `color`) plus the same defaults the
+ *  login overlay would compute (saved prefs + IP→country flag fallback),
+ *  hide the overlay, and resolve immediately — no name picker, no swatches.
+ *  Async so the geo-IP lookup can complete (2 s timeout); the overlay is
+ *  hidden synchronously so the player still sees the game canvas instantly. */
+export async function tryAutoLoginFromPortal(): Promise<LoginResult | null> {
   const qs = new URLSearchParams(window.location.search);
   if (qs.get('portal') !== 'true' && qs.get('portal') !== '1') return null;
 
+  // Hide the overlay before any awaited work so the canvas is visible during
+  // the geo-IP lookup — that's the part the spec calls "instant load".
+  const overlay = document.getElementById('login-overlay') as HTMLDivElement | null;
+  if (overlay) overlay.style.display = 'none';
+
+  // Saved prefs from a prior session — same source the login overlay reads.
+  let prefs: {
+    color?: string;
+    parachutePrimary?: string;
+    parachuteSecondary?: string;
+    flagId?: string;
+    name?: string;
+  } = {};
+  try {
+    const saved = localStorage.getItem('vibe-tanks-prefs');
+    if (saved) prefs = JSON.parse(saved);
+  } catch { /* ignore parse errors */ }
+
+  // Name: ?username (webring) > saved prefs > random fallback name.
   const rawName = qs.get('username')?.trim();
   const name = rawName && rawName.length > 0
     ? rawName.slice(0, 16)
-    : pickRandomName();
+    : (prefs.name && typeof prefs.name === 'string' ? prefs.name : pickRandomName());
 
+  // Color: ?color (webring; hex or named) > saved prefs > random palette.
   const rawColor = qs.get('color');
   let color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  if (prefs.color && PALETTE.includes(prefs.color)) color = prefs.color;
   if (rawColor) {
-    // Accept either hex (`#aabbcc` / `aabbcc`) or a CSS named color we can
-    // normalise via a hidden DOM probe. Falls back to the random palette
-    // pick if the value can't be parsed.
     const hex = normaliseColor(rawColor);
     if (hex) color = hex;
   }
 
-  const overlay = document.getElementById('login-overlay') as HTMLDivElement | null;
-  if (overlay) overlay.style.display = 'none';
+  // Parachute: saved prefs > random palette pick. The webring spec doesn't
+  // carry a parachute color, so this is identical to the login overlay.
+  let parachutePrimary = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
+  let parachuteSecondary = '#fff';
+  if (prefs.parachutePrimary && PARACHUTE_PALETTE.includes(prefs.parachutePrimary)) {
+    parachutePrimary = prefs.parachutePrimary;
+  }
+  if (prefs.parachuteSecondary && PARACHUTE_PALETTE.includes(prefs.parachuteSecondary)) {
+    parachuteSecondary = prefs.parachuteSecondary;
+  }
+
+  // Flag: saved prefs > IP→country lookup > random. Same priority and the
+  // same ipapi.co endpoint the login overlay uses, including the 2 s timeout.
+  let flagId = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
+  let hasSavedFlag = false;
+  if (prefs.flagId && FLAGS.find((f) => f.id === prefs.flagId)) {
+    flagId = prefs.flagId;
+    hasSavedFlag = true;
+  }
+  if (!hasSavedFlag) {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+      clearTimeout(tid);
+      const data = await res.json();
+      if (data && data.country_code) {
+        const detected = String(data.country_code).toLowerCase();
+        if (FLAGS.find((f) => f.id === detected)) flagId = detected;
+      }
+    } catch { /* fallback already set */ }
+  }
 
   return {
     name,
     color,
-    flagId: FLAGS[Math.floor(Math.random() * FLAGS.length)].id,
-    parachuteId: `${PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)]},#fff`,
+    flagId,
+    parachuteId: `${parachutePrimary},${parachuteSecondary}`,
     mode: 'quick',
   };
 }
