@@ -3,4 +3,8 @@ node_modules/
 dist/
 *.js.map
 CLAUDE.local.md
+# Persistent admin state (bans.json, history.json). Server writes
+# here when VT_DATA_DIR isn't set. Don't commit operator data.
+data/
+server/data/
  
