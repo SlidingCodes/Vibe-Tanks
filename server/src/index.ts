@@ -8,6 +8,7 @@ import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
 import { isBanned } from './admin/bans';
 import { startInternalServer } from './admin/internalServer';
+import { extractClientIp } from './net/clientIp';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
 // swallowed by default — the process stays alive but the tick is dead,
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
     // chance to fire join_room. The 'kicked' event is the only
     // socket-level signal the client knows how to handle (reload
     // → login overlay with the parlante reason), so we reuse it.
-    const ip = socket.handshake.address;
+    const ip = extractClientIp(socket);
     if (ip && isBanned(ip)) {
       socket.emit('kicked', { reason: 'banned' });
       socket.disconnect(true);
@@ -67,11 +68,7 @@ async function main(): Promise<void> {
       const mode = data.mode ?? 'quick';
       let room: Room | null = null;
       if (mode === 'create_private') {
-        // Use socket.handshake.address as the rate-limit key. It's the
-        // raw remote address — fine for direct connections; behind a
-        // reverse proxy you'd front this with a trust-proxy layer that
-        // rewrites it from X-Forwarded-For.
-        const ip = socket.handshake.address;
+        const ip = extractClientIp(socket);
         const result = manager.createPrivate(ip, data.settings);
         if (!(result instanceof Room)) {
           socket.emit('join_error', { reason: result });
