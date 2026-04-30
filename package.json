@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "cd server && npm install && cd ../client && npm install",
+    "postinstall": "cd server && npm install && cd ../client && npm install && cd ../admin && npm install",
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npx vite",
+    "dev:admin": "cd admin && npm run dev",
     "build:client": "cd client && npx vite build",
     "test": "vitest run",
     "test:watch": "vitest",

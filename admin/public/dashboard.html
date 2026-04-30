@@ -166,7 +166,7 @@ document.getElementById('login-form').addEventListener('submit', async (ev) => {
   const token = document.getElementById('token-input').value;
   document.getElementById('login-error').textContent = '';
   try {
-    const res = await fetch('/admin/api/login', {
+    const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token }),
@@ -201,7 +201,7 @@ document.getElementById('ban-add').addEventListener('click', async () => {
   const reason = document.getElementById('ban-reason').value.trim();
   if (!ip) return;
   try {
-    await api('/admin/api/bans', { method: 'POST', body: { ip, reason: reason || undefined } });
+    await api('/api/bans', { method: 'POST', body: { ip, reason: reason || undefined } });
     document.getElementById('ban-ip').value = '';
     document.getElementById('ban-reason').value = '';
     refresh();
@@ -317,7 +317,7 @@ function renderRooms(rooms) {
       if (!ip) return;
       const reason = prompt('Ban reason (optional):') ?? '';
       try {
-        await api('/admin/api/bans', { method: 'POST', body: { ip, reason } });
+        await api('/api/bans', { method: 'POST', body: { ip, reason } });
         refresh();
       } catch (e) { /* handled by auth */ }
     });
@@ -360,7 +360,7 @@ function renderBans(rows) {
       const ip = ev.currentTarget.dataset.ip;
       if (!ip) return;
       try {
-        await api('/admin/api/bans/' + encodeURIComponent(ip), { method: 'DELETE' });
+        await api('/api/bans/' + encodeURIComponent(ip), { method: 'DELETE' });
         refresh();
       } catch (e) { /* handled */ }
     });
@@ -373,10 +373,10 @@ async function refresh() {
   refreshing = true;
   try {
     const [stats, rooms, history, bans] = await Promise.all([
-      api('/admin/api/stats'),
-      api('/admin/api/rooms'),
-      api('/admin/api/history'),
-      api('/admin/api/bans'),
+      api('/api/stats'),
+      api('/api/rooms'),
+      api('/api/history'),
+      api('/api/bans'),
     ]);
     renderStats(stats);
     renderRooms(rooms);

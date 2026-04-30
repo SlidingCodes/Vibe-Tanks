@@ -6,8 +6,8 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
-import { handleAdminRequest } from './admin/routes';
 import { isBanned } from './admin/bans';
+import { startInternalServer } from './admin/internalServer';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
 // swallowed by default — the process stays alive but the tick is dead,
@@ -34,20 +34,6 @@ async function main(): Promise<void> {
     }
 
     if (req.url?.startsWith('/socket.io')) {
-      return;
-    }
-
-    if (req.url?.startsWith('/admin')) {
-      // Async handler — fire and forget; it always sends a response
-      // before resolving, errors are logged but not bubbled (the HTTP
-      // listener doesn't await us).
-      handleAdminRequest(req, res, manager, io).catch((err) => {
-        console.error('[admin] request error:', err);
-        if (!res.headersSent) {
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'internal_error' }));
-        }
-      });
       return;
     }
 
@@ -127,6 +113,8 @@ async function main(): Promise<void> {
   httpServer.listen(SERVER_PORT, () => {
     console.log(`Vibe Tanks server running on port ${SERVER_PORT}`);
   });
+
+  startInternalServer(manager, io);
 }
 
 main().catch((err) => {

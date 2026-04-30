@@ -13,12 +13,6 @@ RUN npm ci --prefix server && ln -s /app/server/node_modules /app/node_modules
 COPY server server
 COPY shared shared
 RUN npm run build --prefix server
-# tsc only compiles .ts/.json — copy the admin dashboard SPA into the
-# compiled tree so the runtime image can serve it without bringing
-# the whole src/. Server tsconfig has rootDir=".." so the source
-# `server/src/admin/routes.ts` lands at
-# `dist/server/src/admin/routes.js`; place dashboard.html alongside.
-RUN cp /app/server/src/admin/dashboard.html /app/server/dist/server/src/admin/dashboard.html
 
 FROM node:20-bookworm-slim AS server-runtime
 WORKDIR /app
@@ -28,8 +22,25 @@ COPY server/package*.json server/
 RUN npm ci --omit=dev --prefix server && npm cache clean --force
 COPY --from=server-build /app/server/dist server/dist
 RUN ln -s /app/server/dist/shared/src /app/server/dist/@shared
-EXPOSE 3001
+EXPOSE 3001 3010
 CMD ["npm", "--prefix", "server", "run", "start"]
+
+FROM node:20-bookworm-slim AS admin-build
+WORKDIR /app
+COPY admin/package*.json admin/
+RUN npm ci --prefix admin && ln -s /app/admin/node_modules /app/node_modules
+COPY admin admin
+RUN npm run build --prefix admin
+
+FROM node:20-bookworm-slim AS admin-runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY admin/package*.json admin/
+RUN npm ci --omit=dev --prefix admin && npm cache clean --force
+COPY --from=admin-build /app/admin/dist admin/dist
+COPY admin/public admin/public
+EXPOSE 3002
+CMD ["npm", "--prefix", "admin", "run", "start"]
 
 FROM caddy:2-alpine AS web-runtime
 COPY Caddyfile /etc/caddy/Caddyfile
