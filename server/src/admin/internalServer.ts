@@ -35,6 +35,7 @@ import { RoomManager } from '../rooms/RoomManager';
 import { addBan, removeBan, listBans, isBanned } from './bans';
 import { listHistory, pushHistory } from './history';
 import { processMetrics, tickMetrics } from './metrics';
+import { getPlayerMetrics, updatePeakPlayers } from './playerMetrics';
 
 const DEFAULT_INTERNAL_PORT = 3010;
 const DEFAULT_INTERNAL_HOST = '0.0.0.0';
@@ -126,9 +127,11 @@ export function startInternalServer(
           humans += r.humanCount();
           bots += [...r.players.values()].filter((p) => p.isBot).length;
         }
+        updatePeakPlayers(humans);
         return json(res, 200, {
           process: processMetrics(),
           ticks: tickMetrics(),
+          players: getPlayerMetrics(),
           rooms: rooms.length,
           humans,
           bots,

@@ -103,6 +103,10 @@
     <h2>Tick performance</h2>
     <div class="stat-grid" id="ticks-grid"></div>
   </section>
+  <section class="panel" style="grid-column: 1 / -1;">
+    <h2>Activity (Humans / Hour)</h2>
+    <div id="activity-graph" style="height: 200px; margin-top: 10px; position: relative;"></div>
+  </section>
 
   <section class="panel" style="grid-column: 1 / -1;">
     <h2>Rooms</h2>
@@ -271,10 +275,14 @@ function renderStats(stats) {
     statHtml('CPU', `${p.cpuTotalPct}%`, `usr ${p.cpuUserPct} sys ${p.cpuSystemPct}`, cpuClass),
     statHtml('Memory (RSS)', `${p.memoryRssMB} MB`, `heap ${p.memoryHeapUsedMB}/${p.memoryHeapTotalMB} MB`, memClass),
     statHtml('Rooms', stats.rooms),
-    statHtml('Humans', stats.humans),
+    statHtml('Total Players', stats.players.totalPlayers),
+    statHtml('Peak Players', stats.players.peakPlayers),
+    statHtml('Current Humans', stats.humans),
     statHtml('Bots', stats.bots),
     statHtml('Bans', stats.banCount),
   ].join('');
+
+  renderActivityGraph(stats.players.history);
 
   const sim = stats.ticks.sim;
   const bcast = stats.ticks.broadcast;
@@ -286,6 +294,55 @@ function renderStats(stats) {
     statHtml('Broadcast (20Hz) median', `${bcast.medianMs.toFixed(2)} ms`, `n=${bcast.count}`),
     statHtml('Broadcast p95', `${bcast.p95Ms.toFixed(2)} ms`, `max ${bcast.maxMs.toFixed(1)} ms`, bcastClass),
   ].join('');
+}
+
+function renderActivityGraph(history) {
+  const container = document.getElementById('activity-graph');
+  if (!history || history.length < 2) {
+    container.innerHTML = '<div class="empty">Not enough history for graph.</div>';
+    return;
+  }
+
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  const padding = 20;
+
+  const maxCount = Math.max(...history.map(h => h.count), 5);
+  const minAt = history[0].at;
+  const maxAt = history[history.length - 1].at;
+  const dt = maxAt - minAt || 1;
+
+  const getX = (at) => padding + ((at - minAt) / dt) * (width - padding * 2);
+  const getY = (count) => height - padding - (count / maxCount) * (height - padding * 2);
+
+  let pathData = `M ${getX(history[0].at)} ${getY(history[0].count)}`;
+  for (let i = 1; i < history.length; i++) {
+    pathData += ` L ${getX(history[i].at)} ${getY(history[i].count)}`;
+  }
+
+  // Draw area
+  let areaData = pathData + ` L ${getX(history[history.length - 1].at)} ${height - padding} L ${getX(history[0].at)} ${height - padding} Z`;
+
+  container.innerHTML = `
+    <svg width="${width}" height="${height}" style="display: block;">
+      <defs>
+        <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.3" />
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+      <!-- Grid lines -->
+      <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="var(--border)" stroke-width="1" />
+      <text x="${padding}" y="${height - 5}" fill="var(--muted)" font-size="10">${new Date(minAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</text>
+      <text x="${width - padding}" y="${height - 5}" fill="var(--muted)" font-size="10" text-anchor="end">${new Date(maxAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</text>
+      
+      <path d="${areaData}" fill="url(#areaGrad)" />
+      <path d="${pathData}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" />
+      
+      <!-- Dots -->
+      ${history.map(h => `<circle cx="${getX(h.at)}" cy="${getY(h.count)}" r="3" fill="var(--accent)" />`).join('')}
+    </svg>
+  `;
 }
 
 function renderRooms(rooms) {
