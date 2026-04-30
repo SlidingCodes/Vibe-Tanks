@@ -14,6 +14,7 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
+  setSelfDestructPulse,
 } from './entities/tank';
 import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
@@ -39,7 +40,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getSelfDestructHoldProgress, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
@@ -1675,6 +1676,12 @@ function animate(): void {
       if (predictedState?.alive && !isPiloting) {
         socket.emit('self_destruct_request');
       }
+    }
+    if (myId) {
+      const sdProgress = (predictedState?.alive && !isPiloting)
+        ? getSelfDestructHoldProgress()
+        : 0;
+      setSelfDestructPulse(myId, sdProgress);
     }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;

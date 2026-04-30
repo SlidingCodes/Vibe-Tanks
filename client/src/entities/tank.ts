@@ -584,6 +584,32 @@ export function setBarrelHeat(playerId: string, heat: number): void {
 }
 
 
+/** Drive the self-destruct hold pulse on body, turret, and barrel.
+ *  progress 0 = no effect, 1 = fully charged (fires immediately after).
+ *  Call every frame with the local player's id. */
+export function setSelfDestructPulse(playerId: string, progress: number): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  const bodyMat   = tm.body.material   as THREE.MeshStandardMaterial;
+  const turretMat = tm.turret.material as THREE.MeshStandardMaterial;
+  const barrelMat = tm.barrel.material as THREE.MeshStandardMaterial;
+  if (progress <= 0) {
+    bodyMat.emissive.setRGB(0, 0, 0);
+    turretMat.emissive.setRGB(0, 0, 0);
+    barrelMat.emissive.setRGB(0, 0, 0);
+    barrelMat.emissiveIntensity = 1.0;
+    return;
+  }
+  // frequency ramps from 2 Hz → 14 Hz as progress → 1
+  const freq = 2 + progress * 12;
+  const wave = 0.5 + 0.5 * Math.sin(performance.now() * 0.001 * Math.PI * 2 * freq);
+  const r = progress * wave;
+  bodyMat.emissive.setRGB(r, 0, 0);
+  turretMat.emissive.setRGB(r, 0, 0);
+  barrelMat.emissive.setRGB(r * 0.5, 0, 0);
+  barrelMat.emissiveIntensity = 1.0;
+}
+
 /** Interpolate remote tanks each frame */
 export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {
   for (const [pid, tm] of tankMeshes) {
