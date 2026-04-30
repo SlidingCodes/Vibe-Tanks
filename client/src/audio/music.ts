@@ -7,9 +7,12 @@
 // MP3 only when it is actually about to play. This keeps page weight
 // independent of TRACK_URLS.length — adding a song does not slow boot.
 
+// song1 / song2 carry a `_v2` suffix because their original
+// uploads (same path, different bytes) had been cached by browsers
+// and the CDN; renaming changes the URL and forces a fresh fetch.
 const TRACK_URLS = [
-  '/music/song1.mp3',
-  '/music/song2.mp3',
+  '/music/song1_v2.mp3',
+  '/music/song2_v2.mp3',
   '/music/song3.mp3',
   '/music/song4.mp3',
   '/music/song5.mp3',
