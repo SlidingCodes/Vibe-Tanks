@@ -30,6 +30,7 @@ import { FireRenderer } from './scene/fire';
 import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
 import { createPickupScene, PickupSceneHandle } from './scene/pickups';
+import { createVibeJamPortal, VibeJamPortalHandle } from './scene/vibeJamPortal';
 
 
 import * as hud from './ui/hud';
@@ -623,6 +624,7 @@ let trackDecal: TrackDecalHandle | null = null;
 const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
+let vibeJamPortal: VibeJamPortalHandle | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
 const pickupScene: PickupSceneHandle = createPickupScene(scene);
 
@@ -679,6 +681,13 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
+  // Vibe Jam 2026 portal — fixed corner of the map. Rebuilt on every voxel
+  // snapshot so it sits on the correct terrain height after a match reset.
+  if (vibeJamPortal) {
+    vibeJamPortal.dispose();
+    vibeJamPortal = null;
+  }
+  vibeJamPortal = createVibeJamPortal(scene, worldW, worldH);
   // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
   // snapshot so it binds to the current grid (match reset regenerates it).
   if (fireRenderer) fireRenderer.dispose(scene);
@@ -2022,6 +2031,23 @@ function animate(): void {
 
 
   surfaceNets?.flushDirtyChunks();
+
+  // Vibe Jam 2026 portal — animate particles + collision-check the local
+  // tank. Skipped while the local tank is dead/missing so the redirect can
+  // only fire when the player is actually controlling a tank.
+  if (vibeJamPortal) {
+    const localTankMesh = predictedState && predictedState.alive ? getAllTankMeshes().get(myId) : undefined;
+    vibeJamPortal.update(localTankMesh?.group ?? null, () => ({
+      username: login.name,
+      color: login.color,
+      hp: predictedState?.hp,
+      speedX: predictedState?.linVel.x,
+      speedY: predictedState?.linVel.y,
+      speedZ: predictedState?.linVel.z,
+      rotationY: predictedState?.bodyRotation,
+    }));
+  }
+
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }
