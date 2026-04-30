@@ -469,6 +469,10 @@ setInterval(() => {
   if (socket.connected) socket.emit('ping', performance.now());
 }, 2000);
 
+// Server-driven probe for the admin dashboard's per-player latency
+// readout. We just echo the server's timestamp back unchanged.
+socket.on('srv_ping', (t: number) => socket.emit('srv_pong', t));
+
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
