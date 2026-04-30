@@ -141,6 +141,13 @@ interface ActiveShotStep {
   visualStyle: ShotStep['visualStyle'];
   started: boolean;
   colorOverride: number | null;
+  /** Server-assigned id for live-tracked shells. When the server emits
+   *  `shell_intercepted` with this id, `cutShell` retargets the visual to
+   *  the actual detonation point and shortcuts the animation so the
+   *  explosion lands where the shell really hit, not at the precomputed
+   *  endpoint the trajectory was originally aimed at. Null for legacy /
+   *  hitscan / non-tracked steps. */
+  shellId: string | null;
 }
 
 interface VisualSpec {
@@ -607,7 +614,27 @@ export function playShotAnimation(
       visualStyle: step.visualStyle,
       started: false,
       colorOverride,
+      shellId: step.shellId ?? null,
     });
+  }
+}
+
+/** Server told us the live shell with this id detonated before reaching
+ *  its precomputed endpoint (a tank intersected the path mid-flight).
+ *  Retarget the visual to the actual point and force the next animation
+ *  frame to fire the explosion there. The shot is still found by id; if
+ *  it has already finished playing the call is a no-op. */
+export function cutShell(shellId: string, point: Vec3): void {
+  for (const step of shots) {
+    if (step.shellId !== shellId) continue;
+    step.endPoint = { x: point.x, y: point.y, z: point.z };
+    // Slam the elapsed clock past the trajectory end so the next
+    // updateProjectileAnimation tick falls into the natural-end branch
+    // and triggers the explosion at the new endPoint.
+    step.elapsed = (step.points.length + 1) * SECONDS_PER_SAMPLE;
+    step.startDelay = 0;
+    step.started = true;
+    return;
   }
 }
 
