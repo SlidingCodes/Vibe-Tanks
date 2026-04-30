@@ -185,14 +185,17 @@ export function setHealth(tank: TankState | undefined): void {
   healthLabel.textContent = `${tank.hp} / ${tank.maxHp}`;
 }
 
-export function updateScoreboard(tanks: TankState[]): void {
+export function updateScoreboard(tanks: TankState[], localPlayerId?: string): void {
   const sorted = [...tanks].sort((a, b) => b.score - a.score);
   scoreboard.innerHTML = sorted
     .map((t) => {
       const name = escapeHtml(t.playerName ?? t.playerId.slice(0, 6));
       const status = t.alive ? '' : ' [DEAD]';
       const flagImg = t.flagId ? `<img src="https://flagcdn.com/w20/${t.flagId.toLowerCase()}.png" class="sb-flag" alt="">` : '';
-      return `<div style="color:${t.color}">${flagImg}${name}: ${t.score}${status}</div>`;
+      const cls = t.playerId === localPlayerId ? 'scoreboard-row scoreboard-me' : 'scoreboard-row';
+      // Border color falls through `currentColor` from the inline `color`,
+      // so the badge frame always matches the tank's chosen colour.
+      return `<div class="${cls}" style="color:${t.color}">${flagImg}${name}: ${t.score}${status}</div>`;
     })
     .join('');
 }

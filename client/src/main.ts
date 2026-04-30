@@ -14,6 +14,7 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
+  setSelfDestructPulse,
 } from './entities/tank';
 import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
@@ -39,7 +40,7 @@ import { showLogin } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getSelfDestructHoldProgress, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
@@ -349,6 +350,7 @@ const initialLoginError = (() => {
     if (!reason) return undefined;
     sessionStorage.removeItem('vt.kickReason');
     if (reason === 'idle') return 'You were kicked for inactivity.';
+    if (reason === 'banned') return 'You have been banned from this server.';
     return undefined;
   } catch { return undefined; }
 })();
@@ -385,6 +387,7 @@ socket.on('join_error', async ({ reason }) => {
       case 'cap_reached':    return 'Server is at capacity. Try again in a moment.';
       case 'missing_code':   return 'Enter a 4-letter invite code.';
       case 'too_many_rooms': return 'You already have 2 private rooms running. Close one first.';
+      case 'name_taken':     return 'That name is already taken in this room. Pick a different one.';
       default:               return 'Could not join. Try again.';
     }
   })();
@@ -528,7 +531,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
   syncSoldiers(scene, snap.soldiers ?? []);
   refreshPilotingMissile(snap.projectiles);
-  hud.updateScoreboard(snap.tanks);
+  hud.updateScoreboard(snap.tanks, myId);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   syncLocalInventory(myTank);
@@ -967,7 +970,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
-  hud.updateScoreboard(tanks);
+  hud.updateScoreboard(tanks, myId);
   syncLocalInventory(myTank);
 
   if (myTank) {
@@ -1665,6 +1668,22 @@ function animate(): void {
       if (consumeSpace()) {
         socket.emit('predator_detonate');
       }
+    }
+
+    // R-key self-destruct. Gated on (alive && not piloting) so the key
+    // is silently ignored when it can't fire — server validates again,
+    // but consuming the latch here prevents a queued-up press from
+    // firing the moment a respawn lands.
+    if (consumeSelfDestruct()) {
+      if (predictedState?.alive && !isPiloting) {
+        socket.emit('self_destruct_request');
+      }
+    }
+    if (myId) {
+      const sdProgress = (predictedState?.alive && !isPiloting)
+        ? getSelfDestructHoldProgress()
+        : 0;
+      setSelfDestructPulse(myId, sdProgress);
     }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;

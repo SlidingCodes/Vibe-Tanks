@@ -45,6 +45,10 @@ import {
   PICKUP_FALL_SPEED,
   PICKUP_WEAPON_CHANCE,
   PARACHUTE_DROP_HEIGHT,
+  SELF_DESTRUCT_RADIUS,
+  SELF_DESTRUCT_DAMAGE,
+  SELF_DESTRUCT_SCORE_PENALTY,
+  INVENTORY_SNAPSHOT_TTL_SECONDS,
 } from '@shared/constants';
 import { solveAimAnglesForTarget } from '@shared/muzzle';
 import {
@@ -86,6 +90,8 @@ import {
   simulateSegment,
   simulateShot,
 } from '../game/Simulation';
+import { pushHistory } from '../admin/history';
+import { timed } from '../admin/metrics';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
@@ -174,6 +180,11 @@ interface PlayerState {
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
+  /** Raw socket.handshake.address captured at addPlayer time. Used by
+   *  the admin dashboard for the rooms / history views and by the ban
+   *  check on connection. Empty string for bots (they don't have a
+   *  socket). */
+  ip: string;
   botWeaponIndex?: number;
   botTargetId?: PlayerId | null;
   botMoveMode?: 'skirmish' | 'flee' | 'charge';
@@ -409,6 +420,24 @@ export class Room {
    *  can call shutdown() and drop the room. Bots alone never keep a room
    *  alive — they exist only to give a human someone to shoot at. */
   private readonly onEmpty?: () => void;
+  /** Snapshots of leaving players' inventories, keyed by sanitised
+   *  lowercase name. Allows a player who disconnects mid-match to rejoin
+   *  with the same loadout instead of getting a fresh random one. Each
+   *  entry is tagged with `matchGen` so a snapshot from the old match
+   *  never bleeds into the next; cleared on resetMatch alongside the
+   *  matchGen bump. Bots are never snapshotted — they keep the legacy
+   *  random-loadout behaviour. */
+  private inventoryByName: Map<string, { inventory: WeaponInventorySlot[]; leftAt: number; matchGen: number }> = new Map();
+  /** Bumped every match reset. Used as part of the inventory snapshot
+   *  key so a stale snapshot from the previous map can't survive into
+   *  the new one. */
+  private matchGen = 0;
+  /** setTimeout handle for the deferred onEmpty call. The room stays
+   *  alive for this window so a player who reconnects quickly lands back
+   *  in the same room and gets their inventory snapshot restored. */
+  private emptyGraceTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Seconds to keep an empty room alive before tearing it down. */
+  private static readonly EMPTY_GRACE_SECONDS = 60;
 
   constructor(
     id: string,
@@ -464,6 +493,14 @@ export class Room {
   }
 
   private resetMatch(): void {
+    // Bump the inventory-snapshot generation and drop the cache before
+    // any new spawn happens. A snapshot taken in match N would otherwise
+    // be replayed onto a tank in match N+1 if the player rejoins fast,
+    // which feels broken — every match should start from a fresh
+    // random loadout.
+    this.matchGen++;
+    this.inventoryByName.clear();
+
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
     this.pendingShotTimeouts.clear();
     // simTime MUST be reset before clearCombatState: the latter stamps
@@ -553,12 +590,47 @@ export class Room {
     // routes humans to non-full public rooms; this is a defensive cap.
     if (this.humanCount() >= MAX_PLAYERS) return;
 
+    if (this.emptyGraceTimeout !== null) {
+      clearTimeout(this.emptyGraceTimeout);
+      this.emptyGraceTimeout = null;
+    }
+
+    // Reject duplicate names so the kill-feed / scoreboard / inventory-
+    // snapshot lookup remain unambiguous. The check is case-insensitive
+    // and runs against the post-sanitisation form so "  Foo  " collides
+    // with "foo". Bots draw from the same pool but have their own
+    // de-conflict logic in spawnBot, so we don't filter them out here.
+    const safeName = sanitizeName(playerName);
+    const nameKey = safeName.toLowerCase();
+    for (const t of this.tanks.values()) {
+      if (sanitizeName(t.playerName).toLowerCase() === nameKey) {
+        socket.emit('join_error', { reason: 'name_taken' });
+        return;
+      }
+    }
+
     const playerId = socket.id;
+
+    const ip = socket.handshake.address ?? '';
+
+    const nowSec = Date.now() / 1000;
+    const snap = this.inventoryByName.get(nameKey);
+    let inventory: WeaponInventorySlot[];
+    if (
+      snap
+      && snap.matchGen === this.matchGen
+      && nowSec - snap.leftAt <= INVENTORY_SNAPSHOT_TTL_SECONDS
+    ) {
+      inventory = snap.inventory;
+      this.inventoryByName.delete(nameKey);
+    } else {
+      inventory = createRandomLoadout(this.settings.weaponAllowed);
+    }
 
     this.players.set(playerId, {
       socket,
       input: { forward: false, backward: false, left: false, right: false, seq: 0 },
-      lastInputAt: Date.now() / 1000,
+      lastInputAt: nowSec,
       idleWarned: false,
       lastFireByWeapon: new Map(),
       weaponHeat: new Map(),
@@ -566,12 +638,13 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
+      ip,
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
       burningUntil: 0,
       burningOwner: null,
-      inventory: createRandomLoadout(this.settings.weaponAllowed),
+      inventory,
       activeMissileId: null,
       parachuteUntil: 0,
       parachuteGroundY: 0,
@@ -591,6 +664,18 @@ export class Room {
       kind: 'join', name: tank.playerName, color: tank.color,
     });
 
+    // Record the join in the admin history ring so the dashboard's
+    // recent-events table reflects it. Bots take a separate code path
+    // and skip this — they have no IP and aren't of interest to the
+    // admin view.
+    pushHistory({
+      kind: 'join',
+      name: tank.playerName,
+      ip,
+      roomId: this.id,
+      at: Date.now(),
+    });
+
     this.ensureFourTanks();
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
@@ -604,8 +689,66 @@ export class Room {
     }
   }
 
+  /** Snapshot the room state for the admin dashboard. Returns the
+   *  list of currently-connected humans (with IPs) and bots, plus the
+   *  match phase and the seconds-left until the next reset. Tanks
+   *  show their score / kills / deaths so the dashboard can spot
+   *  stat-padding or AFK farming at a glance. */
+  adminSnapshot(): {
+    id: string;
+    phase: string;
+    inviteCode?: string;
+    private: boolean;
+    secondsLeft: number;
+    humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }>;
+    bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }>;
+  } {
+    const humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
+    const bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
+    for (const [pid, player] of this.players) {
+      const tank = this.tanks.get(pid);
+      if (!tank) continue;
+      const row = {
+        id: pid,
+        name: tank.playerName,
+        score: Math.round(tank.score),
+        kills: tank.kills,
+        deaths: tank.deaths,
+        alive: tank.alive,
+      };
+      if (player.isBot) {
+        bots.push(row);
+      } else {
+        humans.push({ ...row, ip: player.ip });
+      }
+    }
+    const secondsLeft = this.matchResetAt > 0
+      ? Math.max(0, Math.round(this.matchResetAt - Date.now() / 1000))
+      : 0;
+    return {
+      id: this.id,
+      phase: this.phase,
+      inviteCode: this.inviteCode,
+      private: this.private,
+      secondsLeft,
+      humans,
+      bots,
+    };
+  }
+
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+
+    if (tank && player && !player.isBot) {
+      const key = sanitizeName(tank.playerName).toLowerCase();
+      this.inventoryByName.set(key, {
+        inventory: player.inventory,
+        leftAt: Date.now() / 1000,
+        matchGen: this.matchGen,
+      });
+    }
+
     this.physics.removeTank(playerId);
     this.players.delete(playerId);
     this.tanks.delete(playerId);
@@ -631,6 +774,17 @@ export class Room {
       this.io.to(this.id).emit('match_event', {
         kind: 'leave', name: tank.playerName, color: tank.color,
       });
+      // Mirror the leave to the admin history ring (humans only —
+      // bots have a separate removeBot path that doesn't touch this).
+      if (player && !player.isBot) {
+        pushHistory({
+          kind: 'leave',
+          name: tank.playerName,
+          ip: player.ip,
+          roomId: this.id,
+          at: Date.now(),
+        });
+      }
     }
 
     // Last human gone: tell the manager to drop the room. Bots alone are
@@ -640,7 +794,10 @@ export class Room {
     // back to the old behaviour of refilling bots and idling.
     if (this.humanCount() === 0) {
       if (this.onEmpty) {
-        this.onEmpty();
+        this.emptyGraceTimeout = setTimeout(() => {
+          this.emptyGraceTimeout = null;
+          this.onEmpty!();
+        }, Room.EMPTY_GRACE_SECONDS * 1000);
         return;
       }
       this.stopLoop();
@@ -680,6 +837,7 @@ export class Room {
    *  manager removes it from its map so it gets GC'd. */
   shutdown(): void {
     this.stopLoop();
+    if (this.emptyGraceTimeout) { clearTimeout(this.emptyGraceTimeout); this.emptyGraceTimeout = null; }
     if (this.countdownTimeout) { clearTimeout(this.countdownTimeout); this.countdownTimeout = null; }
     if (this.resetTimeout) { clearTimeout(this.resetTimeout); this.resetTimeout = null; }
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
@@ -884,6 +1042,10 @@ export class Room {
       player.lastInputAt = Date.now() / 1000;
     });
 
+    socket.on('self_destruct_request', () => {
+      this.handleSelfDestruct(socket.id);
+    });
+
     socket.on('ping', (t: number) => {
       socket.emit('pong', t);
     });
@@ -1048,6 +1210,7 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
+      ip: '',
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
@@ -1429,6 +1592,7 @@ export class Room {
     const shellCount = weapon.behaviorConfig?.mortarShellCount ?? 5;
     const spread = weapon.behaviorConfig?.mortarSpread ?? 5;
     const interval = weapon.behaviorConfig?.mortarInterval ?? 0.28;
+    const initialDelay = weapon.behaviorConfig?.mortarInitialDelay ?? 0.8;
     const spawnHeight = weapon.behaviorConfig?.mortarSpawnHeight ?? 20;
     const blastRadius = weapon.behaviorConfig?.mortarImpactRadius ?? weapon.blastRadius;
     const damage = weapon.behaviorConfig?.mortarImpactDamage ?? weapon.damage;
@@ -1443,7 +1607,7 @@ export class Room {
       position: center,
       radius: spread + blastRadius,
       armed: true,
-      timeRemaining: shellCount * interval + 1.1,
+      timeRemaining: initialDelay + shellCount * interval + 1.0,
       damage: 0,
       tickInterval: 0,
       tickTimer: 0,
@@ -1464,7 +1628,7 @@ export class Room {
         kind: 'mortar',
         ownerId: tank.playerId,
         weaponId: weapon.id,
-        triggerAt: this.simTime + 0.25 + i * interval,
+        triggerAt: this.simTime + initialDelay + i * interval,
         position,
         blastRadius,
         damage,
@@ -2003,7 +2167,11 @@ export class Room {
     const simDt = 1 / SIM_TICK_RATE;
     const targetTickMs = simDt * 1000;
 
-    this.simInterval = setInterval(() => {
+    // Both ticks are wrapped in `timed` so the admin dashboard can
+    // surface their median / p95 duration. The wrapping is cheap
+    // (one performance.now() + one push into a 120-element array)
+    // and the cost is dwarfed by the sim work itself.
+    this.simInterval = setInterval(timed(() => {
       // Pause simulation during leaderboard to let players admire the results.
       if (this.phase === MatchPhase.Leaderboard) return;
 
@@ -2025,9 +2193,9 @@ export class Room {
       this.tickSoldiers(simDt);
       this.tickScheduledStrikes();
       this.tickPickups(simDt);
-    }, targetTickMs);
+    }, 'sim'), targetTickMs);
 
-    this.broadcastInterval = setInterval(() => {
+    this.broadcastInterval = setInterval(timed(() => {
       // Per-recipient state_update so we can hide enemy mines outside
       // their proximity-reveal range. Bots have no socket and are skipped.
       // Cost: O(humans × hazards) per tick — small (≤8 humans, a handful
@@ -2036,7 +2204,7 @@ export class Room {
         if (!player.socket) continue;
         player.socket.emit('state_update', this.getStateUpdateFor(pid));
       }
-    }, (1 / TICK_RATE) * 1000);
+    }, 'broadcast'), (1 / TICK_RATE) * 1000);
 
     const fireDt = 1 / FIRE_TICK_RATE;
     this.fireInterval = setInterval(() => {
@@ -2700,6 +2868,77 @@ export class Room {
       ownerPlayer.activeMissileId = null;
     }
     this.emitShotResultNow(result, missile.ownerId, missile.weaponId);
+  }
+
+  /** Tank self-destruct triggered by the R key. Detonates a big_blast at
+   *  the tank's current position: damage to nearby enemies credits score
+   *  normally (1 score per HP, +50 per kill), then a flat penalty is
+   *  applied to the owner. Score may go negative — the malus is the
+   *  cost of the play, and a high-damage detonation can offset it. */
+  private handleSelfDestruct(playerId: PlayerId): void {
+    if (this.phase !== MatchPhase.InProgress) return;
+    const tank = this.tanks.get(playerId);
+    const player = this.players.get(playerId);
+    if (!tank || !player || !tank.alive) return;
+
+    // Use the tank's centre-mass position as the blast origin. Slightly
+    // raised so the falloff doesn't hug the ground voxels and waste
+    // damage on the floor.
+    const epicentre: Vec3 = {
+      x: tank.position.x,
+      y: tank.position.y + 0.6,
+      z: tank.position.z,
+    };
+
+    // Compute splash on every alive tank. The owner gets removed from
+    // the totals before applyResolvedDamage runs so we can emit a
+    // dedicated 'self_destruct' match_event instead of the generic
+    // 'suicide' the resolver emits when ownerId === victimId.
+    const damageTotals: DamageTotals = new Map();
+    const carveTerrain = applyImpact({
+      point: epicentre,
+      blastRadius: SELF_DESTRUCT_RADIUS,
+      damage: SELF_DESTRUCT_DAMAGE,
+      // Any positive value flips the carve flag on the ShotStep —
+      // the carve radius itself is driven by step.blastRadius downstream.
+      terrainDamage: 1,
+      // Small flat core: anyone within 2 m takes the full 120 dmg, so
+      // a tank-on-tank ram-and-pop is a reliable kill.
+      flatCoreRadius: 2,
+    }, this.getTankList(), damageTotals);
+
+    damageTotals.delete(playerId);
+
+    const result = createShotResult(playerId, 'self_destruct', [
+      makeStep(0, [epicentre], epicentre, 'impact', carveTerrain, SELF_DESTRUCT_RADIUS, 'big_blast'),
+    ], damageTotals);
+
+    // Mark the tank dead first so emitShotResultNow's downstream
+    // checks (e.g. mine triggers iterating alive tanks) don't bring
+    // the corpse back into damage logic mid-pass. applyResolvedDamage
+    // is robust to this — it skips victims with !alive — and we no
+    // longer have the owner in damageDealt anyway.
+    tank.alive = false;
+    tank.hp = 0;
+    tank.deaths++;
+    player.respawnAllowedAt = Date.now() / 1000 + RESPAWN_MIN_INTERVAL_SECONDS;
+    player.lastInputAt = Date.now() / 1000;
+    if (player.activeMissileId) player.activeMissileId = null;
+
+    this.emitShotResultNow(result, playerId, 'self_destruct');
+
+    // Apply the flat penalty AFTER the damage credits land in
+    // applyResolvedDamage, so the in-feed math reads as
+    // "+47 from damage, +50 from kill, -100 self-destruct". Score is
+    // intentionally allowed to go negative.
+    tank.score -= SELF_DESTRUCT_SCORE_PENALTY;
+
+    this.io.to(this.id).emit('match_event', {
+      kind: 'self_destruct',
+      victimId: tank.playerId,
+      name: tank.playerName,
+      color: tank.color,
+    });
   }
 
   /** Soldiers AI tick. Per unit:

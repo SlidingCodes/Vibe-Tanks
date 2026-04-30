@@ -6,6 +6,8 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
+import { isBanned } from './admin/bans';
+import { startInternalServer } from './admin/internalServer';
 
 // Exceptions inside setInterval callbacks (sim/broadcast/fire ticks) get
 // swallowed by default — the process stays alive but the tick is dead,
@@ -49,6 +51,16 @@ async function main(): Promise<void> {
   const manager = new RoomManager(io);
 
   io.on('connection', (socket) => {
+    // Reject banned IPs at the door so they don't even get the
+    // chance to fire join_room. The 'kicked' event is the only
+    // socket-level signal the client knows how to handle (reload
+    // → login overlay with the parlante reason), so we reuse it.
+    const ip = socket.handshake.address;
+    if (ip && isBanned(ip)) {
+      socket.emit('kicked', { reason: 'banned' });
+      socket.disconnect(true);
+      return;
+    }
     console.log(`Player connected: ${socket.id}`);
 
     onValidated(socket, 'join_room', JoinRoomSchema, (data) => {
@@ -101,6 +113,8 @@ async function main(): Promise<void> {
   httpServer.listen(SERVER_PORT, () => {
     console.log(`Vibe Tanks server running on port ${SERVER_PORT}`);
   });
+
+  startInternalServer(manager, io);
 }
 
 main().catch((err) => {

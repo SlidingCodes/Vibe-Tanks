@@ -175,6 +175,7 @@ export interface WeaponBehaviorConfig {
   railTerrainDamage?: number;
   mortarShellCount?: number;
   mortarSpread?: number;
+  mortarInitialDelay?: number;
   mortarInterval?: number;
   mortarSpawnHeight?: number;
   mortarImpactRadius?: number;
@@ -481,7 +482,8 @@ export type JoinErrorReason =
   | 'cap_reached'
   | 'missing_code'
   | 'invalid_settings'
-  | 'too_many_rooms';
+  | 'too_many_rooms'
+  | 'name_taken';
 
 /** Per-room tunables passed by the creator of a private room. Public
  *  rooms always use the defaults. */
@@ -609,6 +611,11 @@ export interface ClientEvents {
    *  position with the standard blast radius / damage. No-op if the
    *  player isn't currently piloting. */
   predator_detonate: () => void;
+  /** Tank self-destruct (R key). Detonates at the tank's current
+   *  position, damages nearby players within SELF_DESTRUCT_RADIUS,
+   *  applies a fixed score penalty, and kills the player. Damage
+   *  inflicted credits score normally and can offset the penalty. */
+  self_destruct_request: () => void;
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
@@ -620,6 +627,7 @@ export type MatchEvent =
   | { kind: 'leave'; name: string; color: string }
   | { kind: 'kill'; killerId: PlayerId; victimId: PlayerId; killerName: string; killerColor: string; victimName: string; victimColor: string; damage: number; weaponId: string }
   | { kind: 'suicide'; victimId: PlayerId; name: string; color: string; weaponId: string }
+  | { kind: 'self_destruct'; victimId: PlayerId; name: string; color: string }
   | { kind: 'reset' };
 
 // ── Network events: server → client ──
@@ -694,5 +702,5 @@ export interface ServerEvents {
   /** Server is about to disconnect this socket and wants the client to
    *  surface a reason instead of a silent dropout. The client should
    *  reload the page so the player lands back on the login overlay. */
-  kicked: (data: { reason: 'idle' }) => void;
+  kicked: (data: { reason: 'idle' | 'banned' }) => void;
 }

@@ -181,6 +181,10 @@ interface HazardVisual {
   mortarOuter?: THREE.Mesh;
   mortarBrackets?: THREE.Mesh;
   mortarBeam?: THREE.Mesh;
+  // Mine-specific layers
+  mineAntennae?: THREE.Group;
+  mineRadar?: THREE.Mesh;
+  mineGlow?: THREE.Mesh;
 }
 
 const shots: ActiveShotStep[] = [];
@@ -1076,6 +1080,9 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
   let mortarOuter: THREE.Mesh | undefined;
   let mortarBrackets: THREE.Mesh | undefined;
   let mortarBeam: THREE.Mesh | undefined;
+  let mineAntennae: THREE.Group | undefined;
+  let mineRadar: THREE.Mesh | undefined;
+  let mineGlow: THREE.Mesh | undefined;
 
   if (hazard.type === 'napalm') {
     // Napalm field: keep fire colors (orange/amber) but less neon.
@@ -1088,19 +1095,74 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
       new THREE.MeshBasicMaterial({ color: 0xd88028, transparent: true, opacity: 0.42 }),
     );
   } else if (hazard.type === 'mine') {
-    // Mine indicator: olive drab at rest, warm amber when armed (see
-    // update loop). Torus ring + small dome core for a low-profile
-    // ordnance look.
+    const color = colorOverride !== null ? colorOverride : 0x7a8a5a;
+    const accent = colorOverride !== null ? colorOverride : 0xd89028;
+
+    // 1. Octagonal base (heavy-duty military casing)
     ring = new THREE.Mesh(
-      new THREE.TorusGeometry(Math.max(0.45, hazard.radius * 0.55), 0.08, 8, 20),
-      new THREE.MeshBasicMaterial({ color: 0x7a8a5a, transparent: true, opacity: 0.55 }),
+      new THREE.CylinderGeometry(0.5, 0.6, 0.15, 8),
+      new THREE.MeshStandardMaterial({ color: 0x3a3d34, metalness: 0.8, roughness: 0.4 })
     );
-    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.02;
+
+    // 2. Glowing Core (glass dome)
     core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.28, 12, 12),
-      new THREE.MeshBasicMaterial({ color: 0x5a6a3a, transparent: true, opacity: 0.9 }),
+      new THREE.SphereGeometry(0.28, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({
+        color: 0x222222,
+        emissive: color,
+        emissiveIntensity: 1.0,
+        metalness: 0.9,
+        roughness: 0.1,
+        transparent: true,
+        opacity: 0.9
+      })
     );
-    core.position.y = 0.14;
+    core.position.y = 0.08;
+
+    // 3. Spinning Radar / HUD ring
+    mineRadar = new THREE.Mesh(
+      new THREE.TorusGeometry(0.42, 0.02, 8, 32),
+      new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending })
+    );
+    mineRadar.rotation.x = Math.PI / 2;
+    mineRadar.position.y = 0.12;
+    group.add(mineRadar);
+
+    // 4. Ground Glow
+    mineGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 1.5),
+      new THREE.MeshBasicMaterial({
+        map: getParticleTextures().smokePuff,
+        color: accent,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      })
+    );
+    mineGlow.rotation.x = -Math.PI / 2;
+    mineGlow.position.y = -0.04;
+    group.add(mineGlow);
+
+    // 5. Deployable Antennae (extend when armed)
+    mineAntennae = new THREE.Group();
+    const antennaGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.2, 4);
+    const antennaMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.9 });
+    for (let i = 0; i < 4; i++) {
+      const a = new THREE.Mesh(antennaGeo, antennaMat);
+      const angle = (i * Math.PI) / 2 + Math.PI / 4;
+      a.position.set(Math.cos(angle) * 0.3, 0.05, Math.sin(angle) * 0.3);
+      a.rotation.x = Math.PI / 2;
+      a.lookAt(new THREE.Vector3(0, 0.5, 0).add(group.position)); // This might be wrong if group pos changes, but group is at origin here
+      // Better way to tilt them:
+      a.rotation.set(0, 0, 0);
+      a.rotateX(Math.PI / 4); // tilt out
+      a.rotateY(angle);
+      mineAntennae.add(a);
+    }
+    mineAntennae.scale.setScalar(0.1); // Start retracted
+    group.add(mineAntennae);
   } else {
     // Mortar marker: high-tech tactical target acquisition area.
     const color = colorOverride !== null ? colorOverride : 0xd8a448; // team color or amber tactical
@@ -1186,6 +1248,9 @@ function createHazardVisual(hazard: HazardState, scene: THREE.Scene): HazardVisu
     mortarOuter,
     mortarBrackets,
     mortarBeam,
+    mineAntennae,
+    mineRadar,
+    mineGlow,
   };
 }
 
@@ -1406,15 +1471,38 @@ export function updateProjectileAnimation(scene: THREE.Scene, dt: number): void 
         coreMat.opacity = 0.35 + Math.sin(visual.pulse * 8) * 0.1;
       }
     } else if (visual.type === 'mine') {
-      const activeColor = visual.colorOverride !== null ? visual.colorOverride : 0xd89028;
       const activeCoreColor = visual.colorOverride !== null ? visual.colorOverride : 0xc25818;
-      ringMat.color.setHex(visual.armed ? activeColor : 0x7a8a5a);
-      ringMat.opacity = visual.armed ? 0.72 : 0.42;
-      visual.ring.rotation.z += dt * 1.8;
+
+      // 1. Core pulsing (faster when armed)
       if (visual.core) {
-        const coreMat = visual.core.material as THREE.MeshBasicMaterial;
-        coreMat.color.setHex(visual.armed ? activeCoreColor : 0x5a6a3a);
-        coreMat.opacity = visual.armed ? 0.92 : 0.75;
+        const coreMat = visual.core.material as THREE.MeshStandardMaterial;
+        const pulseRate = visual.armed ? 12 : 3;
+        const pulseIntensity = 0.5 + Math.sin(visual.pulse * pulseRate) * 0.5;
+        coreMat.emissiveIntensity = 0.5 + pulseIntensity * 2.5;
+        coreMat.emissive.setHex(visual.armed ? activeCoreColor : 0x5a6a3a);
+      }
+
+      // 2. Radar ring rotation and scaling
+      if (visual.mineRadar) {
+        visual.mineRadar.rotation.z += dt * (visual.armed ? 4.0 : 1.2);
+        const rPulse = 1 + Math.sin(visual.pulse * 2) * 0.05;
+        visual.mineRadar.scale.set(rPulse, rPulse, 1);
+        (visual.mineRadar.material as THREE.MeshBasicMaterial).opacity = visual.armed ? 0.6 : 0.25;
+      }
+
+      // 3. Antennae extension (smooth transition)
+      if (visual.mineAntennae) {
+        const targetScale = visual.armed ? 1.0 : 0.1;
+        const currentScale = visual.mineAntennae.scale.x;
+        const nextScale = currentScale + (targetScale - currentScale) * Math.min(1, dt * 6);
+        visual.mineAntennae.scale.setScalar(nextScale);
+      }
+
+      // 4. Ground glow pulsing
+      if (visual.mineGlow) {
+        const gPulse = 0.15 + Math.sin(visual.pulse * 4) * 0.05;
+        (visual.mineGlow.material as THREE.MeshBasicMaterial).opacity = visual.armed ? gPulse * 2 : gPulse;
+        visual.mineGlow.rotation.z += dt * 0.5;
       }
     } else {
       // Mortar marker animation: tactical rotations and pulses

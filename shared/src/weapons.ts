@@ -165,6 +165,7 @@ export const WEAPONS: WeaponDefinition[] = [
     behaviorConfig: {
       mortarShellCount: 5,
       mortarSpread: 5.5,
+      mortarInitialDelay: 0.8,
       mortarInterval: 0.28,
       mortarSpawnHeight: 20,
       mortarImpactRadius: 3.4,

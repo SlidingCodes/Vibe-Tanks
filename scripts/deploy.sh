@@ -8,6 +8,7 @@ set -euo pipefail
 REPO="/home/blin2h/deploy/Vibe-Tanks"
 BRANCH="main"
 SERVICE="vibe-tanks.service"
+ADMIN_SERVICE="vibe-tanks-admin.service"
 
 cd "$REPO"
 
@@ -37,5 +38,18 @@ npm run build:client
 echo "==> restarting $SERVICE"
 sudo systemctl restart "$SERVICE"
 sudo systemctl is-active "$SERVICE"
+
+# The admin sidecar runs on its own systemd unit; the file ships with
+# the repo (scripts/vibe-tanks-admin.service) but installing it into
+# /etc/systemd/system + the secrets drop-in is a one-time manual step
+# (see scripts/README or CLAUDE.md). Restart only when present so the
+# game deploy keeps working until the operator wires it up.
+if systemctl list-unit-files --no-legend "$ADMIN_SERVICE" | grep -q "$ADMIN_SERVICE"; then
+  echo "==> restarting $ADMIN_SERVICE"
+  sudo systemctl restart "$ADMIN_SERVICE"
+  sudo systemctl is-active "$ADMIN_SERVICE"
+else
+  echo "==> $ADMIN_SERVICE not installed yet; skipping (one-time setup needed)"
+fi
 
 echo "==> deploy done"
