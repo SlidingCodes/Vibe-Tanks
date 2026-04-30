@@ -37,7 +37,7 @@ import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
 import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
-import { showLogin } from './ui/login';
+import { showLogin, tryAutoLoginFromPortal } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
@@ -355,8 +355,11 @@ const initialLoginError = (() => {
     return undefined;
   } catch { return undefined; }
 })();
-// Block until the player has picked a name + color from the login overlay.
-let login = await showLogin(initialLoginError);
+// Vibe Jam 2026 webring spec: portal arrivals must skip every input screen.
+// If `?portal=true` is present we build a LoginResult from forwarded params
+// (with random fallbacks) and bypass the overlay entirely.
+const portalLogin = tryAutoLoginFromPortal();
+let login = portalLogin ?? await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
@@ -2044,7 +2047,9 @@ function animate(): void {
       speedX: predictedState?.linVel.x,
       speedY: predictedState?.linVel.y,
       speedZ: predictedState?.linVel.z,
+      rotationX: predictedState?.bodyPitch,
       rotationY: predictedState?.bodyRotation,
+      rotationZ: predictedState?.bodyRoll,
     }));
   }
 

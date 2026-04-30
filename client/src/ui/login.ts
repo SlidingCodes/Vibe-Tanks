@@ -360,6 +360,63 @@ function pickRandomName(): string {
   return randomNames[Math.floor(Math.random() * randomNames.length)];
 }
 
+/** Vibe Jam 2026 webring requires that portal arrivals skip every input
+ *  screen. When `?portal=true` is present we synthesise a LoginResult from
+ *  the forwarded params (`username`, `color`) with random fallbacks for
+ *  fields the webring spec doesn't carry, hide the overlay, and resolve
+ *  immediately — no name picker, no color swatches, no waiting room. */
+export function tryAutoLoginFromPortal(): LoginResult | null {
+  const qs = new URLSearchParams(window.location.search);
+  if (qs.get('portal') !== 'true' && qs.get('portal') !== '1') return null;
+
+  const rawName = qs.get('username')?.trim();
+  const name = rawName && rawName.length > 0
+    ? rawName.slice(0, 16)
+    : pickRandomName();
+
+  const rawColor = qs.get('color');
+  let color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  if (rawColor) {
+    // Accept either hex (`#aabbcc` / `aabbcc`) or a CSS named color we can
+    // normalise via a hidden DOM probe. Falls back to the random palette
+    // pick if the value can't be parsed.
+    const hex = normaliseColor(rawColor);
+    if (hex) color = hex;
+  }
+
+  const overlay = document.getElementById('login-overlay') as HTMLDivElement | null;
+  if (overlay) overlay.style.display = 'none';
+
+  return {
+    name,
+    color,
+    flagId: FLAGS[Math.floor(Math.random() * FLAGS.length)].id,
+    parachuteId: `${PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)]},#fff`,
+    mode: 'quick',
+  };
+}
+
+function normaliseColor(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  // Already-hex shortcut: tolerate missing '#' and 3-digit form.
+  const hexMatch = trimmed.match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const h = hexMatch[1];
+    return '#' + (h.length === 3 ? h.split('').map((c) => c + c).join('') : h).toLowerCase();
+  }
+  // Named-color resolution — parse into a temporary canvas's fillStyle.
+  try {
+    const probe = document.createElement('canvas').getContext('2d');
+    if (!probe) return null;
+    probe.fillStyle = '#000';
+    probe.fillStyle = trimmed;
+    const v = probe.fillStyle;
+    if (typeof v === 'string' && v.startsWith('#')) return v.toLowerCase();
+  } catch { /* fall through */ }
+  return null;
+}
+
 export type JoinMode = 'quick' | 'create_private' | 'join_private';
 
 export interface LoginResult {
