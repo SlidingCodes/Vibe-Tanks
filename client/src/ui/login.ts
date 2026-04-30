@@ -11,6 +11,7 @@ import {
 import { FLAGS, createFlagMesh } from '../entities/flag';
 import { WEAPONS } from '@shared/weapons';
 import { getParachuteTexture } from '../scene/pickups';
+import { startMusic } from '../audio/music';
 import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
@@ -522,6 +523,9 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     } else {
       errorBox.style.display = 'none';
     }
+
+    // startMusic() retries inside a user gesture if autoplay is blocked.
+    startMusic();
 
     inviteInput.value = '';
     // Auto-fill the code from a ?code=XXXX query string (e.g. someone

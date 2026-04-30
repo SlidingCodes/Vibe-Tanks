@@ -252,7 +252,11 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
   parachuteMesh.position.y = 4.5;
   parachuteMesh.visible = false;
-  
+  // Render after the trajectory marker (renderOrder 10) and aux reticles
+  // (11) — those use depthTest:false so they otherwise paint over any
+  // transparent geometry behind them (the canopy is transparent at 0.95).
+  parachuteMesh.renderOrder = 20;
+
   // Attach parachute to the root group instead of chassisGroup so it doesn't tilt with recoil
   group.add(parachuteMesh);
 
@@ -277,6 +281,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const shroudMat = new THREE.LineBasicMaterial({ color: 0x242018, transparent: true, opacity: 0.85 });
   const parachuteShrouds = new THREE.LineSegments(shroudGeom, shroudMat);
   parachuteShrouds.visible = false;
+  parachuteShrouds.renderOrder = 20;
   group.add(parachuteShrouds);
 
   // Burning VFX: multi-layer billboards riding on the tank. When the
