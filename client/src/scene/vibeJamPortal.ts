@@ -27,7 +27,9 @@ export interface PortalPlayerStats {
   speedX?: number;
   speedY?: number;
   speedZ?: number;
+  rotationX?: number;
   rotationY?: number;
+  rotationZ?: number;
 }
 
 export interface VibeJamPortalHandle {
@@ -248,17 +250,27 @@ export function createVibeJamPortal(
     if (stats.hp !== undefined && Number.isFinite(stats.hp)) {
       params.set('hp', String(stats.hp));
     }
-    if (stats.speedX !== undefined && Number.isFinite(stats.speedX)) {
-      params.set('speed_x', stats.speedX.toFixed(3));
+    const sx = Number.isFinite(stats.speedX) ? stats.speedX! : undefined;
+    const sy = Number.isFinite(stats.speedY) ? stats.speedY! : undefined;
+    const sz = Number.isFinite(stats.speedZ) ? stats.speedZ! : undefined;
+    if (sx !== undefined) params.set('speed_x', sx.toFixed(3));
+    if (sy !== undefined) params.set('speed_y', sy.toFixed(3));
+    if (sz !== undefined) params.set('speed_z', sz.toFixed(3));
+    // The webring spec also wants a scalar `speed=` (m/s magnitude). Compute
+    // it from whichever components are available so older clients that don't
+    // parse speed_* still get a useful value.
+    if (sx !== undefined || sy !== undefined || sz !== undefined) {
+      const mag = Math.sqrt((sx ?? 0) ** 2 + (sy ?? 0) ** 2 + (sz ?? 0) ** 2);
+      params.set('speed', mag.toFixed(3));
     }
-    if (stats.speedY !== undefined && Number.isFinite(stats.speedY)) {
-      params.set('speed_y', stats.speedY.toFixed(3));
-    }
-    if (stats.speedZ !== undefined && Number.isFinite(stats.speedZ)) {
-      params.set('speed_z', stats.speedZ.toFixed(3));
+    if (stats.rotationX !== undefined && Number.isFinite(stats.rotationX)) {
+      params.set('rotation_x', stats.rotationX.toFixed(3));
     }
     if (stats.rotationY !== undefined && Number.isFinite(stats.rotationY)) {
       params.set('rotation_y', stats.rotationY.toFixed(3));
+    }
+    if (stats.rotationZ !== undefined && Number.isFinite(stats.rotationZ)) {
+      params.set('rotation_z', stats.rotationZ.toFixed(3));
     }
     return PORTAL_TARGET_URL + '?' + params.toString();
   }

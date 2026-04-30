@@ -360,6 +360,120 @@ function pickRandomName(): string {
   return randomNames[Math.floor(Math.random() * randomNames.length)];
 }
 
+/** Vibe Jam 2026 webring requires that portal arrivals skip every input
+ *  screen. When `?portal=true` is present we synthesise a LoginResult from
+ *  the forwarded params (`username`, `color`) plus the same defaults the
+ *  login overlay would compute (saved prefs + IP→country flag fallback),
+ *  hide the overlay, and resolve immediately — no name picker, no swatches.
+ *  Async so the geo-IP lookup can complete (2 s timeout); the overlay is
+ *  hidden synchronously so the player still sees the game canvas instantly. */
+export async function tryAutoLoginFromPortal(): Promise<LoginResult | null> {
+  const qs = new URLSearchParams(window.location.search);
+  if (qs.get('portal') !== 'true' && qs.get('portal') !== '1') return null;
+
+  // Hide the overlay before any awaited work so the canvas is visible during
+  // the geo-IP lookup — that's the part the spec calls "instant load".
+  const overlay = document.getElementById('login-overlay') as HTMLDivElement | null;
+  if (overlay) overlay.style.display = 'none';
+
+  // Saved prefs from a prior session — same source the login overlay reads.
+  let prefs: {
+    color?: string;
+    parachutePrimary?: string;
+    parachuteSecondary?: string;
+    flagId?: string;
+    name?: string;
+  } = {};
+  try {
+    const saved = localStorage.getItem('vibe-tanks-prefs');
+    if (saved) prefs = JSON.parse(saved);
+  } catch { /* ignore parse errors */ }
+
+  // Name: ?username (webring) > saved prefs > random fallback name.
+  const rawName = qs.get('username')?.trim();
+  const name = rawName && rawName.length > 0
+    ? rawName.slice(0, 16)
+    : (prefs.name && typeof prefs.name === 'string' ? prefs.name : pickRandomName());
+
+  // Color: ?color (webring; hex or named) > saved prefs > random palette.
+  const rawColor = qs.get('color');
+  let color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  if (prefs.color && PALETTE.includes(prefs.color)) color = prefs.color;
+  if (rawColor) {
+    const hex = normaliseColor(rawColor);
+    if (hex) color = hex;
+  }
+
+  // Parachute: saved prefs > random palette pick. The webring spec doesn't
+  // carry a parachute color, so this is identical to the login overlay.
+  let parachutePrimary = PARACHUTE_PALETTE[Math.floor(Math.random() * PARACHUTE_PALETTE.length)];
+  let parachuteSecondary = '#fff';
+  if (prefs.parachutePrimary && PARACHUTE_PALETTE.includes(prefs.parachutePrimary)) {
+    parachutePrimary = prefs.parachutePrimary;
+  }
+  if (prefs.parachuteSecondary && PARACHUTE_PALETTE.includes(prefs.parachuteSecondary)) {
+    parachuteSecondary = prefs.parachuteSecondary;
+  }
+
+  // Flag: saved prefs > IP→country lookup > random. Same priority and the
+  // same ipapi.co endpoint the login overlay uses, including the 2 s timeout.
+  let flagId = FLAGS[Math.floor(Math.random() * FLAGS.length)].id;
+  let hasSavedFlag = false;
+  if (prefs.flagId && FLAGS.find((f) => f.id === prefs.flagId)) {
+    flagId = prefs.flagId;
+    hasSavedFlag = true;
+  }
+  if (!hasSavedFlag) {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+      clearTimeout(tid);
+      const data = await res.json();
+      if (data && data.country_code) {
+        const detected = String(data.country_code).toLowerCase();
+        if (FLAGS.find((f) => f.id === detected)) flagId = detected;
+      }
+    } catch { /* fallback already set */ }
+  }
+
+  return {
+    name,
+    color,
+    flagId,
+    parachuteId: `${parachutePrimary},${parachuteSecondary}`,
+    mode: 'quick',
+  };
+}
+
+function normaliseColor(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  // Already-hex shortcut: tolerate missing '#' and 3-digit form.
+  const hexMatch = trimmed.match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const h = hexMatch[1];
+    return '#' + (h.length === 3 ? h.split('').map((c) => c + c).join('') : h).toLowerCase();
+  }
+  // Named-color resolution. Canvas's fillStyle silently keeps the previous
+  // value on invalid input, so seed with a sentinel and detect "no change"
+  // as "couldn't parse". Without this, `?color=undefined` would resolve to
+  // the sentinel rather than falling through to the saved-pref / random
+  // chain.
+  try {
+    const probe = document.createElement('canvas').getContext('2d');
+    if (!probe) return null;
+    const sentinel = '#00ff00';
+    probe.fillStyle = sentinel;
+    probe.fillStyle = trimmed;
+    const v = probe.fillStyle;
+    if (typeof v !== 'string' || !v.startsWith('#')) return null;
+    if (v.toLowerCase() === sentinel && trimmed.toLowerCase() !== sentinel) return null;
+    return v.toLowerCase();
+  } catch { /* fall through */ }
+  return null;
+}
+
 export type JoinMode = 'quick' | 'create_private' | 'join_private';
 
 export interface LoginResult {
