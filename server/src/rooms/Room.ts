@@ -93,6 +93,7 @@ import {
 import { pushHistory } from '../admin/history';
 import { timed } from '../admin/metrics';
 import { extractClientIp } from '../net/clientIp';
+import { lookupGeo, type GeoInfo } from '../net/clientGeo';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
@@ -186,6 +187,13 @@ interface PlayerState {
    *  dashboard for the rooms / history views and by the ban check on
    *  connection. Empty string for bots (they don't have a socket). */
   ip: string;
+  /** Resolved country / city for `ip`, populated once at join via
+   *  lookupGeo (CF-IPCountry header → geoip-lite fallback). Undefined
+   *  for bots and for clients we can't geo-resolve (e.g. RFC1918). */
+  geo?: GeoInfo;
+  /** Round-trip latency in ms, refreshed every 5s by the srv_ping →
+   *  srv_pong probe. Undefined until the first probe completes. */
+  pingMs?: number;
   botWeaponIndex?: number;
   botTargetId?: PlayerId | null;
   botMoveMode?: 'skirmish' | 'flee' | 'charge';
@@ -613,6 +621,7 @@ export class Room {
     const playerId = socket.id;
 
     const ip = extractClientIp(socket);
+    const geo = lookupGeo(ip, socket);
 
     const nowSec = Date.now() / 1000;
     const snap = this.inventoryByName.get(nameKey);
@@ -640,6 +649,7 @@ export class Room {
       lastTrackSampleAt: null,
       isBot: false,
       ip,
+      geo,
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
@@ -701,10 +711,10 @@ export class Room {
     inviteCode?: string;
     private: boolean;
     secondsLeft: number;
-    humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }>;
+    humans: Array<{ id: string; name: string; ip: string; country?: string; city?: string; pingMs?: number; score: number; kills: number; deaths: number; alive: boolean }>;
     bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }>;
   } {
-    const humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
+    const humans: Array<{ id: string; name: string; ip: string; country?: string; city?: string; pingMs?: number; score: number; kills: number; deaths: number; alive: boolean }> = [];
     const bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
     for (const [pid, player] of this.players) {
       const tank = this.tanks.get(pid);
@@ -720,7 +730,13 @@ export class Room {
       if (player.isBot) {
         bots.push(row);
       } else {
-        humans.push({ ...row, ip: player.ip });
+        humans.push({
+          ...row,
+          ip: player.ip,
+          country: player.geo?.country,
+          city: player.geo?.city,
+          pingMs: player.pingMs,
+        });
       }
     }
     const secondsLeft = this.matchResetAt > 0
@@ -1051,7 +1067,20 @@ export class Room {
       socket.emit('pong', t);
     });
 
+    // Server-driven RTT probe so the admin dashboard can show per-
+    // player latency. Cadence is 5 s — same order of magnitude as the
+    // Engine.IO heartbeat, infrequent enough that it's invisible on
+    // the wire next to the 20 Hz state broadcast.
+    const srvPingHandle = setInterval(() => {
+      if (socket.connected) socket.emit('srv_ping', Date.now());
+    }, 5000);
+    socket.on('srv_pong', (t: number) => {
+      const player = this.players.get(socket.id);
+      if (player) player.pingMs = Date.now() - t;
+    });
+
     socket.on('disconnect', () => {
+      clearInterval(srvPingHandle);
       this.removePlayer(socket.id);
     });
   }

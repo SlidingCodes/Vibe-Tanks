@@ -619,6 +619,10 @@ export interface ClientEvents {
   /** RTT probe: client sends `performance.now()`, server echoes it back
    *  unchanged via `pong` so the client can compute round-trip latency. */
   ping: (t: number) => void;
+  /** Server-driven RTT probe response: echoes the server timestamp back
+   *  unchanged so the server can compute the round-trip latency to this
+   *  client (surfaced in the admin dashboard). */
+  srv_pong: (t: number) => void;
 }
 
 // ── Match events (server → client feed) ──
@@ -657,6 +661,10 @@ export interface ServerEvents {
   damage_applied: (data: { weaponId: string; hits: DamageHit[] }) => void;
   /** RTT probe reply — echoes the client-supplied `t` back unchanged. */
   pong: (t: number) => void;
+  /** Server-driven RTT probe stamped with the server's Date.now(). The
+   *  client must echo it back via `srv_pong` so the server can record
+   *  the per-player latency for the admin dashboard. */
+  srv_ping: (t: number) => void;
   /** Fired when a new pickup drops into the world. */
   pickup_spawned: (pickup: PickupState) => void;
   /** Fired when a tank collects (or the pickup times out).

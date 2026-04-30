@@ -40,6 +40,10 @@
   th { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
   tr:last-child td { border-bottom: none; }
   .ip { color: var(--muted); font-size: 11px; }
+  .muted { color: var(--muted); }
+  .ping-good { color: var(--good); }
+  .ping-ok   { color: #d29922; }
+  .ping-bad  { color: var(--danger); }
   .room-card { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--border); }
   .room-card:last-child { border-bottom: none; padding-bottom: 0; }
   .room-card h3 { margin: 0 0 6px; font-size: 13px; }
@@ -214,6 +218,27 @@ function escapeHtml(s) {
   })[c]);
 }
 
+// ISO-3166-1 alpha-2 → flag emoji via the regional-indicator unicode trick.
+function flagEmoji(cc) {
+  if (typeof cc !== 'string' || cc.length !== 2) return '';
+  const A = 0x1F1E6;
+  return String.fromCodePoint(A + cc.charCodeAt(0) - 65, A + cc.charCodeAt(1) - 65);
+}
+
+function formatLoc(country, city) {
+  if (!country) return '<span class="muted">—</span>';
+  const flag = flagEmoji(country);
+  const label = city ? `${escapeHtml(city)}, ${escapeHtml(country)}` : escapeHtml(country);
+  return `${flag} ${label}`;
+}
+
+function formatPing(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '<span class="muted">—</span>';
+  const rounded = Math.round(ms);
+  const cls = rounded < 80 ? 'ping-good' : rounded < 200 ? 'ping-ok' : 'ping-bad';
+  return `<span class="${cls}">${rounded} ms</span>`;
+}
+
 function formatUptime(s) {
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
@@ -279,11 +304,13 @@ function renderRooms(rooms) {
       <div class="meta">${r.humans.length} humans, ${r.bots.length} bots</div>
       ${r.humans.length === 0 ? '<div class="empty">No humans yet.</div>' : `
       <table>
-        <thead><tr><th>Name</th><th>IP</th><th>Score</th><th>K</th><th>D</th><th>Alive</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>IP</th><th>Loc</th><th>Ping</th><th>Score</th><th>K</th><th>D</th><th>Alive</th><th></th></tr></thead>
         <tbody>${r.humans.map((p) => `
           <tr>
             <td>${escapeHtml(p.name)}</td>
             <td class="ip">${escapeHtml(p.ip)}</td>
+            <td>${formatLoc(p.country, p.city)}</td>
+            <td>${formatPing(p.pingMs)}</td>
             <td>${p.score}</td>
             <td>${p.kills}</td>
             <td>${p.deaths}</td>

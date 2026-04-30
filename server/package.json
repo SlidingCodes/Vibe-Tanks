@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.19.3",
+    "geoip-lite": "^1.4.10",
     "socket.io": "^4.7.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/geoip-lite": "^1.4.4",
     "@types/node": "^20.12.7",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
