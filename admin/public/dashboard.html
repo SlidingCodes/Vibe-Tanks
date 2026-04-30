@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vibe Tanks — Admin</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --muted: #8b949e;
+    --text: #c9d1d9;
+    --accent: #58a6ff;
+    --warn: #f0b86e;
+    --danger: #f85149;
+    --good: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  header { padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: 0.5px; }
+  header .right { display: flex; gap: 16px; align-items: center; color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  @media (min-width: 1024px) { main { grid-template-columns: 1fr 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; }
+  .panel h2 { margin: 0 0 10px; font-size: 13px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .stat { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04);
+    padding: 8px 10px; border-radius: 4px; }
+  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 20px; font-weight: 600; }
+  .stat .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .stat .value.warn { color: var(--warn); }
+  .stat .value.danger { color: var(--danger); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .ip { color: var(--muted); font-size: 11px; }
+  .room-card { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--border); }
+  .room-card:last-child { border-bottom: none; padding-bottom: 0; }
+  .room-card h3 { margin: 0 0 6px; font-size: 13px; }
+  .room-card .meta { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+  button { background: rgba(248, 81, 73, 0.1); color: var(--danger);
+    border: 1px solid rgba(248, 81, 73, 0.3); padding: 3px 8px; border-radius: 3px;
+    font-family: inherit; font-size: 11px; cursor: pointer; }
+  button:hover { background: rgba(248, 81, 73, 0.2); }
+  button.unban { background: rgba(63, 185, 80, 0.1); color: var(--good); border-color: rgba(63, 185, 80, 0.3); }
+  button.unban:hover { background: rgba(63, 185, 80, 0.2); }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+
+  /* Login overlay */
+  #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); z-index: 100; }
+  #login form { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 24px 28px; min-width: 320px; }
+  #login h1 { margin: 0 0 16px; font-size: 16px; }
+  #login input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 10px; border-radius: 4px; font-family: inherit; font-size: 13px; }
+  #login button { width: 100%; margin-top: 12px; background: var(--accent); color: #0d1117;
+    border: none; padding: 8px 12px; border-radius: 4px; font-weight: 600; cursor: pointer; }
+  #login .err { color: var(--danger); margin-top: 8px; font-size: 12px; min-height: 16px; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row > * { flex: 1; }
+  .row > button { flex: 0; }
+  .badge { display: inline-block; background: rgba(255,255,255,0.06); border-radius: 2px;
+    padding: 1px 5px; font-size: 10px; margin-left: 4px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <form id="login-form">
+    <h1>Vibe Tanks Admin</h1>
+    <label style="display:block; margin-bottom:8px; color:var(--muted); font-size:12px;">Token</label>
+    <input id="token-input" type="password" autocomplete="off" required />
+    <button type="submit">Sign in</button>
+    <div class="err" id="login-error"></div>
+  </form>
+</div>
+
+<header>
+  <h1>Vibe Tanks Admin</h1>
+  <div class="right">
+    <span id="updated">—</span>
+    <button id="logout" style="background:transparent;color:var(--muted);border-color:var(--border);">Logout</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Server</h2>
+    <div class="stat-grid" id="stats-grid"></div>
+  </section>
+  <section class="panel">
+    <h2>Tick performance</h2>
+    <div class="stat-grid" id="ticks-grid"></div>
+  </section>
+
+  <section class="panel" style="grid-column: 1 / -1;">
+    <h2>Rooms</h2>
+    <div id="rooms-list"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Recent events</h2>
+    <table id="history-table">
+      <thead><tr><th>Time</th><th>Event</th><th>Name</th><th>IP</th><th>Room</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Bans</h2>
+    <div class="row" style="margin-bottom: 10px;">
+      <input id="ban-ip" placeholder="IP to ban" autocomplete="off" />
+      <input id="ban-reason" placeholder="Reason (optional)" autocomplete="off" />
+      <button id="ban-add">Ban</button>
+    </div>
+    <table id="bans-table">
+      <thead><tr><th>IP</th><th>Reason</th><th>Banned at</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const TOKEN_KEY = 'vt.adminToken';
+
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+function setToken(t) {
+  try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ }
+}
+
+async function api(path, options = {}) {
+  const headers = { 'authorization': `Bearer ${getToken()}`, ...(options.headers || {}) };
+  if (options.body !== undefined && !(options.body instanceof FormData) && typeof options.body !== 'string') {
+    headers['content-type'] = 'application/json';
+    options.body = JSON.stringify(options.body);
+  }
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    setToken('');
+    showLogin('Session expired. Sign in again.');
+    throw new Error('unauthorized');
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function showLogin(message) {
+  document.getElementById('login').style.display = 'flex';
+  if (message) document.getElementById('login-error').textContent = message;
+}
+function hideLogin() {
+  document.getElementById('login').style.display = 'none';
+}
+
+document.getElementById('login-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const token = document.getElementById('token-input').value;
+  document.getElementById('login-error').textContent = '';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (res.status === 401) {
+      document.getElementById('login-error').textContent = 'Wrong token.';
+      return;
+    }
+    if (res.status === 503) {
+      document.getElementById('login-error').textContent = 'Admin is not configured on this server.';
+      return;
+    }
+    if (!res.ok) {
+      document.getElementById('login-error').textContent = 'Login failed.';
+      return;
+    }
+    setToken(token);
+    hideLogin();
+    refresh();
+  } catch (e) {
+    document.getElementById('login-error').textContent = 'Network error.';
+  }
+});
+
+document.getElementById('logout').addEventListener('click', () => {
+  setToken('');
+  showLogin();
+});
+
+document.getElementById('ban-add').addEventListener('click', async () => {
+  const ip = document.getElementById('ban-ip').value.trim();
+  const reason = document.getElementById('ban-reason').value.trim();
+  if (!ip) return;
+  try {
+    await api('/api/bans', { method: 'POST', body: { ip, reason: reason || undefined } });
+    document.getElementById('ban-ip').value = '';
+    document.getElementById('ban-reason').value = '';
+    refresh();
+  } catch (e) { /* surfaced via auth flow */ }
+});
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
+}
+
+function formatUptime(s) {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+function formatRelative(at) {
+  const dt = (Date.now() - at) / 1000;
+  if (dt < 60) return `${Math.floor(dt)}s ago`;
+  if (dt < 3600) return `${Math.floor(dt / 60)}m ago`;
+  if (dt < 86400) return `${Math.floor(dt / 3600)}h ago`;
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+function statHtml(label, value, sub, cls) {
+  return `<div class="stat"><div class="label">${escapeHtml(label)}</div><div class="value ${cls || ''}">${escapeHtml(value)}</div>${sub ? `<div class="sub">${escapeHtml(sub)}</div>` : ''}</div>`;
+}
+
+function renderStats(stats) {
+  const p = stats.process;
+  const cpuClass = p.cpuTotalPct > 150 ? 'danger' : p.cpuTotalPct > 80 ? 'warn' : '';
+  const memClass = p.memoryRssMB > 1024 ? 'warn' : '';
+  document.getElementById('stats-grid').innerHTML = [
+    statHtml('Uptime', formatUptime(p.uptimeSeconds)),
+    statHtml('CPU', `${p.cpuTotalPct}%`, `usr ${p.cpuUserPct} sys ${p.cpuSystemPct}`, cpuClass),
+    statHtml('Memory (RSS)', `${p.memoryRssMB} MB`, `heap ${p.memoryHeapUsedMB}/${p.memoryHeapTotalMB} MB`, memClass),
+    statHtml('Rooms', stats.rooms),
+    statHtml('Humans', stats.humans),
+    statHtml('Bots', stats.bots),
+    statHtml('Bans', stats.banCount),
+  ].join('');
+
+  const sim = stats.ticks.sim;
+  const bcast = stats.ticks.broadcast;
+  const simClass = sim.p95Ms > 14 ? 'warn' : '';
+  const bcastClass = bcast.p95Ms > 30 ? 'warn' : '';
+  document.getElementById('ticks-grid').innerHTML = [
+    statHtml('Sim (60Hz) median', `${sim.medianMs.toFixed(2)} ms`, `n=${sim.count}`),
+    statHtml('Sim p95', `${sim.p95Ms.toFixed(2)} ms`, `max ${sim.maxMs.toFixed(1)} ms`, simClass),
+    statHtml('Broadcast (20Hz) median', `${bcast.medianMs.toFixed(2)} ms`, `n=${bcast.count}`),
+    statHtml('Broadcast p95', `${bcast.p95Ms.toFixed(2)} ms`, `max ${bcast.maxMs.toFixed(1)} ms`, bcastClass),
+  ].join('');
+}
+
+function renderRooms(rooms) {
+  if (rooms.length === 0) {
+    document.getElementById('rooms-list').innerHTML = '<div class="empty">No rooms active.</div>';
+    return;
+  }
+  document.getElementById('rooms-list').innerHTML = rooms.map((r) => `
+    <div class="room-card">
+      <h3>${escapeHtml(r.id)}
+        <span class="badge">${escapeHtml(r.phase)}</span>
+        ${r.private ? '<span class="badge">private</span>' : ''}
+        ${r.inviteCode ? `<span class="badge">${escapeHtml(r.inviteCode)}</span>` : ''}
+        ${r.secondsLeft > 0 ? `<span class="badge">${formatUptime(r.secondsLeft)} left</span>` : ''}
+      </h3>
+      <div class="meta">${r.humans.length} humans, ${r.bots.length} bots</div>
+      ${r.humans.length === 0 ? '<div class="empty">No humans yet.</div>' : `
+      <table>
+        <thead><tr><th>Name</th><th>IP</th><th>Score</th><th>K</th><th>D</th><th>Alive</th><th></th></tr></thead>
+        <tbody>${r.humans.map((p) => `
+          <tr>
+            <td>${escapeHtml(p.name)}</td>
+            <td class="ip">${escapeHtml(p.ip)}</td>
+            <td>${p.score}</td>
+            <td>${p.kills}</td>
+            <td>${p.deaths}</td>
+            <td>${p.alive ? '✓' : '×'}</td>
+            <td><button class="kick" data-ip="${escapeHtml(p.ip)}">Ban IP</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+      ${r.bots.length === 0 ? '' : `
+      <details style="margin-top: 6px;">
+        <summary style="color:var(--muted); font-size:11px; cursor: pointer;">Bots (${r.bots.length})</summary>
+        <table>
+          <thead><tr><th>Name</th><th>Score</th><th>K</th><th>D</th><th>Alive</th></tr></thead>
+          <tbody>${r.bots.map((b) => `
+            <tr>
+              <td>${escapeHtml(b.name)}</td>
+              <td>${b.score}</td>
+              <td>${b.kills}</td>
+              <td>${b.deaths}</td>
+              <td>${b.alive ? '✓' : '×'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </details>`}
+    </div>
+  `).join('');
+
+  document.querySelectorAll('button.kick').forEach((btn) => {
+    btn.addEventListener('click', async (ev) => {
+      const ip = ev.currentTarget.dataset.ip;
+      if (!ip) return;
+      const reason = prompt('Ban reason (optional):') ?? '';
+      try {
+        await api('/api/bans', { method: 'POST', body: { ip, reason } });
+        refresh();
+      } catch (e) { /* handled by auth */ }
+    });
+  });
+}
+
+function renderHistory(rows) {
+  const tbody = document.querySelector('#history-table tbody');
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No events yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((ev) => `
+    <tr>
+      <td>${formatRelative(ev.at)}</td>
+      <td>${escapeHtml(ev.kind)}${ev.reason ? ` <span class="ip">(${escapeHtml(ev.reason)})</span>` : ''}</td>
+      <td>${escapeHtml(ev.name)}</td>
+      <td class="ip">${escapeHtml(ev.ip)}</td>
+      <td>${escapeHtml(ev.roomId)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderBans(rows) {
+  const tbody = document.querySelector('#bans-table tbody');
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No active bans.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((b) => `
+    <tr>
+      <td>${escapeHtml(b.ip)}</td>
+      <td>${escapeHtml(b.reason || '')}</td>
+      <td>${formatRelative(b.bannedAt)}</td>
+      <td><button class="unban" data-ip="${escapeHtml(b.ip)}">Unban</button></td>
+    </tr>
+  `).join('');
+  document.querySelectorAll('button.unban').forEach((btn) => {
+    btn.addEventListener('click', async (ev) => {
+      const ip = ev.currentTarget.dataset.ip;
+      if (!ip) return;
+      try {
+        await api('/api/bans/' + encodeURIComponent(ip), { method: 'DELETE' });
+        refresh();
+      } catch (e) { /* handled */ }
+    });
+  });
+}
+
+let refreshing = false;
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const [stats, rooms, history, bans] = await Promise.all([
+      api('/api/stats'),
+      api('/api/rooms'),
+      api('/api/history'),
+      api('/api/bans'),
+    ]);
+    renderStats(stats);
+    renderRooms(rooms);
+    renderHistory(history);
+    renderBans(bans);
+    document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) { /* auth flow handles */ }
+  finally { refreshing = false; }
+}
+
+if (!getToken()) {
+  showLogin();
+} else {
+  hideLogin();
+  refresh();
+}
+setInterval(() => { if (getToken()) refresh(); }, 2000);
+</script>
+
+</body>
+</html>

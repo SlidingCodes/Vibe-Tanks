@@ -54,6 +54,24 @@ jobs:
           tags: ${{ steps.server-meta.outputs.tags }}
           labels: ${{ steps.server-meta.outputs.labels }}
 
+      - name: Prepare admin image metadata
+        id: admin-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/vibe-tanks-admin
+          tags: |
+            type=raw,value=release
+            type=sha,prefix=sha-
+
+      - name: Build and push admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: admin-runtime
+          push: true
+          tags: ${{ steps.admin-meta.outputs.tags }}
+          labels: ${{ steps.admin-meta.outputs.labels }}
+
       - name: Prepare web image metadata
         id: web-meta
         uses: docker/metadata-action@v5

@@ -9,3 +9,13 @@
 		file_server
 	}
 }
+
+# Admin dashboard on its own subdomain. Caddy auto-provisions the TLS
+# cert when DNS for `admin.<your-domain>` points at this host. The
+# dashboard runs as an isolated Node process on admin:3002 and talks
+# to the game server's loopback control plane on its own — the game
+# never serves admin traffic itself.
+admin.{$DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy admin:3002
+}

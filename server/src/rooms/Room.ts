@@ -90,6 +90,8 @@ import {
   simulateSegment,
   simulateShot,
 } from '../game/Simulation';
+import { pushHistory } from '../admin/history';
+import { timed } from '../admin/metrics';
 
 const TANK_COLORS = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
 const SPAWN_PROTECTION_SECONDS = 3;
@@ -178,6 +180,11 @@ interface PlayerState {
    *  the first sample or after a respawn (so the next movement seeds fresh). */
   lastTrackSampleAt: { x: number; z: number } | null;
   isBot: boolean;
+  /** Raw socket.handshake.address captured at addPlayer time. Used by
+   *  the admin dashboard for the rooms / history views and by the ban
+   *  check on connection. Empty string for bots (they don't have a
+   *  socket). */
+  ip: string;
   botWeaponIndex?: number;
   botTargetId?: PlayerId | null;
   botMoveMode?: 'skirmish' | 'flee' | 'charge';
@@ -604,11 +611,8 @@ export class Room {
 
     const playerId = socket.id;
 
-    // Restore the inventory we snapshotted when this name last left, if
-    // the entry is still in the same match generation and within the
-    // TTL. One-shot consume so two concurrent rejoins of the same name
-    // (impossible thanks to the uniqueness gate above, but defensive)
-    // can't both inherit the loadout.
+    const ip = socket.handshake.address ?? '';
+
     const nowSec = Date.now() / 1000;
     const snap = this.inventoryByName.get(nameKey);
     let inventory: WeaponInventorySlot[];
@@ -634,6 +638,7 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: false,
+      ip,
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
@@ -659,6 +664,18 @@ export class Room {
       kind: 'join', name: tank.playerName, color: tank.color,
     });
 
+    // Record the join in the admin history ring so the dashboard's
+    // recent-events table reflects it. Bots take a separate code path
+    // and skip this — they have no IP and aren't of interest to the
+    // admin view.
+    pushHistory({
+      kind: 'join',
+      name: tank.playerName,
+      ip,
+      roomId: this.id,
+      at: Date.now(),
+    });
+
     this.ensureFourTanks();
 
     if (this.players.size >= MIN_PLAYERS_TO_START && this.phase === MatchPhase.WaitingForPlayers) {
@@ -672,16 +689,57 @@ export class Room {
     }
   }
 
+  /** Snapshot the room state for the admin dashboard. Returns the
+   *  list of currently-connected humans (with IPs) and bots, plus the
+   *  match phase and the seconds-left until the next reset. Tanks
+   *  show their score / kills / deaths so the dashboard can spot
+   *  stat-padding or AFK farming at a glance. */
+  adminSnapshot(): {
+    id: string;
+    phase: string;
+    inviteCode?: string;
+    private: boolean;
+    secondsLeft: number;
+    humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }>;
+    bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }>;
+  } {
+    const humans: Array<{ id: string; name: string; ip: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
+    const bots: Array<{ id: string; name: string; score: number; kills: number; deaths: number; alive: boolean }> = [];
+    for (const [pid, player] of this.players) {
+      const tank = this.tanks.get(pid);
+      if (!tank) continue;
+      const row = {
+        id: pid,
+        name: tank.playerName,
+        score: Math.round(tank.score),
+        kills: tank.kills,
+        deaths: tank.deaths,
+        alive: tank.alive,
+      };
+      if (player.isBot) {
+        bots.push(row);
+      } else {
+        humans.push({ ...row, ip: player.ip });
+      }
+    }
+    const secondsLeft = this.matchResetAt > 0
+      ? Math.max(0, Math.round(this.matchResetAt - Date.now() / 1000))
+      : 0;
+    return {
+      id: this.id,
+      phase: this.phase,
+      inviteCode: this.inviteCode,
+      private: this.private,
+      secondsLeft,
+      humans,
+      bots,
+    };
+  }
+
   removePlayer(playerId: PlayerId): void {
     const tank = this.tanks.get(playerId);
     const player = this.players.get(playerId);
 
-    // Snapshot the leaving player's inventory by their (sanitised,
-    // lowercased) name so a quick reconnect from the same person picks
-    // up where they left off. Bots are excluded — their loadouts are
-    // ephemeral by design and reusing a bot's name pool through the
-    // snapshot map would only confuse rejoining humans. The TTL +
-    // matchGen gate on read-back prevents stale entries.
     if (tank && player && !player.isBot) {
       const key = sanitizeName(tank.playerName).toLowerCase();
       this.inventoryByName.set(key, {
@@ -716,6 +774,17 @@ export class Room {
       this.io.to(this.id).emit('match_event', {
         kind: 'leave', name: tank.playerName, color: tank.color,
       });
+      // Mirror the leave to the admin history ring (humans only —
+      // bots have a separate removeBot path that doesn't touch this).
+      if (player && !player.isBot) {
+        pushHistory({
+          kind: 'leave',
+          name: tank.playerName,
+          ip: player.ip,
+          roomId: this.id,
+          at: Date.now(),
+        });
+      }
     }
 
     // Last human gone: tell the manager to drop the room. Bots alone are
@@ -1141,6 +1210,7 @@ export class Room {
       respawnAllowedAt: 0,
       lastTrackSampleAt: null,
       isBot: true,
+      ip: '',
       turboActiveUntil: 0,
       turboCooldownUntil: 0,
       shieldExpiresAt: 0,
@@ -2097,7 +2167,11 @@ export class Room {
     const simDt = 1 / SIM_TICK_RATE;
     const targetTickMs = simDt * 1000;
 
-    this.simInterval = setInterval(() => {
+    // Both ticks are wrapped in `timed` so the admin dashboard can
+    // surface their median / p95 duration. The wrapping is cheap
+    // (one performance.now() + one push into a 120-element array)
+    // and the cost is dwarfed by the sim work itself.
+    this.simInterval = setInterval(timed(() => {
       // Pause simulation during leaderboard to let players admire the results.
       if (this.phase === MatchPhase.Leaderboard) return;
 
@@ -2119,9 +2193,9 @@ export class Room {
       this.tickSoldiers(simDt);
       this.tickScheduledStrikes();
       this.tickPickups(simDt);
-    }, targetTickMs);
+    }, 'sim'), targetTickMs);
 
-    this.broadcastInterval = setInterval(() => {
+    this.broadcastInterval = setInterval(timed(() => {
       // Per-recipient state_update so we can hide enemy mines outside
       // their proximity-reveal range. Bots have no socket and are skipped.
       // Cost: O(humans × hazards) per tick — small (≤8 humans, a handful
@@ -2130,7 +2204,7 @@ export class Room {
         if (!player.socket) continue;
         player.socket.emit('state_update', this.getStateUpdateFor(pid));
       }
-    }, (1 / TICK_RATE) * 1000);
+    }, 'broadcast'), (1 / TICK_RATE) * 1000);
 
     const fireDt = 1 / FIRE_TICK_RATE;
     this.fireInterval = setInterval(() => {
