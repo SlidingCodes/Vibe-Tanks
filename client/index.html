@@ -954,12 +954,13 @@
     }
 
     /* In-game invite-code badge — every room now carries a code, so the
-       badge is always visible. Anchored flush against the gear button
-       (right:32 = gear width) so they read as a single top-right group. */
+       badge is always visible. Anchored flush against the how-to-play
+       trigger (right:64 = gear + ⓘ widths) so the top-right reads as a
+       single group: badge → ⓘ → ⚙. */
     #invite-badge {
       position: fixed;
       top: 0;
-      right: 32px;
+      right: 64px;
       height: 32px;
       padding: 0 10px;
       display: none;
