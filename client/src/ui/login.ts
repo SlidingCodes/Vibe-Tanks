@@ -455,14 +455,21 @@ function normaliseColor(input: string): string | null {
     const h = hexMatch[1];
     return '#' + (h.length === 3 ? h.split('').map((c) => c + c).join('') : h).toLowerCase();
   }
-  // Named-color resolution — parse into a temporary canvas's fillStyle.
+  // Named-color resolution. Canvas's fillStyle silently keeps the previous
+  // value on invalid input, so seed with a sentinel and detect "no change"
+  // as "couldn't parse". Without this, `?color=undefined` would resolve to
+  // the sentinel rather than falling through to the saved-pref / random
+  // chain.
   try {
     const probe = document.createElement('canvas').getContext('2d');
     if (!probe) return null;
-    probe.fillStyle = '#000';
+    const sentinel = '#00ff00';
+    probe.fillStyle = sentinel;
     probe.fillStyle = trimmed;
     const v = probe.fillStyle;
-    if (typeof v === 'string' && v.startsWith('#')) return v.toLowerCase();
+    if (typeof v !== 'string' || !v.startsWith('#')) return null;
+    if (v.toLowerCase() === sentinel && trimmed.toLowerCase() !== sentinel) return null;
+    return v.toLowerCase();
   } catch { /* fall through */ }
   return null;
 }
