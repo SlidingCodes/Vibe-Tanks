@@ -386,6 +386,7 @@ socket.on('join_error', async ({ reason }) => {
       case 'cap_reached':    return 'Server is at capacity. Try again in a moment.';
       case 'missing_code':   return 'Enter a 4-letter invite code.';
       case 'too_many_rooms': return 'You already have 2 private rooms running. Close one first.';
+      case 'name_taken':     return 'That name is already taken in this room. Pick a different one.';
       default:               return 'Could not join. Try again.';
     }
   })();
