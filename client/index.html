@@ -598,6 +598,31 @@
       cursor: not-allowed;
     }
 
+    /* HOW TO PLAY — outlined secondary button, less prominent than the
+       brass JOIN call-to-action but more substantial than the text-link
+       advanced/create entries. */
+    #login-how-to-play {
+      display: block;
+      width: 100%;
+      margin-top: 14px;
+      padding: 8px;
+      background: transparent;
+      color: #c0b890;
+      border: 1px solid rgba(160, 130, 70, 0.5);
+      border-radius: 2px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    #login-how-to-play:hover {
+      background: rgba(120, 130, 100, 0.2);
+      color: #e8d8a0;
+      border-color: rgba(160, 130, 70, 0.8);
+    }
+
     /* Second panel — slides in only when the user opens "Create private". */
     #login-create-panel {
       position: absolute;
@@ -1505,6 +1530,32 @@
       border-color: rgba(255, 255, 255, 0.6);
     }
 
+    /* How-to-play trigger sits left of the gear; same hit area, slightly
+       softer foreground color so it reads as secondary. */
+    #how-to-play-trigger {
+      position: fixed;
+      top: 0;
+      right: 32px;
+      width: 32px;
+      height: 32px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #c0b890;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 0;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      z-index: 30;
+      font-family: sans-serif;
+    }
+
+    #how-to-play-trigger:hover {
+      background: rgba(0, 0, 0, 0.85);
+      border-color: rgba(255, 255, 255, 0.6);
+      color: #e8d8a0;
+    }
+
     /* Settings modal — shares the gunmetal/brass palette of the login. */
     #settings-overlay {
       position: fixed;
@@ -1840,6 +1891,137 @@
 
       #settings-weapon-guide {
         max-height: 140px;
+      }
+    }
+
+    /* How-to-play modal — same gunmetal/brass language as the settings
+       dialog. Opened from the ⓘ button in-game and from the HOW TO PLAY
+       button on the login overlay; both routes share this single modal.
+       Desktop content is hidden on touch builds via `body.mobile` and
+       vice-versa, so each platform sees only its own controls. */
+    #how-to-play-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 12, 8, 0.82);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+      font-family: monospace;
+    }
+
+    #how-to-play-overlay.open {
+      display: flex;
+    }
+
+    #how-to-play-dialog {
+      position: relative;
+      width: min(92vw, 720px);
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      padding: 24px 28px;
+      background: linear-gradient(180deg, #2a2820 0%, #1a1814 100%);
+      color: #c0b890;
+      border: 1px solid rgba(160, 130, 70, 0.4);
+      border-radius: 4px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+    }
+
+    #how-to-play-dialog h2 {
+      margin: 0 0 16px;
+      font-size: 22px;
+      letter-spacing: 6px;
+      text-transform: uppercase;
+      color: #e8d8a0;
+      text-align: center;
+    }
+
+    #how-to-play-close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 28px;
+      height: 28px;
+      background: transparent;
+      color: #c0b890;
+      border: 1px solid rgba(160, 130, 70, 0.4);
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    #how-to-play-close:hover {
+      background: rgba(120, 130, 100, 0.3);
+      color: #e8d8a0;
+    }
+
+    .htp-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .htp-card {
+      padding: 12px 14px;
+      background: rgba(8, 10, 6, 0.6);
+      border: 1px solid rgba(120, 130, 100, 0.3);
+      border-radius: 2px;
+    }
+
+    .htp-card h3 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      letter-spacing: 3px;
+      color: #e8d8a0;
+      font-weight: bold;
+    }
+
+    .htp-icon {
+      font-size: 22px;
+      color: #d8b058;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .htp-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #a89868;
+    }
+
+    .htp-list li {
+      padding: 2px 0;
+    }
+
+    .htp-list b {
+      color: #e8d8a0;
+      letter-spacing: 1px;
+    }
+
+    .htp-mobile { display: none; }
+    body.mobile .htp-desktop { display: none; }
+    body.mobile .htp-mobile { display: block; }
+    body.mobile .htp-desktop-only { display: none; }
+
+    @media (max-width: 720px) {
+      #how-to-play-dialog {
+        padding: 16px 18px;
+      }
+
+      #how-to-play-dialog h2 {
+        font-size: 16px;
+        letter-spacing: 4px;
+      }
+
+      .htp-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
       }
     }
 
@@ -2566,6 +2748,7 @@
       <button id="login-submit">QUICK JOIN</button>
       <button id="open-advanced-link" type="button">advanced customization &rarr;</button>
       <button id="open-create-link" type="button">or create a private match &rarr;</button>
+      <button id="login-how-to-play" type="button">HOW TO PLAY</button>
     </div>
     <div id="login-advanced-panel">
       <h3>CUSTOMIZATION</h3>
@@ -2709,6 +2892,7 @@
     </div>
     <button id="mc-fire" type="button" aria-label="Fire">FIRE</button>
   </div>
+  <button id="how-to-play-trigger" type="button" title="How to play" aria-label="How to play">ⓘ</button>
   <button id="settings-gear" type="button" title="Settings (ESC)">⚙</button>
   <div id="settings-overlay">
     <div id="settings-dialog">
@@ -2772,6 +2956,75 @@
           <span class="label">Exit current match?</span>
           <button id="exit-no" type="button">No</button>
           <button id="exit-yes" type="button">Exit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="how-to-play-overlay">
+    <div id="how-to-play-dialog">
+      <button id="how-to-play-close" type="button" aria-label="Close">×</button>
+      <h2>HOW TO PLAY</h2>
+      <div class="htp-grid">
+        <div class="htp-card">
+          <div class="htp-icon">⊕</div>
+          <h3>MOVEMENT</h3>
+          <ul class="htp-list htp-desktop">
+            <li><b>W A S D</b> drive</li>
+            <li><b>SHIFT</b> turbo (rechargeable)</li>
+          </ul>
+          <ul class="htp-list htp-mobile">
+            <li>Joystick (bottom-left) drives the tank</li>
+          </ul>
+        </div>
+        <div class="htp-card">
+          <div class="htp-icon">◎</div>
+          <h3>AIM &amp; FIRE</h3>
+          <ul class="htp-list htp-desktop">
+            <li><b>Mouse</b> aim cursor</li>
+            <li><b>Left click</b> fire</li>
+          </ul>
+          <ul class="htp-list htp-mobile">
+            <li>Drag anywhere off the joystick to aim</li>
+            <li><b>FIRE</b> button (bottom-right)</li>
+          </ul>
+        </div>
+        <div class="htp-card">
+          <div class="htp-icon">◆</div>
+          <h3>WEAPONS</h3>
+          <ul class="htp-list htp-desktop">
+            <li><b>1 – 9, 0</b> switch weapon</li>
+            <li><b>Scroll wheel</b> cycle weapon slot</li>
+            <li>Or click a weapon chip in the HUD</li>
+          </ul>
+          <ul class="htp-list htp-mobile">
+            <li>Tap a weapon chip in the HUD to switch</li>
+          </ul>
+        </div>
+        <div class="htp-card htp-desktop-only">
+          <div class="htp-icon">◈</div>
+          <h3>SPECIALS</h3>
+          <ul class="htp-list">
+            <li><b>Right click</b> shield (once per life)</li>
+            <li><b>Hold R</b> self-destruct (-100 score, +50 / kill)</li>
+          </ul>
+        </div>
+        <div class="htp-card">
+          <div class="htp-icon">⏱</div>
+          <h3>MATCH</h3>
+          <ul class="htp-list">
+            <li>5 minute matches, score = total kills</li>
+            <li>Parachute spawn — invulnerable while landing</li>
+            <li>5 second respawn after death</li>
+          </ul>
+        </div>
+        <div class="htp-card">
+          <div class="htp-icon">▥</div>
+          <h3>TERRAIN</h3>
+          <ul class="htp-list">
+            <li>Voxel terrain — every shot carves the ground</li>
+            <li>Hide in craters, dig tunnels through hills</li>
+            <li>The sea is deadly — don't fall in</li>
+          </ul>
         </div>
       </div>
     </div>

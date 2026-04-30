@@ -54,6 +54,7 @@ import {
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
+import { setupHowToPlay } from './ui/howToPlay';
 import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
@@ -359,6 +360,7 @@ setupSettingsDialog(() => {
   // preset) survive in localStorage.
   window.location.reload();
 });
+setupHowToPlay();
 setupFeed();
 setupMatchTimer();
 setupMatchCountdown();
