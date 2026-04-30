@@ -6,7 +6,8 @@ import { initRapier } from '@shared/physics/RapierVoxelWorld';
 import { Room } from './rooms/Room';
 import { RoomManager } from './rooms/RoomManager';
 import { JoinRoomSchema, onValidated } from './validation';
-import { isBanned } from './admin/bans';
+import { isBanned, loadBans } from './admin/bans';
+import { loadHistory, startHistoryFlushLoop, flushHistory } from './admin/history';
 import { startInternalServer } from './admin/internalServer';
 import { extractClientIp } from './net/clientIp';
 
@@ -26,6 +27,11 @@ process.on('unhandledRejection', (err) => {
 async function main(): Promise<void> {
   // Rapier wasm must be loaded before any RapierVoxelWorld is constructed.
   await initRapier();
+
+  // Restore the persisted admin state before opening the public socket
+  // so a banned client can't squeeze in during the load window.
+  await Promise.all([loadBans(), loadHistory()]);
+  startHistoryFlushLoop();
 
   const httpServer = createServer((req, res) => {
     if (req.url === '/healthz') {
@@ -112,6 +118,18 @@ async function main(): Promise<void> {
   });
 
   startInternalServer(manager, io);
+
+  // systemctl stop / docker compose down send SIGTERM and wait
+  // TimeoutStopSec (default 90 s) before SIGKILL — plenty of time to
+  // flush the pending history events. Bans are write-through so they
+  // need no shutdown hook.
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`[shutdown] received ${signal}, flushing history...`);
+    try { await flushHistory(); } catch { /* already logged */ }
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 main().catch((err) => {
