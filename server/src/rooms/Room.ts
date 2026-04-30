@@ -422,6 +422,12 @@ export class Room {
    *  key so a stale snapshot from the previous map can't survive into
    *  the new one. */
   private matchGen = 0;
+  /** setTimeout handle for the deferred onEmpty call. The room stays
+   *  alive for this window so a player who reconnects quickly lands back
+   *  in the same room and gets their inventory snapshot restored. */
+  private emptyGraceTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Seconds to keep an empty room alive before tearing it down. */
+  private static readonly EMPTY_GRACE_SECONDS = 60;
 
   constructor(
     id: string,
@@ -574,6 +580,11 @@ export class Room {
     // routes humans to non-full public rooms; this is a defensive cap.
     if (this.humanCount() >= MAX_PLAYERS) return;
 
+    if (this.emptyGraceTimeout !== null) {
+      clearTimeout(this.emptyGraceTimeout);
+      this.emptyGraceTimeout = null;
+    }
+
     // Reject duplicate names so the kill-feed / scoreboard / inventory-
     // snapshot lookup remain unambiguous. The check is case-insensitive
     // and runs against the post-sanitisation form so "  Foo  " collides
@@ -711,7 +722,10 @@ export class Room {
     // back to the old behaviour of refilling bots and idling.
     if (this.humanCount() === 0) {
       if (this.onEmpty) {
-        this.onEmpty();
+        this.emptyGraceTimeout = setTimeout(() => {
+          this.emptyGraceTimeout = null;
+          this.onEmpty!();
+        }, Room.EMPTY_GRACE_SECONDS * 1000);
         return;
       }
       this.stopLoop();
@@ -751,6 +765,7 @@ export class Room {
    *  manager removes it from its map so it gets GC'd. */
   shutdown(): void {
     this.stopLoop();
+    if (this.emptyGraceTimeout) { clearTimeout(this.emptyGraceTimeout); this.emptyGraceTimeout = null; }
     if (this.countdownTimeout) { clearTimeout(this.countdownTimeout); this.countdownTimeout = null; }
     if (this.resetTimeout) { clearTimeout(this.resetTimeout); this.resetTimeout = null; }
     for (const t of this.pendingShotTimeouts) clearTimeout(t);
