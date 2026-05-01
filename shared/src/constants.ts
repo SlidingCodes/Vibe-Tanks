@@ -45,6 +45,21 @@ export const MAX_PLAYERS = 8;
 export const SPAWN_MIN_DISTANCE = 5;
 export const SERVER_PORT = 3001;
 
+// ── Self-destruct (R key) ──
+/** Blast radius of a tank's R-key self-destruct, in world units. Tuned a
+ *  bit larger than big_blast so it's a real area-denial threat — anyone
+ *  who walked up to finish you off is in range. */
+export const SELF_DESTRUCT_RADIUS = 10;
+/** Base damage at the centre of the self-destruct blast. Falls off
+ *  quadratically with distance (same falloff as standard impacts). */
+export const SELF_DESTRUCT_DAMAGE = 120;
+/** Flat-cost score penalty applied after damage credits are awarded.
+ *  Damage dealt to opponents (and any kill +50 bonuses) credit normally
+ *  before this penalty, so a self-destruct that wipes out 100+ HP of
+ *  enemies can fully offset the malus. Score is allowed to go
+ *  negative; that's a deliberate design choice. */
+export const SELF_DESTRUCT_SCORE_PENALTY = 100;
+
 // ── Identity persistence ──
 /** How long (seconds) a leaving player's inventory is held in case they
  *  reconnect with the same name. After this window the snapshot is

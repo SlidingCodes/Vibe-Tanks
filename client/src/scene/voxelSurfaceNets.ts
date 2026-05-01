@@ -5,6 +5,7 @@ import { Vec3 } from '@shared/types/index';
 import { VoxelScorch } from './voxelScorch';
 import { VoxelBuilt } from './voxelBuilt';
 import { TrackDecalHandle } from './trackDecal';
+import { TextureVariant, initialTextureVariant, pixelArtFilter } from '../quality';
 
 const CHUNK_SIZE = SURFACE_NETS_CHUNK_SIZE;
 const chunkKey = (cx: number, cy: number, cz: number): string => `${cx},${cy},${cz}`;
@@ -109,6 +110,13 @@ export interface SurfaceNetsHandle {
    *  before renderer.render() to batch multiple same-frame invalidations. */
   flushDirtyChunks(): void;
   setVisible(v: boolean): void;
+  /** Swap the four terrain textures for their high-res 1024 px variant.
+   *  No-op if already on the hi variant. The swap is atomic per-uniform:
+   *  the new texture starts loading immediately, and as soon as it's
+   *  ready it replaces the lo-res one (the old one is disposed). The
+   *  shader doesn't recompile — `uniform.value` retargets and Three
+   *  picks up the new GL handle next frame. */
+  upgradeTerrainTexturesToHi(): void;
 }
 
 function computeElevationRange(grid: VoxelGrid): { min: number; max: number } {
@@ -164,8 +172,36 @@ export function createSurfaceNetsTerrain(
   // by slope. `uUseTextures` stays 0 until all four textures have loaded, at
   // which point the shader switches from the procedural fallback to sampled
   // textures without a recompile.
+  //
+  // The boot path always pulls the small `_lo.jpg` (~512 px, ~30 KB each)
+  // variants so the scene becomes playable in <1 s. Depending on the
+  // selected quality preset (auto/low/high — see ../quality.ts):
+  //   - 'high' triggers the hi-res swap immediately;
+  //   - 'auto' lets main.ts kick the swap once the FPS benchmark passes;
+  //   - 'low' never swaps (and switches to nearest filtering for the
+  //     pixel-art look).
+  // We expose `upgradeTerrainTexturesToHi()` so main.ts can flip the
+  // variant at runtime; the swap is atomic per-uniform — old texture is
+  // disposed and the uniform now points at the new one with
+  // `needsUpdate = true`, no shader recompile needed.
   const textureLoader = new THREE.TextureLoader();
-  const loadTexture = (url: string, colorSpace: THREE.ColorSpace): THREE.Texture => {
+  const TEX_DEFS: Array<{
+    name: 'ground_albedo' | 'ground_normal' | 'rock_albedo' | 'rock_normal';
+    colorSpace: THREE.ColorSpace;
+  }> = [
+    { name: 'ground_albedo', colorSpace: THREE.SRGBColorSpace },
+    { name: 'ground_normal', colorSpace: THREE.NoColorSpace },
+    { name: 'rock_albedo',   colorSpace: THREE.SRGBColorSpace },
+    { name: 'rock_normal',   colorSpace: THREE.NoColorSpace },
+  ];
+  const loadTexture = (
+    name: typeof TEX_DEFS[number]['name'],
+    variant: TextureVariant,
+    colorSpace: THREE.ColorSpace,
+  ): THREE.Texture => {
+    const url = variant === 'lo'
+      ? `/textures/terrain/${name}_lo.jpg`
+      : `/textures/terrain/${name}.jpg`;
     const tex = textureLoader.load(url, () => {
       loadedTextures++;
       if (loadedTextures === 4) uUseTextures.value = 1;
@@ -173,17 +209,29 @@ export function createSurfaceNetsTerrain(
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = colorSpace;
-    tex.anisotropy = 8;
+    // Pixel-art mode forces nearest sampling so the texels read as
+    // crisp tiles — and skips the trilinear blend for a small perf win
+    // on top. Other modes keep the three.js defaults (linear+mip).
+    if (pixelArt) {
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestMipmapNearestFilter;
+      tex.anisotropy = 1;
+    } else {
+      tex.anisotropy = 8;
+    }
     return tex;
   };
   let loadedTextures = 0;
   const uUseTextures: { value: number } = { value: 0 };
   const uBedrockTopY: { value: number } = { value: grid.bedrockSurfaceY };
   const uBedrockDarken: { value: number } = { value: BEDROCK_DARKEN };
-  const uGroundAlbedo = { value: loadTexture('/textures/terrain/ground_albedo.jpg', THREE.SRGBColorSpace) };
-  const uGroundNormal = { value: loadTexture('/textures/terrain/ground_normal.jpg', THREE.NoColorSpace) };
-  const uRockAlbedo = { value: loadTexture('/textures/terrain/rock_albedo.jpg', THREE.SRGBColorSpace) };
-  const uRockNormal = { value: loadTexture('/textures/terrain/rock_normal.jpg', THREE.NoColorSpace) };
+  const initialVariant: TextureVariant = initialTextureVariant();
+  const pixelArt = pixelArtFilter();
+  const uGroundAlbedo = { value: loadTexture('ground_albedo', initialVariant, THREE.SRGBColorSpace) };
+  const uGroundNormal = { value: loadTexture('ground_normal', initialVariant, THREE.NoColorSpace) };
+  const uRockAlbedo  = { value: loadTexture('rock_albedo',  initialVariant, THREE.SRGBColorSpace) };
+  const uRockNormal  = { value: loadTexture('rock_normal',  initialVariant, THREE.NoColorSpace) };
+  let currentVariant: TextureVariant = initialVariant;
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTrackMap = uTrackMap;
@@ -603,6 +651,54 @@ if (uUseTextures > 0.5) {
     flushDirtyChunks,
     setVisible(v: boolean): void {
       group.visible = v;
+    },
+    upgradeTerrainTexturesToHi(): void {
+      if (currentVariant === 'hi') return;
+      currentVariant = 'hi';
+      // Each uniform swap is independent — kick all four loads in
+      // parallel. The lo-res texture stays bound until its hi-res
+      // counterpart resolves, so there's no visible flash to a black
+      // ground while a slow request is in flight.
+      const swap = (
+        uniform: { value: THREE.Texture },
+        name: typeof TEX_DEFS[number]['name'],
+        colorSpace: THREE.ColorSpace,
+      ): void => {
+        const newTex = loadTexture(name, 'hi', colorSpace);
+        // loadTexture's onLoad already bumps loadedTextures; bumping
+        // it again on swap would push uUseTextures past 1 (no harm,
+        // but tracking matters). Decrement when starting the load to
+        // keep the gate consistent — we'll re-cross 4 when the hi
+        // texture's own onLoad fires.
+        loadedTextures = Math.max(0, loadedTextures - 1);
+        const oldTex = uniform.value;
+        const oldOnLoadDone = (): void => {
+          uniform.value = newTex;
+          oldTex.dispose();
+        };
+        // If the new texture is already in cache (resolved), apply
+        // immediately; otherwise wait for its load callback.
+        if (newTex.image && (newTex.image as HTMLImageElement).complete) {
+          oldOnLoadDone();
+        } else {
+          newTex.onUpdate = oldOnLoadDone;
+          // Fallback in case onUpdate doesn't fire (some Three.js
+          // builds rely on the loader callback). Poll once next frame.
+          requestAnimationFrame(function poll() {
+            if (uniform.value === newTex) return; // already swapped
+            const img = newTex.image as HTMLImageElement | undefined;
+            if (img && img.complete && img.naturalWidth > 0) {
+              oldOnLoadDone();
+            } else {
+              requestAnimationFrame(poll);
+            }
+          });
+        }
+      };
+      swap(uGroundAlbedo, 'ground_albedo', THREE.SRGBColorSpace);
+      swap(uGroundNormal, 'ground_normal', THREE.NoColorSpace);
+      swap(uRockAlbedo,   'rock_albedo',   THREE.SRGBColorSpace);
+      swap(uRockNormal,   'rock_normal',   THREE.NoColorSpace);
     },
   };
 }

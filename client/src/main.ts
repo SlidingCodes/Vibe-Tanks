@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { GRAVITY, TANK_TREAD_HALF_WIDTH, TURBO_DURATION, TURBO_COOLDOWN } from '@shared/constants';
+import {
+  antialiasEnabled,
+  pixelRatioCap,
+  shadowsEnabled,
+  shouldAttemptTextureUpgrade,
+  onQualityChange,
+  AUTO_UPGRADE_FPS,
+  AUTO_BENCHMARK_MS,
+} from './quality';
 import { WEAPONS } from '@shared/weapons';
 import { getGroundBelow, getTerrainHeight, setTerrainSource } from './scene/terrain';
 import { createSurfaceNetsTerrain, SurfaceNetsHandle } from './scene/voxelSurfaceNets';
@@ -14,8 +23,9 @@ import {
   getAllTankMeshes, onServerStateReceived, interpolateRemoteTanks,
   tickTankEffects, triggerRespawnAnim, updateTankNameLabels, setBarrelHeat,
   setTankBuriedOutlineVisible,
+  setSelfDestructPulse,
 } from './entities/tank';
-import { getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
+import { cutShell, getReplicatedProjectilePosition, getReplicatedProjectileVelocity, playShotAnimation, syncActiveCombatState, updateProjectileAnimation } from './entities/projectile';
 import { syncSoldiers, updateSoldiers, playSoldierShot, spawnBloodSplatter, clearAllSoldierVisuals } from './entities/soldier';
 import { spawnTankExplosion, updateTankExplosions } from './entities/tankExplosion';
 import { updateTrajectoryPreview, hideTrajectoryPreview, getTrajectoryXZPoints } from './ui/trajectoryPreview';
@@ -29,20 +39,22 @@ import { FireRenderer } from './scene/fire';
 import { getParticleTextures } from './scene/particles';
 import { triggerRecoil } from './entities/tank';
 import { createPickupScene, PickupSceneHandle } from './scene/pickups';
+import { createVibeJamPortal, VibeJamPortalHandle } from './scene/vibeJamPortal';
 
 
 import * as hud from './ui/hud';
 import { triggerHitFeedback } from './ui/hud';
 
 import { initFpsCounter, reportPing, tickFpsCounter } from './ui/fpsCounter';
-import { showLogin } from './ui/login';
+import { showLogin, tryAutoLoginFromPortal } from './ui/login';
 import {
   getMovementInput, getAimTarget, consumeClick, isMouseDown, consumeWeaponSlot,
   setVirtualWeaponSlot, setWeaponCount, getVirtualAimDirect, setAimContext, setEnemyPositions,
-  isShiftHeld, consumeRightClick, consumeSpace, getMouseNDC,
+  isShiftHeld, consumeRightClick, consumeSpace, consumeSelfDestruct, getSelfDestructHoldProgress, getMouseNDC,
 } from './ui/input';
 import { setupMobileControls, isMobileDevice } from './ui/mobileControls';
 import { setupSettingsDialog } from './ui/settingsDialog';
+import { setupHowToPlay } from './ui/howToPlay';
 import { setupInviteDialog } from './ui/inviteDialog';
 import { setupFeed, pushFeedEvent } from './ui/feed';
 import { setupMatchTimer, setMatchResetCountdown, setMatchTerrainPreset } from './ui/matchTimer';
@@ -88,11 +100,30 @@ import { resolveRailEndpoint } from '@shared/rail';
 // not the 1×1 default placeholder.
 getParticleTextures();
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// Renderer setup is parameterised by the saved quality preset
+// (vt.quality in localStorage). Antialias and shadowMap.type are both
+// constructor-fixed, so the boot path picks them up once — switching
+// presets while in-game updates pixelRatio + shadowMap.enabled live,
+// but flipping antialias requires a reload (we surface a toast for
+// that case from the settings dialog).
+const renderer = new THREE.WebGLRenderer({ antialias: antialiasEnabled() });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.shadowMap.enabled = true;
+renderer.setPixelRatio(pixelRatioCap());
+renderer.shadowMap.enabled = shadowsEnabled();
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// React to live changes from the settings dialog. Antialias and
+// texture filter changes require a reload — handled by the dialog
+// surfacing a hint, we just no-op on those here. Pixel ratio and
+// shadow toggles flip live; texture upgrade fires when the user
+// promotes from auto/low to high.
+onQualityChange((q) => {
+  renderer.setPixelRatio(pixelRatioCap());
+  renderer.shadowMap.enabled = shadowsEnabled();
+  if (q === 'high' && surfaceNets) {
+    surfaceNets.upgradeTerrainTexturesToHi();
+  }
+});
 // ACES filmic tone mapping gives a natural daylight response — the linear
 // albedo × light product gets compressed into displayable range with a
 // filmic S-curve instead of clipping at 1.0. Exposure > 1 lifts midtones so
@@ -329,6 +360,7 @@ setupSettingsDialog(() => {
   // preset) survive in localStorage.
   window.location.reload();
 });
+setupHowToPlay();
 setupFeed();
 setupMatchTimer();
 setupMatchCountdown();
@@ -349,11 +381,16 @@ const initialLoginError = (() => {
     if (!reason) return undefined;
     sessionStorage.removeItem('vt.kickReason');
     if (reason === 'idle') return 'You were kicked for inactivity.';
+    if (reason === 'banned') return 'You have been banned from this server.';
     return undefined;
   } catch { return undefined; }
 })();
-// Block until the player has picked a name + color from the login overlay.
-let login = await showLogin(initialLoginError);
+// Vibe Jam 2026 webring spec: portal arrivals must skip every input screen.
+// If `?portal=true` is present we build a LoginResult from forwarded params
+// + saved prefs + IP→country flag (same defaults the overlay would pick),
+// and bypass the overlay entirely.
+const portalLogin = await tryAutoLoginFromPortal();
+let login = portalLogin ?? await showLogin(initialLoginError);
 // playAnnouncer is now handled in the first room_snapshot to include the event name
 // Start music after a short delay
 setTimeout(() => startMusic(), 1800);
@@ -462,6 +499,10 @@ setInterval(() => {
   if (socket.connected) socket.emit('ping', performance.now());
 }, 2000);
 
+// Server-driven probe for the admin dashboard's per-player latency
+// readout. We just echo the server's timestamp back unchanged.
+socket.on('srv_ping', (t: number) => socket.emit('srv_pong', t));
+
 socket.on('room_snapshot', (snap: MatchSnapshot) => {
   snapshot = snap;
   latestTanks = snap.tanks;
@@ -529,7 +570,7 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
   syncActiveCombatState(scene, snap.projectiles, snap.hazards);
   syncSoldiers(scene, snap.soldiers ?? []);
   refreshPilotingMissile(snap.projectiles);
-  hud.updateScoreboard(snap.tanks);
+  hud.updateScoreboard(snap.tanks, myId);
   const myTank = snap.tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
   syncLocalInventory(myTank);
@@ -555,6 +596,45 @@ socket.on('room_snapshot', (snap: MatchSnapshot) => {
 
 let voxelGrid: VoxelGrid | null = null;
 let surfaceNets: SurfaceNetsHandle | null = null;
+
+/** Boot-time benchmark for the 'auto' quality preset. Samples per-frame
+ *  delta-times for AUTO_BENCHMARK_MS after the terrain finishes its
+ *  first build, then upgrades to hi-res textures iff the median FPS
+ *  cleared AUTO_UPGRADE_FPS. Fires only once per page load. */
+let autoBenchmarkRunning = false;
+function kickAutoTextureBenchmark(handle: SurfaceNetsHandle): void {
+  if (autoBenchmarkRunning) return;
+  autoBenchmarkRunning = true;
+  // 0.5 s grace so the initial chunk-mesh + GL upload stutter doesn't
+  // poison the FPS sample.
+  setTimeout(() => {
+    const dts: number[] = [];
+    let last = performance.now();
+    const start = last;
+    let raf = 0;
+    const tick = (now: number): void => {
+      const dt = now - last;
+      last = now;
+      // Drop the first frame after grace — schedulers occasionally hand
+      // out a 50ms first frame after a setTimeout that nothing should be
+      // graded on.
+      if (dts.length > 0 || now - start > 16) dts.push(dt);
+      if (now - start < AUTO_BENCHMARK_MS) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      // Median is more robust than mean against single-frame stalls.
+      dts.sort((a, b) => a - b);
+      const medianDt = dts[Math.floor(dts.length / 2)] ?? 33;
+      const medianFps = 1000 / medianDt;
+      if (medianFps >= AUTO_UPGRADE_FPS) {
+        handle.upgradeTerrainTexturesToHi();
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    void raf;
+  }, 500);
+}
 let voxelDebris: VoxelDebrisHandle | null = null;
 /** Client-side Rapier mirror. Only the LOCAL player is registered here;
  *  remote tanks stay cosmetic (server-broadcast state + interpolation). The
@@ -621,6 +701,7 @@ let trackDecal: TrackDecalHandle | null = null;
 const lastTreadPosByPlayer = new Map<string, { leftX: number; leftZ: number; rightX: number; rightZ: number }>();
 let atmosphere: AtmosphereHandle | null = null;
 let fireRenderer: FireRenderer | null = null;
+let vibeJamPortal: VibeJamPortalHandle | null = null;
 let pendingFireSnapshot: FireGridSnapshot | null = null;
 const pickupScene: PickupSceneHandle = createPickupScene(scene);
 
@@ -661,6 +742,13 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   clearAllSoldierVisuals(scene);
   if (!surfaceNets) {
     surfaceNets = createSurfaceNetsTerrain(voxelGrid, scene, voxelScorch, trackDecal, voxelBuilt);
+    // Quality 'auto' boots with the lo-res textures; if the device
+    // sustains the FPS floor in the next few seconds we upgrade in
+    // the background. Quality 'high' starts on hi already, 'low'
+    // never upgrades.
+    if (shouldAttemptTextureUpgrade()) {
+      kickAutoTextureBenchmark(surfaceNets);
+    }
   } else {
     surfaceNets.rebuild(voxelGrid, voxelScorch, trackDecal, voxelBuilt);
   }
@@ -677,6 +765,13 @@ socket.on('voxel_snapshot', async (snap: VoxelSnapshot) => {
   if (!atmosphere) {
     atmosphere = createAtmosphere(scene);
   }
+  // Vibe Jam 2026 portal — fixed corner of the map. Rebuilt on every voxel
+  // snapshot so it sits on the correct terrain height after a match reset.
+  if (vibeJamPortal) {
+    vibeJamPortal.dispose();
+    vibeJamPortal = null;
+  }
+  vibeJamPortal = createVibeJamPortal(scene, worldW, worldH);
   // Fire renderer mirrors the server's napalm CA. Recreate on every voxel
   // snapshot so it binds to the current grid (match reset regenerates it).
   if (fireRenderer) fireRenderer.dispose(scene);
@@ -742,19 +837,25 @@ socket.on('fire_update', (update: FireUpdate) => {
   if (fireRenderer) fireRenderer.applyUpdate(update.cells);
 });
 
-// Continuous-damage sources (napalm fire, future gas zones, etc.) don't
-// ride on shot_resolved, so they emit this dedicated event to drive the
-// usual floating damage-number popups + hit-marker audio.
+// Live-tracked ballistic shells + continuous-damage sources (napalm fire,
+// future gas zones) drive popups via this event. shooterId is set on
+// player-attributed hits so the local shooter gets hit-marker SFX +
+// camera shake just like the legacy shot_resolved path used to give them.
 socket.on('damage_applied', (data) => {
   for (const hit of data.hits) {
     const mesh = getAllTankMeshes().get(hit.playerId);
     if (mesh) spawnDamagePopup(mesh.group, hit.damage, hit.killed, hit.shielded);
   }
-  if (myId && data.hits.some((h) => h.playerId !== myId)) {
-    // At least one non-self hit — play hit marker for the local shooter
-    // if they own the napalm patch. (We can't easily attribute the
-    // shooter here, so play conservatively only when damage hit others.)
+  if (data.shooterId && data.shooterId === myId && data.hits.length > 0) {
+    playHitMarker();
+    const anyKill = data.hits.some((h) => h.killed);
+    triggerHitFeedback(anyKill);
+    addImpactCameraShake(anyKill ? 0.45 : 0.28, 0.2);
   }
+});
+
+socket.on('shell_intercepted', ({ shellId, point }) => {
+  cutShell(shellId, point);
 });
 
 socket.on('state_update', (state: RoomStateUpdate) => {
@@ -968,7 +1069,7 @@ socket.on('state_update', (state: RoomStateUpdate) => {
 
   const myTank = tanks.find((t) => t.playerId === myId);
   hud.setHealth(myTank);
-  hud.updateScoreboard(tanks);
+  hud.updateScoreboard(tanks, myId);
   syncLocalInventory(myTank);
 
   if (myTank) {
@@ -1667,6 +1768,22 @@ function animate(): void {
         socket.emit('predator_detonate');
       }
     }
+
+    // R-key self-destruct. Gated on (alive && not piloting) so the key
+    // is silently ignored when it can't fire — server validates again,
+    // but consuming the latch here prevents a queued-up press from
+    // firing the moment a respawn lands.
+    if (consumeSelfDestruct()) {
+      if (predictedState?.alive && !isPiloting) {
+        socket.emit('self_destruct_request');
+      }
+    }
+    if (myId) {
+      const sdProgress = (predictedState?.alive && !isPiloting)
+        ? getSelfDestructHoldProgress()
+        : 0;
+      setSelfDestructPulse(myId, sdProgress);
+    }
     const aimDirect = !isPiloting ? (buriedAimOverride ?? getVirtualAimDirect()) : null;
     let aimPointForFire: THREE.Vector3 | null = null;
     if (aimDirect) {
@@ -2004,6 +2121,25 @@ function animate(): void {
 
 
   surfaceNets?.flushDirtyChunks();
+
+  // Vibe Jam 2026 portal — animate particles + collision-check the local
+  // tank. Skipped while the local tank is dead/missing so the redirect can
+  // only fire when the player is actually controlling a tank.
+  if (vibeJamPortal) {
+    const localTankMesh = predictedState && predictedState.alive ? getAllTankMeshes().get(myId) : undefined;
+    vibeJamPortal.update(localTankMesh?.group ?? null, () => ({
+      username: login.name,
+      color: login.color,
+      hp: predictedState?.hp,
+      speedX: predictedState?.linVel.x,
+      speedY: predictedState?.linVel.y,
+      speedZ: predictedState?.linVel.z,
+      rotationX: predictedState?.bodyPitch,
+      rotationY: predictedState?.bodyRotation,
+      rotationZ: predictedState?.bodyRoll,
+    }));
+  }
+
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }

@@ -252,7 +252,11 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const parachuteMesh = new THREE.Mesh(parachuteGeom, parachuteMat);
   parachuteMesh.position.y = 4.5;
   parachuteMesh.visible = false;
-  
+  // Render after the trajectory marker (renderOrder 10) and aux reticles
+  // (11) — those use depthTest:false so they otherwise paint over any
+  // transparent geometry behind them (the canopy is transparent at 0.95).
+  parachuteMesh.renderOrder = 20;
+
   // Attach parachute to the root group instead of chassisGroup so it doesn't tilt with recoil
   group.add(parachuteMesh);
 
@@ -277,6 +281,7 @@ export function createTankMesh(tank: TankState, scene: THREE.Scene, localPlayerI
   const shroudMat = new THREE.LineBasicMaterial({ color: 0x242018, transparent: true, opacity: 0.85 });
   const parachuteShrouds = new THREE.LineSegments(shroudGeom, shroudMat);
   parachuteShrouds.visible = false;
+  parachuteShrouds.renderOrder = 20;
   group.add(parachuteShrouds);
 
   // Burning VFX: multi-layer billboards riding on the tank. When the
@@ -583,6 +588,32 @@ export function setBarrelHeat(playerId: string, heat: number): void {
   mat.emissiveIntensity = 1.0;
 }
 
+
+/** Drive the self-destruct hold pulse on body, turret, and barrel.
+ *  progress 0 = no effect, 1 = fully charged (fires immediately after).
+ *  Call every frame with the local player's id. */
+export function setSelfDestructPulse(playerId: string, progress: number): void {
+  const tm = tankMeshes.get(playerId);
+  if (!tm) return;
+  const bodyMat   = tm.body.material   as THREE.MeshStandardMaterial;
+  const turretMat = tm.turret.material as THREE.MeshStandardMaterial;
+  const barrelMat = tm.barrel.material as THREE.MeshStandardMaterial;
+  if (progress <= 0) {
+    bodyMat.emissive.setRGB(0, 0, 0);
+    turretMat.emissive.setRGB(0, 0, 0);
+    barrelMat.emissive.setRGB(0, 0, 0);
+    barrelMat.emissiveIntensity = 1.0;
+    return;
+  }
+  // frequency ramps from 2 Hz → 14 Hz as progress → 1
+  const freq = 2 + progress * 12;
+  const wave = 0.5 + 0.5 * Math.sin(performance.now() * 0.001 * Math.PI * 2 * freq);
+  const r = progress * wave;
+  bodyMat.emissive.setRGB(r, 0, 0);
+  turretMat.emissive.setRGB(r, 0, 0);
+  barrelMat.emissive.setRGB(r * 0.5, 0, 0);
+  barrelMat.emissiveIntensity = 1.0;
+}
 
 /** Interpolate remote tanks each frame */
 export function interpolateRemoteTanks(dt: number, localPlayerId: string): void {
