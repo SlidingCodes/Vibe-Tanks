@@ -95,7 +95,12 @@ import {
 } from '../game/Simulation';
 import { pushHistory } from '../admin/history';
 import { timed } from '../admin/metrics';
-import { recordIfBest as recordLeaderboardEntry } from '../admin/leaderboard';
+import {
+  recordIfBest as recordLeaderboardEntry,
+  getPersonalBest as getLeaderboardPersonalBest,
+  getRankForScore as getLeaderboardRankForScore,
+  getTotalRecords as getLeaderboardTotalRecords,
+} from '../admin/leaderboard';
 import { extractClientIp } from '../net/clientIp';
 import { lookupGeo, type GeoInfo } from '../net/clientGeo';
 
@@ -555,22 +560,42 @@ export class Room {
     this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
 
     // Commit each human's final score to the global all-time
-    // leaderboard before resetMatch zeroes them out. Bots are
-    // skipped so the public board reflects real players only.
-    // Public rooms only — private rooms have arbitrary settings
-    // (custom weapons, bot counts) that would taint the global record.
+    // leaderboard, then DM each player a per-socket result with their
+    // global rank + personal-best context. Both bots and private rooms
+    // are skipped so the public board reflects real public play only.
     if (!this.private) {
       const achievedAt = Date.now();
       for (const [pid, player] of this.players) {
         if (player.isBot) continue;
         const tank = this.tanks.get(pid);
-        if (!tank) continue;
+        if (!tank || !player.socket) continue;
+        const name = tank.playerName;
+        const score = Math.round(tank.score);
+        // Snapshot the personal best BEFORE recordIfBest mutates it,
+        // so we can tell the client "you set a NEW record" vs "your
+        // best stands at N".
+        const personalBestBefore = getLeaderboardPersonalBest(name);
+        const isNewBest = score > 0 && (personalBestBefore === null || score > personalBestBefore);
         recordLeaderboardEntry({
-          displayName: tank.playerName,
-          score: tank.score,
+          displayName: name,
+          score,
           kills: tank.kills,
           deaths: tank.deaths,
           achievedAt,
+        });
+        // Rank preview uses the just-played score whether or not it
+        // becomes the personal best — matches the user's request:
+        // "rank guadagnato se batte il proprio record, oppure rank
+        // generico basato sui punteggi attuali se non lo batte".
+        const globalRank = score > 0 ? getLeaderboardRankForScore(score, name) : null;
+        const personalBest = isNewBest ? score : (personalBestBefore ?? null);
+        player.socket.emit('match_leaderboard_result', {
+          name,
+          score,
+          globalRank,
+          personalBest,
+          isNewBest,
+          totalRecords: getLeaderboardTotalRecords(),
         });
       }
     }

@@ -114,3 +114,30 @@ export function getTopN(n: number = 50): LeaderboardEntry[] {
     .sort((a, b) => b.score - a.score || a.achievedAt - b.achievedAt)
     .slice(0, limit);
 }
+
+/** Best score currently recorded for `name`, or `null` if the name has
+ *  no record yet. Caller is responsible for normalising the name. */
+export function getPersonalBest(name: string): number | null {
+  const e = data.records[name.trim().toLowerCase()];
+  return e ? e.score : null;
+}
+
+/** Rank (1-based) the given `score` would hold in the leaderboard. The
+ *  caller can pass their own `name` so we don't double-count their
+ *  existing record — the rank reported is the rank if `score` were the
+ *  player's only entry. Useful both before recording (to preview where
+ *  a fresh score would land) and after (the result is identical when
+ *  the score becomes the new personal best). */
+export function getRankForScore(score: number, name?: string): number {
+  const ownKey = name?.trim().toLowerCase();
+  let higher = 0;
+  for (const k in data.records) {
+    if (k === ownKey) continue;
+    if (data.records[k].score > score) higher++;
+  }
+  return higher + 1;
+}
+
+export function getTotalRecords(): number {
+  return Object.keys(data.records).length;
+}

@@ -1,10 +1,12 @@
 /**
- * All-time leaderboard modal — opened from the crown button on the
- * login overlay. Fetches `/leaderboard` (proxied to game server :3001
- * via Vite in dev / Caddy in prod) and renders a top-N table.
+ * Hall-of-Fame modal — global all-time leaderboard, opened from the
+ * crown button on the login overlay AND from the end-of-match screen.
  *
  * Pragmatic by design: no name ownership, no auth — display whatever
  * the server returns. Errors are shown inline so the modal still opens.
+ *
+ * NB: ids are `hof-*` to avoid colliding with the in-match
+ * `#leaderboard-overlay` end-of-match screen owned by `hud.ts`.
  */
 
 interface LeaderboardEntry {
@@ -19,25 +21,26 @@ interface LeaderboardEntry {
 const LIMIT = 50;
 
 let overlayEl: HTMLDivElement | null = null;
+let highlightNameKey: string | null = null;
 
 function buildOverlay(): HTMLDivElement {
   const overlay = document.createElement('div');
-  overlay.id = 'leaderboard-overlay';
+  overlay.id = 'hof-overlay';
   overlay.innerHTML = `
-    <div id="leaderboard-dialog" role="dialog" aria-labelledby="leaderboard-title">
-      <button id="leaderboard-close" type="button" aria-label="Close">&times;</button>
-      <h2 id="leaderboard-title">HALL OF FAME</h2>
-      <p class="leaderboard-help">Best single-match score per name. Public matches only.</p>
-      <div id="leaderboard-status">Loading…</div>
-      <div id="leaderboard-table-wrap" hidden>
-        <table id="leaderboard-table">
+    <div id="hof-dialog" role="dialog" aria-labelledby="hof-title">
+      <button id="hof-close" type="button" aria-label="Close">&times;</button>
+      <h2 id="hof-title">HALL OF FAME</h2>
+      <p class="hof-help">Best single-match score per name. Public matches only.</p>
+      <div id="hof-status">Loading…</div>
+      <div id="hof-table-wrap" hidden>
+        <table id="hof-table">
           <thead>
             <tr>
-              <th class="lb-rank">#</th>
-              <th class="lb-name">Name</th>
-              <th class="lb-score">Score</th>
-              <th class="lb-kd">K / D</th>
-              <th class="lb-when">When</th>
+              <th class="hof-rank">#</th>
+              <th class="hof-name">Name</th>
+              <th class="hof-score">Score</th>
+              <th class="hof-kd">K / D</th>
+              <th class="hof-when">When</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -48,7 +51,7 @@ function buildOverlay(): HTMLDivElement {
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
   });
-  overlay.querySelector<HTMLButtonElement>('#leaderboard-close')!.addEventListener('click', close);
+  overlay.querySelector<HTMLButtonElement>('#hof-close')!.addEventListener('click', close);
   return overlay;
 }
 
@@ -77,31 +80,41 @@ function escapeHtml(s: string): string {
 
 function render(entries: LeaderboardEntry[]): void {
   if (!overlayEl) return;
-  const status = overlayEl.querySelector<HTMLDivElement>('#leaderboard-status')!;
-  const wrap = overlayEl.querySelector<HTMLDivElement>('#leaderboard-table-wrap')!;
-  const tbody = overlayEl.querySelector<HTMLTableSectionElement>('#leaderboard-table tbody')!;
+  const status = overlayEl.querySelector<HTMLDivElement>('#hof-status')!;
+  const wrap = overlayEl.querySelector<HTMLDivElement>('#hof-table-wrap')!;
+  const tbody = overlayEl.querySelector<HTMLTableSectionElement>('#hof-table tbody')!;
   if (entries.length === 0) {
     status.textContent = 'No records yet — be the first to set one.';
     status.hidden = false;
     wrap.hidden = true;
     return;
   }
-  tbody.innerHTML = entries.map((e, i) => `
-    <tr>
-      <td class="lb-rank">${i + 1}</td>
-      <td class="lb-name" title="${escapeHtml(e.displayName)}">${escapeHtml(e.displayName)}</td>
-      <td class="lb-score">${e.score}</td>
-      <td class="lb-kd">${e.kills} / ${e.deaths}</td>
-      <td class="lb-when">${fmtRelative(e.achievedAt)}</td>
-    </tr>
-  `).join('');
+  const focus = highlightNameKey;
+  tbody.innerHTML = entries.map((e, i) => {
+    const isMe = focus && e.nameKey === focus;
+    return `
+      <tr${isMe ? ' class="hof-row-me"' : ''}>
+        <td class="hof-rank">${i + 1}</td>
+        <td class="hof-name" title="${escapeHtml(e.displayName)}">${escapeHtml(e.displayName)}</td>
+        <td class="hof-score">${e.score}</td>
+        <td class="hof-kd">${e.kills} / ${e.deaths}</td>
+        <td class="hof-when">${fmtRelative(e.achievedAt)}</td>
+      </tr>
+    `;
+  }).join('');
   status.hidden = true;
   wrap.hidden = false;
+
+  // Scroll the highlighted row into view if it's outside the visible area.
+  if (focus) {
+    const row = tbody.querySelector<HTMLTableRowElement>('tr.hof-row-me');
+    row?.scrollIntoView({ block: 'center' });
+  }
 }
 
 async function load(): Promise<void> {
   if (!overlayEl) return;
-  const status = overlayEl.querySelector<HTMLDivElement>('#leaderboard-status')!;
+  const status = overlayEl.querySelector<HTMLDivElement>('#hof-status')!;
   status.hidden = false;
   status.textContent = 'Loading…';
   try {
@@ -114,7 +127,10 @@ async function load(): Promise<void> {
   }
 }
 
-export function openLeaderboard(): void {
+/** Open the modal. Pass `highlightName` to scroll-and-highlight a row
+ *  (e.g. from the end-of-match "see your record" link). */
+export function openLeaderboard(highlightName?: string): void {
+  highlightNameKey = highlightName ? highlightName.trim().toLowerCase() : null;
   if (!overlayEl) {
     overlayEl = buildOverlay();
     document.body.appendChild(overlayEl);
@@ -127,6 +143,7 @@ export function openLeaderboard(): void {
 export function close(): void {
   if (!overlayEl) return;
   overlayEl.classList.remove('open');
+  highlightNameKey = null;
   document.removeEventListener('keydown', onKeyDown);
 }
 
