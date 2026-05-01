@@ -464,10 +464,10 @@ export const WEAPONS: WeaponDefinition[] = [
 ];
 
 /** Max number of slots in a tank's weapon inventory (default + consumables). */
-export const INVENTORY_MAX_SLOTS = 5;
+export const INVENTORY_MAX_SLOTS = 10;
 
 /** Number of consumable weapons rolled on join/respawn (excluding standard). */
-export const LOADOUT_RANDOM_COUNT = 3;
+export const LOADOUT_RANDOM_COUNT = 7;
 
 /** Roll a random loadout for a freshly-spawned tank. Slot 0 is always the
  *  infinite `standard` weapon; the remaining slots are a sample without
