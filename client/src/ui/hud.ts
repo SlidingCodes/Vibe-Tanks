@@ -1,5 +1,6 @@
 import { TankState, WeaponDefinition, WeaponInventorySlot } from '@shared/types/index';
 import { WEAPONS, INVENTORY_MAX_SLOTS } from '@shared/weapons';
+import { openLeaderboard as openHallOfFame } from './leaderboard';
 
 const healthBar = document.getElementById('health-bar') as HTMLDivElement;
 const healthFill = document.getElementById('health-fill') as HTMLDivElement;
@@ -22,6 +23,65 @@ const killVictim = document.getElementById('kill-victim')!;
 const leaderboardOverlay = document.getElementById('leaderboard-overlay')!;
 const leaderboardBody = document.getElementById('leaderboard-body')!;
 const leaderboardCountdown = document.getElementById('leaderboard-countdown')!;
+const leaderboardGlobalWrap = document.getElementById('leaderboard-global') as HTMLDivElement;
+const leaderboardGlobalHeadline = document.getElementById('lb-global-headline') as HTMLDivElement;
+const leaderboardGlobalOpenBtn = document.getElementById('lb-global-open') as HTMLButtonElement;
+
+/** End-of-match per-player snapshot of the all-time leaderboard. Set
+ *  via `setMatchLeaderboardResult` from the socket listener; consumed
+ *  by `showLeaderboard` to render the global rank panel. Cleared on
+ *  `hideLeaderboard` so the next match starts blank. */
+interface MatchLeaderboardResult {
+  name: string;
+  score: number;
+  globalRank: number | null;
+  personalBest: number | null;
+  isNewBest: boolean;
+  totalRecords: number;
+}
+let lastLeaderboardResult: MatchLeaderboardResult | null = null;
+
+leaderboardGlobalOpenBtn.addEventListener('click', () => {
+  openHallOfFame(lastLeaderboardResult?.name);
+});
+
+export function setMatchLeaderboardResult(data: MatchLeaderboardResult): void {
+  lastLeaderboardResult = data;
+  // If the leaderboard overlay is already on screen (the snapshot
+  // arrived first, then the result), refresh the global panel in place.
+  if (leaderboardOverlay.style.display === 'flex') {
+    renderGlobalRankPanel();
+  }
+}
+
+function renderGlobalRankPanel(): void {
+  const r = lastLeaderboardResult;
+  if (!r) {
+    leaderboardGlobalWrap.hidden = true;
+    return;
+  }
+  leaderboardGlobalWrap.hidden = false;
+  leaderboardGlobalHeadline.classList.toggle('is-new-best', r.isNewBest);
+
+  if (r.globalRank === null) {
+    // Score was 0 or negative — Hall of Fame ignores it.
+    leaderboardGlobalHeadline.textContent = `No score posted this match — Hall of Fame skips zeros.`;
+    return;
+  }
+  const ofTotal = Math.max(r.totalRecords, r.globalRank);
+  if (r.isNewBest) {
+    const pbBit = r.personalBest !== null && r.personalBest !== r.score
+      ? ` (was ${r.personalBest})`
+      : '';
+    leaderboardGlobalHeadline.innerHTML =
+      `★ NEW PERSONAL BEST: <b>${r.score}</b>${pbBit}` +
+      ` &middot; <b>#${r.globalRank}</b> of ${ofTotal} worldwide`;
+  } else {
+    const pbBit = r.personalBest !== null ? ` (your best: ${r.personalBest})` : '';
+    leaderboardGlobalHeadline.innerHTML =
+      `This match would rank <b>#${r.globalRank}</b> of ${ofTotal} worldwide${pbBit}`;
+  }
+}
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;
@@ -150,6 +210,8 @@ export function showLeaderboard(tanks: TankState[], resetsInSeconds: number): vo
   leaderboardEndsAtMs = performance.now() + Math.max(0, resetsInSeconds) * 1000;
   leaderboardCountdown.textContent = Math.ceil(resetsInSeconds).toString();
   if (!leaderboardTickRaf) leaderboardTickRaf = requestAnimationFrame(tickLeaderboardCountdown);
+
+  renderGlobalRankPanel();
 }
 
 export function hideLeaderboard(): void {
@@ -158,6 +220,11 @@ export function hideLeaderboard(): void {
     cancelAnimationFrame(leaderboardTickRaf);
     leaderboardTickRaf = 0;
   }
+  // Drop the cached result so the next match starts blank — otherwise
+  // a player who joins mid-match would briefly see the previous match's
+  // rank panel when the next end-screen opens.
+  lastLeaderboardResult = null;
+  leaderboardGlobalWrap.hidden = true;
 }
 
 export function setHealth(tank: TankState | undefined): void {
