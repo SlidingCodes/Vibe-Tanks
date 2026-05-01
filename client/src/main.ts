@@ -1483,6 +1483,8 @@ function animate(): void {
       selectedWeaponId = slot.weaponId;
       hud.setWeapons(myInventory, selectedWeaponId, onWeaponChipTap);
       playWeaponSwitch();
+      const switchedWeapon = WEAPONS.find((w) => w.id === selectedWeaponId);
+      hud.showWeaponName(switchedWeapon?.name ?? selectedWeaponId);
     }
   }
 

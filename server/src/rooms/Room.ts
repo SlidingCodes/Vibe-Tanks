@@ -362,6 +362,29 @@ const LIVE_SHELL_BODY_OFFSET_Y = 0.8;
  *  interpolates the same point grid the client renders. */
 const LIVE_SHELL_SECONDS_PER_SAMPLE = 4 / 60;
 
+/** Resolve a chained-parent shell's terminal velocity. New chained
+ *  parents (split / bounce) carry the exact `endVelocity` captured by
+ *  simulateSegment — return that. Older or future paths that don't
+ *  populate it fall back to a finite-difference approximation between
+ *  the trajectory's last two samples. The fallback is biased: when
+ *  simulateSegment appends an off-cadence tail point, the actual span
+ *  between the last two samples is shorter than the regular sample dt
+ *  and the reconstructed speed is correspondingly underestimated. The
+ *  explicit `endVelocity` exists precisely to avoid this. */
+function resolveTerminalVelocity(shell: LiveShell): Vec3 {
+  if (shell.endVelocity) {
+    return { x: shell.endVelocity.x, y: shell.endVelocity.y, z: shell.endVelocity.z };
+  }
+  const traj = shell.trajectory;
+  const last = traj[traj.length - 1];
+  const prev = traj[traj.length - 2] ?? last;
+  return {
+    x: (last.x - prev.x) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+    y: (last.y - prev.y) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+    z: (last.z - prev.z) / LIVE_SHELL_SECONDS_PER_SAMPLE,
+  };
+}
+
 interface LiveShell {
   shellId: string;
   ownerId: PlayerId;
@@ -377,6 +400,12 @@ interface LiveShell {
    *  through tanks. */
   trajectory: Vec3[];
   endPoint: Vec3;
+  /** Velocity at endPoint, captured by simulateSegment. Set on chained
+   *  parents (split / bounce) so the chain helper inherits the exact
+   *  parent velocity — sidestepping the finite-difference reconstruction
+   *  that previously halved the fragment/ricochet speed when the parent's
+   *  tail sample landed off the regular tick cadence. */
+  endVelocity?: Vec3;
   /** Total flight time in seconds. Once elapsed >= this, the shell has
    *  reached its precomputed endpoint and triggers `terminalEvent`. */
   totalFlightSeconds: number;
@@ -1508,6 +1537,7 @@ export class Room {
           shooter,
           trajectory: step.trajectory,
           endPoint: step.endPoint,
+          endVelocity: step.endVelocity,
           totalFlightSeconds,
           // Negative elapsed counts down through any startDelay (used for
           // bouncer secondary segments emitted as a follow-up shot_resolved
@@ -1639,18 +1669,17 @@ export class Room {
     if (!weapon) return;
 
     if (shell.terminalEvent === 'split') {
-      // Reconstruct end velocity by sampling the last two trajectory points;
-      // simulateSegment doesn't expose the dense per-tick velocity, but
-      // sample-grid finite differences are within a percent for fragment
-      // dispersion purposes.
-      const traj = shell.trajectory;
-      const last = traj[traj.length - 1];
-      const prev = traj[traj.length - 2] ?? last;
-      const endVelocity: Vec3 = {
-        x: (last.x - prev.x) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-        y: (last.y - prev.y) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-        z: (last.z - prev.z) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-      };
+      // Use the exact end velocity captured by simulateSegment. The old
+      // finite-difference reconstruction here divided by the regular
+      // sample dt (4/60 s), but simulateSegment appends the off-cadence
+      // splitPoint as the trajectory's tail — so the actual span between
+      // the last two samples is a fraction of that, halving (or worse)
+      // the reconstructed speed and sending fragments dropping straight
+      // out of the air. `endVelocity` is set on chained-parent steps now
+      // so it should always be present here, but keep a defensive
+      // fallback (using the old approximation) in case a future weapon
+      // adds a 'split' parent without populating it.
+      const endVelocity: Vec3 = resolveTerminalVelocity(shell);
       const fragmentSteps = planSplitFragments(
         shell.shooter,
         weapon,
@@ -1669,14 +1698,8 @@ export class Room {
     }
 
     if (shell.terminalEvent === 'bounce') {
-      const traj = shell.trajectory;
-      const last = traj[traj.length - 1];
-      const prev = traj[traj.length - 2] ?? last;
-      const endVelocity: Vec3 = {
-        x: (last.x - prev.x) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-        y: (last.y - prev.y) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-        z: (last.z - prev.z) / LIVE_SHELL_SECONDS_PER_SAMPLE,
-      };
+      // See the matching note on the 'split' branch above — same fix.
+      const endVelocity: Vec3 = resolveTerminalVelocity(shell);
       const bounceStep = planBounceSegment(
         shell.shooter,
         weapon,

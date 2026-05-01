@@ -165,6 +165,11 @@ export interface StepExtras {
    *  damage inline. */
   damage?: number;
   terrainDamage?: number;
+  /** Velocity at the step's terminal point (split / bounce). The room's
+   *  live tracker hands this to the chain helper unchanged so fragments
+   *  / ricochets inherit the exact parent velocity instead of a noisy
+   *  finite-difference approximation. */
+  endVelocity?: Vec3;
 }
 
 export function makeStep(
@@ -197,6 +202,7 @@ export function makeStep(
       if (extrasOrTerrainOp.shellId !== undefined) step.shellId = extrasOrTerrainOp.shellId;
       if (extrasOrTerrainOp.damage !== undefined) step.damage = extrasOrTerrainOp.damage;
       if (extrasOrTerrainOp.terrainDamage !== undefined) step.terrainDamage = extrasOrTerrainOp.terrainDamage;
+      if (extrasOrTerrainOp.endVelocity !== undefined) step.endVelocity = extrasOrTerrainOp.endVelocity;
     }
   }
   return step;
@@ -600,6 +606,10 @@ function simulateSplitShot(
       shellId: randomUUID(),
       damage: 0,
       terrainDamage: 0,
+      // The exact velocity at the split point — fragments inherit this
+      // verbatim, so the per-fragment yaw/pitch math runs against the
+      // true post-flight vector instead of a halved approximation.
+      endVelocity: cloneVec3(segment.endVelocity),
     }),
   ]);
 }
@@ -706,6 +716,10 @@ function simulateBounceShot(
   return createShotResult(shooter.playerId, weapon.id, [
     makeStep(0, firstSegment.trajectory, firstSegment.endPoint, 'bounce', false, 0, 'bouncer_parent', {
       shellId: randomUUID(),
+      // Same fix as the splitter parent: the bounce-segment helper
+      // reflects this velocity off the terrain normal, and a halved
+      // input was launching the ricochet straight into the dirt.
+      endVelocity: cloneVec3(firstSegment.endVelocity),
       damage: 0,
       terrainDamage: 0,
     }),
