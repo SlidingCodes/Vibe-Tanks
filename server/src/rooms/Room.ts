@@ -95,6 +95,7 @@ import {
 } from '../game/Simulation';
 import { pushHistory } from '../admin/history';
 import { timed } from '../admin/metrics';
+import { recordIfBest as recordLeaderboardEntry } from '../admin/leaderboard';
 import { extractClientIp } from '../net/clientIp';
 import { lookupGeo, type GeoInfo } from '../net/clientGeo';
 
@@ -552,6 +553,27 @@ export class Room {
     this.phase = MatchPhase.Leaderboard;
     // Set matchResetAt so clients see a 10s countdown
     this.matchResetAt = Date.now() / 1000 + LEADERBOARD_DURATION_SECONDS;
+
+    // Commit each human's final score to the global all-time
+    // leaderboard before resetMatch zeroes them out. Bots are
+    // skipped so the public board reflects real players only.
+    // Public rooms only — private rooms have arbitrary settings
+    // (custom weapons, bot counts) that would taint the global record.
+    if (!this.private) {
+      const achievedAt = Date.now();
+      for (const [pid, player] of this.players) {
+        if (player.isBot) continue;
+        const tank = this.tanks.get(pid);
+        if (!tank) continue;
+        recordLeaderboardEntry({
+          displayName: tank.playerName,
+          score: tank.score,
+          kills: tank.kills,
+          deaths: tank.deaths,
+          achievedAt,
+        });
+      }
+    }
 
     // Broadcast the room snapshot so clients see the Leaderboard phase
     // and the final scores/kills/deaths.

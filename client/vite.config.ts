@@ -23,6 +23,9 @@ export default defineConfig({
         target: 'http://localhost:3001',
         ws: true,
       },
+      '/leaderboard': {
+        target: 'http://localhost:3001',
+      },
     },
   },
 });
