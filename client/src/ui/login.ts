@@ -12,6 +12,7 @@ import { FLAGS, createFlagMesh } from '../entities/flag';
 import { WEAPONS } from '@shared/weapons';
 import { getParachuteTexture } from '../scene/pickups';
 import { startMusic } from '../audio/music';
+import { openLeaderboard } from './leaderboard';
 import type { RoomSettings } from '@shared/types/index';
 
 const PALETTE = ['#e44', '#4ae', '#4e4', '#ea4', '#a4e', '#4ea', '#e4a', '#ae4'];
@@ -513,6 +514,12 @@ export function showLogin(initialError?: string): Promise<LoginResult> {
     const botsValue = document.getElementById('settings-bots-value') as HTMLSpanElement;
     const weaponsGrid = document.getElementById('settings-weapons') as HTMLDivElement;
     const weaponsActions = document.getElementById('settings-weapons-actions') as HTMLDivElement;
+    const leaderboardBtn = document.getElementById('login-leaderboard') as HTMLButtonElement | null;
+
+    if (leaderboardBtn && !leaderboardBtn.dataset.wired) {
+      leaderboardBtn.addEventListener('click', () => openLeaderboard());
+      leaderboardBtn.dataset.wired = '1';
+    }
 
     overlay.style.display = '';
     overlay.classList.remove('creating');

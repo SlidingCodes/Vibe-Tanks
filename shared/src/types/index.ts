@@ -670,6 +670,25 @@ export interface ServerEvents {
   player_spawned: (tank: TankState) => void;
   player_left: (data: { playerId: PlayerId }) => void;
   match_event: (event: MatchEvent) => void;
+  /** Per-player end-of-match summary against the global all-time
+   *  Hall of Fame. Emitted to each human's socket once when the room
+   *  enters the Leaderboard phase, BEFORE the score is committed.
+   *  - `globalRank` is the position the just-played score would hold
+   *    in the global table (1-based). `null` if the score is ≤ 0
+   *    (Hall of Fame ignores negative / zero scores).
+   *  - `personalBest` is the player's highest recorded score AFTER
+   *    this match (so it equals `score` when `isNewBest` is true).
+   *  - `isNewBest` true when this match set a fresh personal record.
+   *  - `totalRecords` is how many distinct names the leaderboard
+   *    currently holds, useful for "rank #N of M" framing. */
+  match_leaderboard_result: (data: {
+    name: string;
+    score: number;
+    globalRank: number | null;
+    personalBest: number | null;
+    isNewBest: boolean;
+    totalRecords: number;
+  }) => void;
   game_over: (data: { winnerId: PlayerId; scores: { playerId: PlayerId; score: number }[] }) => void;
   /** Full fire-grid state sent on join + match reset. Lets late joiners see
    *  any napalm patches still burning. */

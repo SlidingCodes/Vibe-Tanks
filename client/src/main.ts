@@ -1384,6 +1384,10 @@ socket.on('soldier_killed', (data) => {
   if (!data.expired) spawnBloodSplatter(scene, data.position);
 });
 
+socket.on('match_leaderboard_result', (data) => {
+  hud.setMatchLeaderboardResult(data);
+});
+
 socket.on('match_event', (ev) => {
   pushFeedEvent(ev);
   if (ev.kind === 'reset') nextTrack();
