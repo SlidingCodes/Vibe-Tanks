@@ -580,6 +580,13 @@ export interface ShotStep {
    *  set on live-tracked ballistic steps; precomputed paths use their own
    *  inline values. */
   terrainDamage?: number;
+  /** Velocity at the step's terminal point, captured by simulateSegment.
+   *  Set by chained-shell parents (split, bounce) so the live tracker can
+   *  hand the *exact* split/bounce velocity to the chain helper instead
+   *  of reconstructing it from finite-difference samples — which silently
+   *  halves the velocity when the trajectory's tail point lands between
+   *  two regular sample ticks (see Room.completeLiveShellNaturally). */
+  endVelocity?: Vec3;
 }
 
 export interface DamageHit {

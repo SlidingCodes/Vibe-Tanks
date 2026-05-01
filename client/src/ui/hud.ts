@@ -22,6 +22,35 @@ const killVictim = document.getElementById('kill-victim')!;
 const leaderboardOverlay = document.getElementById('leaderboard-overlay')!;
 const leaderboardBody = document.getElementById('leaderboard-body')!;
 const leaderboardCountdown = document.getElementById('leaderboard-countdown')!;
+const weaponNameToast = document.getElementById('weapon-name-toast') as HTMLDivElement;
+
+let weaponNameToastTimer: ReturnType<typeof setTimeout> | null = null;
+const WEAPON_NAME_TOAST_VISIBLE_MS = 1400;
+
+/** Flash the weapon's display name above the chip rack. Re-firing
+ *  during an active toast restarts the timer so the latest selection
+ *  wins (rapid digit-key cycling reads the most recently pressed key,
+ *  not the one whose toast was already on screen). */
+export function showWeaponName(name: string): void {
+  if (!name) return;
+  weaponNameToast.textContent = name;
+  weaponNameToast.hidden = false;
+  // Force a reflow so the .show transition replays even when the toast
+  // was already visible — without this, re-adding the class on the
+  // same frame is a no-op and the existing fade keeps running.
+  void weaponNameToast.offsetWidth;
+  weaponNameToast.classList.add('show');
+  if (weaponNameToastTimer) clearTimeout(weaponNameToastTimer);
+  weaponNameToastTimer = setTimeout(() => {
+    weaponNameToast.classList.remove('show');
+    // Wait for the opacity transition (0.18s) before un-mounting via the
+    // `hidden` attribute so screen readers don't announce a stale label.
+    weaponNameToastTimer = setTimeout(() => {
+      weaponNameToast.hidden = true;
+      weaponNameToastTimer = null;
+    }, 220);
+  }, WEAPON_NAME_TOAST_VISIBLE_MS);
+}
 
 
 const RESPAWN_COUNTDOWN_SECONDS = 5;

@@ -188,6 +188,46 @@
       pointer-events: none;
     }
 
+    /* Weapon-name toast — flashes the freshly-selected weapon's name
+       above the chip rack on every switch so the player doesn't have to
+       eye-track down to the chip ammo to confirm what's loaded. Hidden
+       by default; the JS pops it open with a `.show` class for ~1.5 s
+       then fades it out. The bottom offset clears the desktop chip
+       row (~50 px); the mobile override below jumps it above the 5×2
+       grid (~115 px) so it doesn't overlap the chips themselves. */
+    #weapon-name-toast {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%) translateY(6px);
+      padding: 4px 14px;
+      background: rgba(20, 22, 16, 0.85);
+      border: 1px solid rgba(160, 130, 70, 0.55);
+      border-radius: 2px;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55) inset, 0 4px 14px rgba(0, 0, 0, 0.55);
+      color: #f0d88a;
+      font-family: monospace;
+      font-size: 13px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      font-weight: bold;
+      text-shadow: 0 0 8px rgba(216, 176, 88, 0.45);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s linear, transform 0.18s ease-out;
+      z-index: 4;
+      white-space: nowrap;
+    }
+    #weapon-name-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    body.mobile #weapon-name-toast {
+      bottom: 124px;
+      font-size: 14px;
+      letter-spacing: 5px;
+    }
+
     /* Tactical ordnance-rack look: gunmetal plate, olive edge, desaturated
        slot readout. Selected chip lights up warm (khaki) rather than
        white so the rack reads as a row of loaded rounds with the active
@@ -2869,6 +2909,7 @@
     </div>
     <div id="scoreboard"></div>
     <div id="weapon-hud"></div>
+    <div id="weapon-name-toast" hidden></div>
     <div id="controls-hint">WASD move | Shift boost | Mouse aim | Left click shoot | Right click shield | 1-9 / 0 switch weapon | Hold R self-destruct</div>
     <div id="waiting-overlay">Waiting for game to start...</div>
   </div>

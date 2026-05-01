@@ -49,11 +49,26 @@ function getOrCreateElement(idx: number): HTMLAudioElement {
   if (!el) {
     el = new Audio();
     el.preload = 'none';
-    el.loop = true;
+    // Single-shot playback; the rotation between tracks is driven by the
+    // 'ended' listener below, not by HTML's loop attribute. With loop=true
+    // the player would only ever hear song1 (or whichever was started
+    // first) and `nextTrack` would only fire on match reset — long
+    // sessions never reached the second track.
+    el.loop = false;
     el.src = TRACK_URLS[idx];
+    el.addEventListener('ended', onTrackEnded);
     audioElements[idx] = el;
   }
   return el;
+}
+
+/** Auto-advance handler. On natural end-of-file we rotate to a fresh
+ *  random track. Skipped if `playing` was toggled off in the meantime
+ *  (e.g. `stopMusic` paused mid-fade) so a queued 'ended' from the
+ *  paused track doesn't restart playback. */
+function onTrackEnded(): void {
+  if (!playing) return;
+  nextTrack();
 }
 
 function connectElement(idx: number): HTMLAudioElement {
