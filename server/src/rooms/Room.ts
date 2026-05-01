@@ -38,6 +38,7 @@ import {
   GRAVITY,
   TURBO_DURATION,
   TURBO_COOLDOWN,
+  TURBO_SPEED_MULTIPLIER,
   PICKUP_MAX_CONCURRENT,
   PICKUP_SPAWN_INTERVAL,
   PICKUP_COLLECT_RADIUS,
@@ -4100,13 +4101,68 @@ export class Room {
         if (now >= (player.botNextDecisionAt ?? 0)) player.botNextDecisionAt = now + 1.5;
       }
 
-      // Water avoidance
-      const lookX = tank.position.x + Math.sin(tank.bodyRotation) * 6;
-      const lookZ = tank.position.z + Math.cos(tank.bodyRotation) * 6;
-      if (this.physics.getHeight(lookX, lookZ) < 0.2) {
-        player.input.forward = false;
-        player.input.backward = true;
-        player.input.left = true;
+      // Water avoidance — velocity-aware probe along the actual movement
+      // direction (forward AND backward), with a steering choice toward
+      // the higher of the two flanks. Earlier version only looked 6 m
+      // ahead and always swerved left, so a fleeing or strafing bot would
+      // happily reverse off a cliff into the sea.
+      const turboActive = now < (player.turboActiveUntil ?? 0);
+      const speedFactor = turboActive ? TURBO_SPEED_MULTIPLIER : 1.0;
+      // ~10 m walking, ~22 m in turbo: enough margin to brake at speed.
+      const lookAheadDist = 10.0 * speedFactor;
+      // Stay clear of anything within ~1.5 m of the waterline — by the
+      // time the column drops below SEA_LEVEL the tank is already on the
+      // shoreline and momentum carries it in.
+      const safeGround = SEA_LEVEL + 1.5;
+
+      const fwdX = Math.sin(tank.bodyRotation);
+      const fwdZ = Math.cos(tank.bodyRotation);
+      const sampleH = (ox: number, oz: number) =>
+        this.physics.getHeight(tank.position.x + ox, tank.position.z + oz);
+
+      const dangerAhead =
+        player.input.forward &&
+        sampleH(fwdX * lookAheadDist, fwdZ * lookAheadDist) < safeGround;
+      const dangerBehind =
+        player.input.backward &&
+        sampleH(-fwdX * lookAheadDist, -fwdZ * lookAheadDist) < safeGround;
+
+      if (dangerAhead || dangerBehind) {
+        // Reverse the offending axis. If both directions are dangerous
+        // (peninsula tip), pick the higher-ground side and crawl that way.
+        if (dangerAhead && !dangerBehind) {
+          player.input.forward = false;
+          player.input.backward = true;
+        } else if (dangerBehind && !dangerAhead) {
+          player.input.backward = false;
+          player.input.forward = true;
+        } else {
+          const hAhead = sampleH(fwdX * lookAheadDist, fwdZ * lookAheadDist);
+          const hBehind = sampleH(-fwdX * lookAheadDist, -fwdZ * lookAheadDist);
+          if (hAhead >= hBehind) {
+            player.input.forward = true;
+            player.input.backward = false;
+          } else {
+            player.input.forward = false;
+            player.input.backward = true;
+          }
+        }
+
+        // Steer toward whichever flank has higher ground. Tank-relative
+        // right = (cos(yaw), -sin(yaw)); left = (-cos(yaw), sin(yaw)).
+        const probe = 8.0;
+        const hLeft = sampleH(-fwdZ * probe, fwdX * probe);
+        const hRight = sampleH(fwdZ * probe, -fwdX * probe);
+        if (hLeft > hRight) {
+          player.input.left = true;
+          player.input.right = false;
+        } else {
+          player.input.right = true;
+          player.input.left = false;
+        }
+
+        // Don't sprint into the sea while panicking.
+        player.input.turbo = false;
       }
     }
   }
