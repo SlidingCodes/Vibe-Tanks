@@ -9,6 +9,7 @@ import { JoinRoomSchema, onValidated } from './validation';
 import { isBanned, loadBans } from './admin/bans';
 import { loadHistory, startHistoryFlushLoop, flushHistory } from './admin/history';
 import { loadPlayerMetrics, startPlayerMetricsLoop, recordPlayerJoin } from './admin/playerMetrics';
+import { loadLeaderboard, getTopN } from './admin/leaderboard';
 import { startInternalServer } from './admin/internalServer';
 import { extractClientIp } from './net/clientIp';
 
@@ -31,13 +32,30 @@ async function main(): Promise<void> {
 
   // Restore the persisted admin state before opening the public socket
   // so a banned client can't squeeze in during the load window.
-  await Promise.all([loadBans(), loadHistory(), loadPlayerMetrics()]);
+  await Promise.all([loadBans(), loadHistory(), loadPlayerMetrics(), loadLeaderboard()]);
   startHistoryFlushLoop();
 
   const httpServer = createServer((req, res) => {
     if (req.url === '/healthz') {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('ok');
+      return;
+    }
+
+    // Public read-only leaderboard. Open to anyone (the login screen
+    // fetches it before the socket connects), so no auth — the data
+    // itself is non-sensitive and capped at MAX_RECORDS server-side.
+    if (req.url === '/leaderboard' || req.url?.startsWith('/leaderboard?')) {
+      const url = new URL(req.url, 'http://x');
+      const nRaw = url.searchParams.get('n');
+      const n = nRaw ? Number.parseInt(nRaw, 10) : 50;
+      const entries = getTopN(Number.isFinite(n) ? n : 50);
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'cache-control': 'public, max-age=10',
+      });
+      res.end(JSON.stringify({ entries }));
       return;
     }
 

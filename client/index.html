@@ -374,6 +374,149 @@
       z-index: 2;
     }
 
+    /* Crown button — top-left of the login overlay, opens the all-time
+       leaderboard modal. Matches the brass/olive palette of the rest of
+       the login chrome so it reads as a sibling of the JOIN CTA. */
+    #login-leaderboard {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(20, 22, 16, 0.78);
+      border: 1px solid rgba(160, 130, 70, 0.55);
+      border-radius: 3px;
+      color: #e8d8a0;
+      cursor: pointer;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55) inset, 0 4px 14px rgba(0, 0, 0, 0.5);
+      z-index: 3;
+      transition: background 0.12s linear, border-color 0.12s linear, box-shadow 0.12s linear;
+    }
+    #login-leaderboard:hover {
+      background: rgba(56, 46, 22, 0.85);
+      border-color: rgba(216, 176, 88, 0.85);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55) inset, 0 0 12px rgba(216, 176, 88, 0.35);
+    }
+
+    /* Hall-of-Fame modal (global all-time leaderboard) — full-viewport
+       scrim, central card. Built lazy (created on first open) by
+       client/src/ui/leaderboard.ts; styles defined here so the markup
+       ships with the document. NB: ids are `hof-*` to avoid colliding
+       with the in-match `#leaderboard-overlay` end-of-match screen. */
+    #hof-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 10, 6, 0.78);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      font-family: monospace;
+      color: #e8e0c8;
+    }
+    #hof-overlay.open { display: flex; }
+    #hof-dialog {
+      position: relative;
+      background: linear-gradient(180deg, rgba(28, 30, 22, 0.96) 0%, rgba(16, 18, 12, 0.96) 100%);
+      border: 1px solid rgba(160, 130, 70, 0.55);
+      border-radius: 4px;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6) inset, 0 12px 50px rgba(0, 0, 0, 0.8);
+      width: min(560px, calc(100vw - 32px));
+      max-height: calc(100vh - 64px);
+      padding: 22px 24px 18px;
+      display: flex;
+      flex-direction: column;
+    }
+    #hof-close {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: transparent;
+      border: none;
+      color: #c0b890;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #hof-close:hover { color: #e8d8a0; }
+    #hof-title {
+      margin: 0 0 6px;
+      letter-spacing: 6px;
+      font-size: 18px;
+      color: #e8d8a0;
+      text-align: center;
+    }
+    .hof-help {
+      margin: 0 0 14px;
+      text-align: center;
+      font-size: 11px;
+      letter-spacing: 1px;
+      opacity: 0.65;
+    }
+    #hof-status {
+      text-align: center;
+      padding: 24px 0;
+      font-size: 13px;
+      opacity: 0.75;
+    }
+    #hof-table-wrap {
+      overflow-y: auto;
+      flex: 1 1 auto;
+      border-top: 1px solid rgba(120, 130, 100, 0.3);
+    }
+    #hof-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    #hof-table thead th {
+      position: sticky;
+      top: 0;
+      background: rgba(28, 30, 22, 0.96);
+      padding: 8px 6px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #c0b890;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.4);
+      text-align: left;
+    }
+    #hof-table tbody td {
+      padding: 6px;
+      border-bottom: 1px solid rgba(120, 130, 100, 0.12);
+    }
+    #hof-table tbody tr:nth-child(1) td { color: #f0d88a; font-weight: bold; }
+    #hof-table tbody tr:nth-child(2) td { color: #d8c890; }
+    #hof-table tbody tr:nth-child(3) td { color: #c8b888; }
+    /* "It's me" highlight — used when the modal is opened from the
+       end-of-match screen with the player's own name. The yellow ribbon
+       on the left edge plus the warmer background let the player find
+       their own row without losing the rank-color cue above. */
+    #hof-table tbody tr.hof-row-me td {
+      background: rgba(216, 176, 88, 0.14);
+      box-shadow: inset 3px 0 0 #d8b058;
+    }
+    #hof-table .hof-rank { width: 36px; text-align: right; opacity: 0.85; }
+    #hof-table .hof-name { max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #hof-table .hof-score { width: 70px; text-align: right; font-weight: bold; }
+    #hof-table .hof-kd { width: 70px; text-align: right; opacity: 0.85; }
+    #hof-table .hof-when { width: 90px; text-align: right; opacity: 0.65; font-size: 11px; }
+
+    @media (max-width: 480px) {
+      #login-leaderboard { top: 12px; left: 12px; width: 40px; height: 40px; }
+      #hof-table .hof-when { display: none; }
+      #hof-table thead th:nth-child(5) { display: none; }
+    }
+
     /* Tactical brief panel — gunmetal plate with olive trim */
     #login-panel {
       position: absolute;
@@ -1498,8 +1641,52 @@
       font-weight: bold;
     }
 
+    /* Global rank panel — sits between the in-match scoreboard and the
+       countdown line. Headline turns brass on a fresh personal best,
+       khaki otherwise. The button mirrors the outlined "HOW TO PLAY"
+       style on the login screen so the two CTAs feel like siblings. */
+    #leaderboard-global {
+      margin-top: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      font-family: monospace;
+    }
+    #lb-global-headline {
+      font-size: 14px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #c0b890;
+      text-align: center;
+      max-width: 80vw;
+    }
+    #lb-global-headline.is-new-best {
+      color: #f0d88a;
+      text-shadow: 0 0 12px rgba(216, 176, 88, 0.45);
+      font-weight: bold;
+    }
+    #lb-global-open {
+      padding: 8px 18px;
+      background: transparent;
+      color: #c0b890;
+      border: 1px solid rgba(160, 130, 70, 0.55);
+      border-radius: 2px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.12s linear, color 0.12s linear, border-color 0.12s linear;
+    }
+    #lb-global-open:hover {
+      background: rgba(120, 130, 100, 0.18);
+      color: #e8d8a0;
+      border-color: rgba(216, 176, 88, 0.85);
+    }
+
     #leaderboard-timer {
-      margin-top: 40px;
+      margin-top: 24px;
       font-size: 14px;
       opacity: 0.6;
       letter-spacing: 4px;
@@ -2764,6 +2951,11 @@
   <div id="login-overlay">
     <canvas id="tank-preview"></canvas>
     <h1 id="login-title">VIBE TANKS</h1>
+    <button id="login-leaderboard" type="button" aria-label="Hall of Fame" title="Hall of Fame">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+        <path d="M3 8l4 4 5-7 5 7 4-4-2 11H5L3 8zm2 13h14v2H5v-2z"/>
+      </svg>
+    </button>
     <div id="login-panel">
       <label for="login-name">NAME</label>
       <input id="login-name" type="text" maxlength="16" autocomplete="off" />
@@ -2908,6 +3100,10 @@
         <!-- populated by js -->
       </tbody>
     </table>
+    <div id="leaderboard-global" hidden>
+      <div id="lb-global-headline"></div>
+      <button id="lb-global-open" type="button">View Hall of Fame</button>
+    </div>
     <div id="leaderboard-timer">Next round starts in <span id="leaderboard-countdown">10</span>s</div>
   </div>
 
