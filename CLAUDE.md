@@ -143,9 +143,9 @@ shared/src/
                                 shared by the client renderer and the Rapier
                                 collider generator so visuals and physics match
 scripts/
-  deploy.sh                  Idempotent pi deploy: git fetch, rebuild client only
-                             if client/shared changed, restart systemd unit only
-                             if server/shared changed
+  deploy-docker.sh           Docker-compose deploy helper executed on the VPS by
+                             the release-docker-deploy.yml workflow (validates
+                             .env, pulls images, restarts the stack)
 ```
 
 ## Architecture
@@ -154,7 +154,7 @@ scripts/
 - **Controls**:
   - Desktop: WASD to move, mouse to aim (ground-plane raycast), left-click to fire, digit keys (1–9, 0) or chip click to switch weapon, mouse wheel to cycle through slots.
   - Mobile (`body.mobile`, toggled by touch detection or `?mobile=1`): virtual joystick (bottom-left) feeds the same WASD booleans via `setVirtualKey`; any touch outside the joystick/fire/HUD updates the aim NDC via `setVirtualAim`; fire button (bottom-right) calls `triggerVirtualFire`; weapon chips are tappable. The existing desktop read path (`getMovementInput`, `getAimTarget`, `consumeClick`, `consumeWeaponSlot`) stays the single source of truth.
-- **Weapons**: 10 distinct `WeaponDefinition` entries in `shared/src/weapons.ts` — `standard`, `big_blast`, `splitter`, `bouncer`, `drill`, `napalm`, `seeker`, `rail`, `mortar_rain`, `mine`. Each has its own `ShotStep[]` behaviour, cooldown, and blast/carve profile.
+- **Weapons**: 18 distinct `WeaponDefinition` entries in `shared/src/weapons.ts` — `standard`, `big_blast`, `splitter`, `bouncer`, `drill`, `napalm`, `seeker`, `rail`, `mortar_rain`, `mine`, `digger`, `wall`, `ramp`, `little_boy` (nuke), `minigun`, `predator`, `soldiers`, `jump`. Each has its own `ShotStep[]` behaviour, cooldown, ammo budget, and blast/carve profile. Slot 0 is always the infinite `standard`; the other 7 inventory slots are rolled per spawn via `createRandomLoadout()` (weighted sample, rare weapons like `little_boy` use `pickupWeight` < 1).
 - **Fullscreen**: top-right corner button toggles `document.requestFullscreen` with WebKit fallbacks; hides itself when the API is unavailable (iPhone Safari).
 - **Audio**: procedural SFX via Web Audio API + MP3 music files. Toggle button in top-right strip (audio → settings → fullscreen). State persisted in `localStorage` (`vt.audioEnabled`), default on. SFX: shoot, explosion (scaled by blast radius), tank death boom, Dark Souls-style death (descending wah + choir chord + "YOU DIED" voice), respawn jingle, weapon-switch click, hit-marker ting. Background music: 6 MP3 tracks in `client/public/music/` (`1.mp3` … `6.mp3`), starts on track 1, advances sequentially on natural end-of-track and on match reset. Volume slider in the settings panel adjusts music and SFX independently via a shared `GainNode`.
 - **Skybox**: equirectangular 2K JPEG (`client/public/sky/sky_36_2k.jpg`) loaded async into an `EquirectangularReflectionMapping` envmap; scene fog color is matched to the horizon band so terrain fades into the sky.
@@ -199,6 +199,4 @@ scripts/
 
 ## Deployment
 
-**Pi (systemd, no Docker)**: `scripts/deploy.sh` is invoked by the `deploy.yml` workflow on every push to `main`. It fetches `origin/main`, reinstalls deps if any `package*.json` changed, rebuilds the client, and restarts `vibe-tanks.service`. If `vibe-tanks-admin.service` is installed it gets restarted too; otherwise the script logs and skips (one-time install via `sudo cp scripts/vibe-tanks-admin.service /etc/systemd/system/` + `systemctl edit` for the `ADMIN_TOKEN`/`INTERNAL_TOKEN` drop-in). The game unit's drop-in must also export `INTERNAL_TOKEN` and ideally `INTERNAL_HOST=127.0.0.1` so the control plane is loopback-only on the Pi.
-
-**Hetzner (Docker compose, behind Caddy)**: `release-docker-deploy.yml` triggers on push to the `release` branch. It builds three images via the `Dockerfile` multi-stages (`server-runtime`, `admin-runtime`, `web-runtime`), pushes them to `ghcr.io/<owner>/vibe-tanks-{server,admin,web}:release`, scps `docker-compose.yml` + `Caddyfile` + `scripts/deploy-docker.sh` to the VPS, and runs the deploy script over SSH. The VPS `.env` (in `/opt/vibe-tanks/.env`) needs `SERVER_IMAGE`, `ADMIN_IMAGE`, `WEB_IMAGE`, `DOMAIN`, `ADMIN_TOKEN`, `INTERNAL_TOKEN`. Caddy serves the game client on `<domain>` and the admin dashboard on `admin.<domain>` (both with auto-TLS); only port 80/443 are mapped to the host, the 3001 / 3002 / 3010 traffic is internal to the docker network.
+**Docker compose, behind Caddy**: `release-docker-deploy.yml` triggers on push to the `release` branch. It builds three images via the `Dockerfile` multi-stages (`server-runtime`, `admin-runtime`, `web-runtime`), pushes them to `ghcr.io/<owner>/vibe-tanks-{server,admin,web}:release`, scps `docker-compose.yml` + `Caddyfile` + `scripts/deploy-docker.sh` to the VPS, and runs the deploy script over SSH. The VPS `.env` (in `/opt/vibe-tanks/.env`) needs `SERVER_IMAGE`, `ADMIN_IMAGE`, `WEB_IMAGE`, `DOMAIN`, `ADMIN_TOKEN`, `INTERNAL_TOKEN`. Caddy serves the game client on `<domain>` and the admin dashboard on `admin.<domain>` (both with auto-TLS); only port 80/443 are mapped to the host, the 3001 / 3002 / 3010 traffic is internal to the docker network.
