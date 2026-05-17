@@ -310,21 +310,30 @@ shared/src/
 
 ## Deployment
 
-The repository ships a Docker Compose deployment ready for a small VPS
-behind Caddy auto-TLS.
+Vibe-Tanks deploys through the shared infra workflow in
+`SlidingCodes/infra-workflows`, not the older app-owned SSH deploy path.
 
-- **Containers**: three images built by the multi-stage `Dockerfile`
-  (`server-runtime`, `admin-runtime`, `web-runtime`). Caddy serves the
-  client on `<DOMAIN>` and the admin dashboard on `admin.<DOMAIN>`.
-- **Workflow**: `.github/workflows/release-docker-deploy.yml` triggers on
-  push to the `release` branch, builds + pushes to GHCR, scp's
-  `docker-compose.yml` + `Caddyfile` + `scripts/deploy-docker.sh` to the
-  host, and runs the deploy script over SSH.
-- **VPS `.env`**: `SERVER_IMAGE`, `ADMIN_IMAGE`, `WEB_IMAGE`, `DOMAIN`,
-  `ADMIN_TOKEN`, `INTERNAL_TOKEN`.
+- **Workflow**: `.github/workflows/deploy.yml` maps refs to environments:
+  `dev` branch -> `dev`, `main` branch -> `qual`, `v*` tags -> `prod`.
+- **Platform contract**: `deploy/app.yml` declares the hostnames and edge
+  networks, and `deploy/docker-compose.yml` defines the runtime stack the
+  reusable workflow ships to `/opt/apps/<env>/vibe-tanks`.
+- **Images**: the wrapper workflow builds and pushes `server-runtime` and
+  `admin-runtime`; the reusable workflow builds the final default Docker
+  image as `BACKEND_IMAGE`. Runtime compose uses `BACKEND_IMAGE`,
+  `SERVER_IMAGE`, and `ADMIN_IMAGE`.
+- **Ingress**: platform Caddy owns the public hostname/TLS layer. The
+  in-image Caddy still serves the client, proxies `/socket.io*`,
+  `/healthz`, and `/leaderboard*` to the game server, proxies `/api/*`
+  to the admin sidecar, and serves the admin UI at `/admin`.
+- **GitHub config**: the reusable workflow expects environment vars
+  `DEPLOY_VPS_HOST`, `DEPLOY_VPS_PORT`, and `DEPLOY_VPS_USER`, plus the
+  secret `DEPLOY_VPS_SSH_KEY`. Vibe-Tanks also needs the GitHub secrets
+  `APPENV_ADMIN_TOKEN` and `APPENV_INTERNAL_TOKEN`; the wrapper maps them
+  to runtime `ADMIN_TOKEN` and `INTERNAL_TOKEN` in the deployed `.env`.
 
-For self-hosting variants (bare metal, Raspberry Pi, etc.) you can adapt
-`scripts/deploy-docker.sh` or run the three Node services directly.
+For self-hosting variants you can still run the three containers directly
+with Docker Compose or run the Node services manually.
 
 ## Credits
 

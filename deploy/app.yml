@@ -1,0 +1,26 @@
+app_name: vibe-tanks
+compose_path: deploy/docker-compose.yml
+deployment_type: direct
+
+domains:
+  dev:
+    app: dev-tanks.slidingcodes.com
+  qual:
+    app: qual-tanks.slidingcodes.com
+  prod:
+    app: tanks.slidingcodes.com
+
+network_by_env:
+  dev: edge-dev
+  qual: edge-qual
+  prod: edge-prod
+
+services:
+  backend:
+    port: 80
+
+routes:
+  backend_paths:
+    - /socket.io*
+    - /healthz
+    - /leaderboard*

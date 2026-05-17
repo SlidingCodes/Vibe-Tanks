@@ -1,0 +1,124 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - qual
+          - prod
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-sidecars:
+    runs-on: ubuntu-latest
+    outputs:
+      server_image: ${{ steps.coords.outputs.server_image }}
+      admin_image: ${{ steps.coords.outputs.admin_image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image coordinates
+        id: coords
+        run: |
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "server_image=ghcr.io/${OWNER_LOWER}/vibe-tanks-server:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "admin_image=ghcr.io/${OWNER_LOWER}/vibe-tanks-admin:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: server-runtime
+          push: true
+          tags: ${{ steps.coords.outputs.server_image }}
+
+      - name: Build and push admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: admin-runtime
+          push: true
+          tags: ${{ steps.coords.outputs.admin_image }}
+
+  deploy-dev:
+    if: |
+      (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'dev') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'dev')
+    needs: build-sidecars
+    uses: SlidingCodes/infra-workflows/.github/workflows/deploy-app.yml@main
+    with:
+      environment: dev
+      deploy_config_path: deploy/app.yml
+      env_vars_block: |
+        SERVER_IMAGE=${{ needs.build-sidecars.outputs.server_image }}
+        ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
+    secrets:
+      DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      env_secrets_block: |
+        ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
+        INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}
+
+  deploy-qual:
+    if: |
+      (github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'qual')
+    needs: build-sidecars
+    uses: SlidingCodes/infra-workflows/.github/workflows/deploy-app.yml@main
+    with:
+      environment: qual
+      deploy_config_path: deploy/app.yml
+      env_vars_block: |
+        SERVER_IMAGE=${{ needs.build-sidecars.outputs.server_image }}
+        ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
+    secrets:
+      DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      env_secrets_block: |
+        ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
+        INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}
+
+  deploy-prod:
+    if: |
+      (github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'prod')
+    needs: build-sidecars
+    uses: SlidingCodes/infra-workflows/.github/workflows/deploy-app.yml@main
+    with:
+      environment: prod
+      deploy_config_path: deploy/app.yml
+      env_vars_block: |
+        SERVER_IMAGE=${{ needs.build-sidecars.outputs.server_image }}
+        ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
+    secrets:
+      DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      env_secrets_block: |
+        ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
+        INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}

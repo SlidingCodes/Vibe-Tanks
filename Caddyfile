@@ -1,27 +1,19 @@
-{$DOMAIN:localhost} {
+:80 {
 	root * /srv
 	encode zstd gzip
+
+	@adminRoot path /admin
+	redir @adminRoot /admin/ 308
 
 	route {
 		reverse_proxy /socket.io* server:3001
 		reverse_proxy /healthz server:3001
 		reverse_proxy /leaderboard* server:3001
+		reverse_proxy /api/* admin:3002
+		handle_path /admin/* {
+			reverse_proxy admin:3002
+		}
 		try_files {path} /index.html
 		file_server
 	}
-}
-
-# Admin dashboard on its own hostname. Defaults to admin.<DOMAIN> but
-# can be overridden via ADMIN_DOMAIN — useful when the game already
-# lives on a sub-domain and you want a single-level admin alias to
-# stay inside Cloudflare Universal SSL coverage (e.g. set
-# ADMIN_DOMAIN=admin-tanks.example.com when DOMAIN=tanks.example.com).
-# Caddy auto-provisions the TLS cert as long as the hostname's DNS
-# record points at this host (grey cloud on Cloudflare). The dashboard
-# runs as an isolated Node process on admin:3002 and talks to the
-# game server's loopback control plane on its own — the game never
-# serves admin traffic itself.
-{$ADMIN_DOMAIN:admin.localhost} {
-	encode zstd gzip
-	reverse_proxy admin:3002
 }

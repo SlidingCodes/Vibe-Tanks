@@ -1,0 +1,74 @@
+services:
+  server:
+    image: ${SERVER_IMAGE}
+    container_name: vibe-tanks-${DEPLOY_ENV}-server
+    restart: unless-stopped
+    environment:
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      VT_DATA_DIR: /data
+    volumes:
+      - vt_data:/data
+    expose:
+      - "3001"
+      - "3010"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/healthz').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  admin:
+    image: ${ADMIN_IMAGE}
+    container_name: vibe-tanks-${DEPLOY_ENV}-admin
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      GAME_INTERNAL_URL: http://server:3010
+    expose:
+      - "3002"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3002/healthz').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    container_name: vibe-tanks-${DEPLOY_ENV}-backend
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    expose:
+      - "80"
+    networks:
+      - default
+      - edge
+
+volumes:
+  vt_data:
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK}
