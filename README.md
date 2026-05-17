@@ -310,8 +310,8 @@ shared/src/
 
 ## Deployment
 
-Vibe-Tanks deploys through the shared infra workflow in
-`SlidingCodes/infra-workflows`, not the older app-owned SSH deploy path.
+Vibe-Tanks deploys through a vendored copy of the shared infra workflow in
+[`.github/workflows/deploy-app.yml`](.github/workflows/deploy-app.yml), not the older app-owned SSH deploy path.
 
 - **Workflow**: `.github/workflows/deploy.yml` maps refs to environments:
   `dev` branch -> `dev`, `main` branch -> `qual`, `v*` tags -> `prod`.

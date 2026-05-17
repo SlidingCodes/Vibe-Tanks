@@ -1,0 +1,453 @@
+name: deploy-app
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment (dev|qual|prod)
+        required: true
+        type: string
+      deploy_config_path:
+        description: Path to deploy config file in caller repo
+        required: false
+        default: deploy/app.yml
+        type: string
+      platform_dir:
+        description: Platform directory on VPS
+        required: false
+        default: /opt/platform
+        type: string
+      apps_dir:
+        description: Apps root directory on VPS
+        required: false
+        default: /opt/apps
+        type: string
+      env_vars_block:
+        description: Multiline KEY=VALUE block for non-secret runtime env vars
+        required: false
+        default: ""
+        type: string
+    secrets:
+      DEPLOY_VPS_SSH_KEY:
+        required: true
+      DEPLOY_CF_API_TOKEN:
+        required: false
+      env_secrets_block:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      TARGET_ENV: ${{ inputs.environment }}
+      DEPLOY_CONFIG_PATH: ${{ inputs.deploy_config_path }}
+      PLATFORM_DIR: ${{ inputs.platform_dir }}
+      APPS_DIR: ${{ inputs.apps_dir }}
+
+      DEPLOY_VPS_HOST: ${{ vars.DEPLOY_VPS_HOST }}
+      DEPLOY_VPS_PORT: ${{ vars.DEPLOY_VPS_PORT }}
+      DEPLOY_VPS_USER: ${{ vars.DEPLOY_VPS_USER }}
+
+      DEPLOY_CF_ACCOUNT_ID: ${{ vars.DEPLOY_CF_ACCOUNT_ID }}
+      DEPLOY_CF_TUNNEL_ID: ${{ vars.DEPLOY_CF_TUNNEL_ID }}
+      DEPLOY_CF_ZONE_ID: ${{ vars.DEPLOY_CF_ZONE_ID }}
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Validate target environment
+        run: |
+          case "${TARGET_ENV}" in
+            dev|qual|prod) ;;
+            *) echo "environment must be dev, qual, or prod" >&2; exit 1 ;;
+          esac
+
+      - name: Validate deploy inputs
+        run: |
+          required_vars=(
+            DEPLOY_VPS_HOST
+            DEPLOY_VPS_PORT
+            DEPLOY_VPS_USER
+          )
+
+          for name in "${required_vars[@]}"; do
+            value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "Missing required GitHub Environment variable: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build deployment env file
+        env:
+          ENV_VARS_BLOCK: ${{ inputs.env_vars_block }}
+          ENV_SECRETS_BLOCK: ${{ secrets.env_secrets_block }}
+        run: |
+          : > .env.deploy
+
+          if [ -n "${ENV_VARS_BLOCK:-}" ]; then
+            printf '%s\n' "$ENV_VARS_BLOCK" >> .env.deploy
+          fi
+
+          if [ -n "${ENV_SECRETS_BLOCK:-}" ]; then
+            printf '%s\n' "$ENV_SECRETS_BLOCK" >> .env.deploy
+          fi
+
+      - name: Install Python dependency for YAML parsing
+        run: python3 -m pip install pyyaml
+
+      - name: Read deploy config
+        id: cfg
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import yaml
+
+          env = os.environ["TARGET_ENV"]
+          cfg_path = pathlib.Path(os.environ["DEPLOY_CONFIG_PATH"])
+          data = yaml.safe_load(cfg_path.read_text())
+
+          app_name = data.get("app_name")
+          compose_path = data.get("compose_path")
+          deployment_type = data.get("deployment_type")
+          domains = data.get("domains", {})
+          selected_domain = domains.get(env, {})
+          network_by_env = data.get("network_by_env", {})
+          services = data.get("services", {})
+          routes = data.get("routes", {})
+
+          backend = services.get("backend") or services.get("web") or services.get("server")
+
+          required = [
+              (app_name, "app_name"),
+              (compose_path, "compose_path"),
+              (deployment_type, "deployment_type"),
+              (selected_domain, f"domains.{env}"),
+              (network_by_env.get(env), f"network_by_env.{env}"),
+              (backend, "services.backend|web|server"),
+          ]
+          missing = [name for val, name in required if val in (None, "", {})]
+          if missing:
+              raise SystemExit(f"Missing required deploy config fields: {', '.join(missing)}")
+
+          backend_port = str(backend.get("port"))
+
+          ws_domain = None
+          if isinstance(selected_domain, dict):
+              ws_domain = selected_domain.get("ws") or selected_domain.get("app")
+          else:
+              ws_domain = str(selected_domain)
+
+          if not ws_domain:
+              raise SystemExit(f"Missing websocket/app domain for environment {env}")
+
+          websocket_paths = routes.get("backend_paths") or routes.get("websocket_paths") or ["/ws*", "/healthz", "/health"]
+
+          output_file = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with output_file.open("a") as fh:
+              fh.write(f"app_name={app_name}\n")
+              fh.write(f"compose_path={compose_path}\n")
+              fh.write(f"deployment_type={deployment_type}\n")
+              fh.write(f"edge_network={network_by_env[env]}\n")
+              fh.write(f"ws_domain={ws_domain}\n")
+              fh.write(f"backend_port={backend_port}\n")
+              fh.write(f"websocket_paths={','.join(websocket_paths)}\n")
+          PY
+
+      - name: Compute image coordinates
+        id: image
+        run: |
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          REPO_LOWER="$(echo "${REPO_NAME}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_NAME="ghcr.io/${OWNER_LOWER}/${REPO_LOWER}:${GITHUB_SHA}"
+          echo "image=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push app image
+        run: |
+          docker build -t "${{ steps.image.outputs.image }}" .
+          docker push "${{ steps.image.outputs.image }}"
+
+      - name: Append deploy metadata to env file
+        run: |
+          {
+            echo "BACKEND_IMAGE=${{ steps.image.outputs.image }}"
+            echo "DEPLOY_ENV=${TARGET_ENV}"
+            echo "EDGE_NETWORK=${{ steps.cfg.outputs.edge_network }}"
+          } >> .env.deploy
+
+      - name: Prepare rendered Caddy snippet
+        id: render
+        run: |
+          SNIPPET_FILE="$(mktemp)"
+          APP_UPSTREAM="${{ steps.cfg.outputs.app_name }}-${TARGET_ENV}-backend:${{ steps.cfg.outputs.backend_port }}"
+          SITE_LABEL="${{ steps.cfg.outputs.ws_domain }}"
+
+          if [ "${{ steps.cfg.outputs.deployment_type }}" = "tunnel" ]; then
+            SITE_LABEL="http://${SITE_LABEL}"
+          fi
+
+          {
+            echo "${SITE_LABEL} {"
+            echo "    encode zstd gzip"
+
+            IFS=',' read -r -a WS_PATH_LIST <<< "${{ steps.cfg.outputs.websocket_paths }}"
+            for path in "${WS_PATH_LIST[@]}"; do
+              if [ -n "${path}" ]; then
+                echo "    handle ${path} {"
+                echo "        reverse_proxy ${APP_UPSTREAM}"
+                echo "    }"
+              fi
+            done
+
+            echo "    handle {"
+            echo "        reverse_proxy ${APP_UPSTREAM}"
+            echo "    }"
+            echo "}"
+          } > "${SNIPPET_FILE}"
+
+          chmod 600 "${SNIPPET_FILE}"
+          echo "snippet_file=${SNIPPET_FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Cloudflare tunnel hostname route
+        if: ${{ steps.cfg.outputs.deployment_type == 'tunnel' }}
+        env:
+          CF_API_TOKEN: ${{ secrets.DEPLOY_CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ env.DEPLOY_CF_ACCOUNT_ID }}
+          CF_TUNNEL_ID: ${{ env.DEPLOY_CF_TUNNEL_ID }}
+          CF_ZONE_ID: ${{ env.DEPLOY_CF_ZONE_ID }}
+          HOSTNAME: ${{ steps.cfg.outputs.ws_domain }}
+        run: |
+          trim_compact() {
+            printf '%s' "$1" | tr -d '\r\n[:space:]'
+          }
+
+          trim_line() {
+            printf '%s' "$1" | tr -d '\r\n'
+          }
+
+          CF_API_TOKEN="$(trim_line "${CF_API_TOKEN:-}")"
+          CF_ACCOUNT_ID="$(trim_compact "${CF_ACCOUNT_ID:-}")"
+          CF_TUNNEL_ID="$(trim_compact "${CF_TUNNEL_ID:-}")"
+          CF_ZONE_ID="$(trim_compact "${CF_ZONE_ID:-}")"
+          HOSTNAME="$(trim_line "${HOSTNAME:-}")"
+
+          if [ -z "${CF_API_TOKEN:-}" ] || [ -z "${CF_ACCOUNT_ID:-}" ] || [ -z "${CF_TUNNEL_ID:-}" ] || [ -z "${CF_ZONE_ID:-}" ]; then
+            echo "Cloudflare deployment requested but CF variables/secrets are missing" >&2
+            exit 1
+          fi
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          tunnel_url="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${CF_TUNNEL_ID}/configurations"
+          dns_url="https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records"
+
+          auth_header="Authorization: Bearer ${CF_API_TOKEN}"
+          json_header="Content-Type: application/json"
+
+          curl -fsS -H "$auth_header" "$tunnel_url" > "${tmpdir}/tunnel.json"
+
+          python3 - "$HOSTNAME" "http://caddy:80" "${tmpdir}/tunnel.json" "${tmpdir}/tunnel-payload.json" <<'PY'
+          import json, pathlib, sys
+
+          hostname = sys.argv[1]
+          service = sys.argv[2]
+          src = pathlib.Path(sys.argv[3])
+          dst = pathlib.Path(sys.argv[4])
+
+          data = json.loads(src.read_text())
+          result = data.get("result") or {}
+          config = result.get("config") or {}
+          ingress = config.get("ingress") or []
+
+          wanted = {"hostname": hostname, "service": service}
+          filtered = [entry for entry in ingress if entry.get("hostname") != hostname]
+
+          has_catchall = any(
+              entry.get("service") == "http_status:404"
+              for entry in filtered
+          )
+          if not has_catchall:
+              filtered.append({"service": "http_status:404"})
+
+          filtered.insert(len(filtered) - 1, wanted)
+
+          payload = {"config": {"ingress": filtered}}
+          dst.write_text(json.dumps(payload))
+          PY
+
+          curl -fsS -X PUT \
+            -H "$auth_header" \
+            -H "$json_header" \
+            --data @"${tmpdir}/tunnel-payload.json" \
+            "$tunnel_url" > /dev/null
+
+          record_name="$HOSTNAME"
+          record_content="${CF_TUNNEL_ID}.cfargotunnel.com"
+          record_name_query="$(python3 - <<'PY' "$record_name"
+          import sys
+          import urllib.parse
+
+          print(urllib.parse.quote(sys.argv[1], safe=''))
+          PY
+          )"
+
+          existing="$(curl -fsS -H "$auth_header" "${dns_url}?type=CNAME&name=${record_name_query}")"
+
+          existing_id="$(python3 - <<'PY' "$existing"
+          import json, sys
+          data = json.loads(sys.argv[1])
+          result = data.get("result", [])
+          print(result[0]["id"] if result else "")
+          PY
+          )"
+
+          payload="$(python3 - <<'PY' "$record_name" "$record_content"
+          import json, sys
+          print(json.dumps({
+            "type": "CNAME",
+            "name": sys.argv[1],
+            "content": sys.argv[2],
+            "ttl": 1,
+            "proxied": True
+          }))
+          PY
+          )"
+
+          if [ -n "$existing_id" ]; then
+            curl -fsS -X PUT \
+              -H "$auth_header" \
+              -H "$json_header" \
+              --data "$payload" \
+              "${dns_url}/${existing_id}" > /dev/null
+          else
+            curl -fsS -X POST \
+              -H "$auth_header" \
+              -H "$json_header" \
+              --data "$payload" \
+              "$dns_url" > /dev/null
+          fi
+
+      - name: Prepare remote deploy script
+        run: |
+          cat > deploy-app.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          APP_NAME=""
+          ENVIRONMENT=""
+          APPS_DIR="/opt/apps"
+          PLATFORM_DIR="/opt/platform"
+          EDGE_NETWORK=""
+          COMPOSE_SRC=""
+          CADDY_SRC=""
+          ENV_SRC=""
+
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --app-name) APP_NAME="$2"; shift 2 ;;
+              --environment) ENVIRONMENT="$2"; shift 2 ;;
+              --apps-dir) APPS_DIR="$2"; shift 2 ;;
+              --platform-dir) PLATFORM_DIR="$2"; shift 2 ;;
+              --edge-network) EDGE_NETWORK="$2"; shift 2 ;;
+              --compose-src) COMPOSE_SRC="$2"; shift 2 ;;
+              --caddy-src) CADDY_SRC="$2"; shift 2 ;;
+              --env-src) ENV_SRC="$2"; shift 2 ;;
+              *) echo "Unknown argument: $1" >&2; exit 1 ;;
+            esac
+          done
+
+          if [[ -z "$APP_NAME" || -z "$ENVIRONMENT" || -z "$EDGE_NETWORK" || -z "$COMPOSE_SRC" || -z "$CADDY_SRC" || -z "$ENV_SRC" ]]; then
+            echo "Missing required arguments" >&2
+            exit 1
+          fi
+
+          APP_ENV_ROOT="${APPS_DIR}/${ENVIRONMENT}"
+          APP_DIR="${APP_ENV_ROOT}/${APP_NAME}"
+          CADDY_DIR="${PLATFORM_DIR}/caddy/conf.d/${ENVIRONMENT}.d"
+          CADDY_TARGET="${CADDY_DIR}/${APP_NAME}.caddy"
+
+          mkdir -p "$APP_ENV_ROOT" "$APP_DIR" "$CADDY_DIR"
+
+          cp -f "$COMPOSE_SRC" "$APP_DIR/docker-compose.yml"
+          cp -f "$ENV_SRC" "$APP_DIR/.env"
+          cp -f "$CADDY_SRC" "$CADDY_TARGET"
+
+          docker network inspect "$EDGE_NETWORK" >/dev/null 2>&1 || {
+            echo "Expected external network '$EDGE_NETWORK' does not exist" >&2
+            exit 1
+          }
+
+          (
+            cd "$APP_DIR"
+            docker compose -p "${APP_NAME}-${ENVIRONMENT}" pull
+            docker compose -p "${APP_NAME}-${ENVIRONMENT}" up -d --remove-orphans
+          )
+
+          docker compose -f "${PLATFORM_DIR}/docker-compose.yml" up -d caddy
+          docker compose -f "${PLATFORM_DIR}/docker-compose.yml" exec -T caddy \
+            caddy reload --config /etc/caddy/Caddyfile
+          SH
+          chmod +x deploy-app.sh
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${DEPLOY_VPS_PORT}" "${DEPLOY_VPS_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Copy deploy artifacts to VPS
+        run: |
+          REMOTE_TMP=".infra-workflows-deploy/${{ steps.cfg.outputs.app_name }}-${TARGET_ENV}"
+          ssh -p "${DEPLOY_VPS_PORT}" "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}" "mkdir -p '${REMOTE_TMP}'"
+
+          scp -P "${DEPLOY_VPS_PORT}" deploy-app.sh \
+            "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}:${REMOTE_TMP}/deploy-app.sh"
+
+          scp -P "${DEPLOY_VPS_PORT}" "${{ steps.cfg.outputs.compose_path }}" \
+            "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}:${REMOTE_TMP}/docker-compose.yml"
+
+          scp -P "${DEPLOY_VPS_PORT}" "${{ steps.render.outputs.snippet_file }}" \
+            "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}:${REMOTE_TMP}/app.caddy"
+
+          scp -P "${DEPLOY_VPS_PORT}" ".env.deploy" \
+            "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}:${REMOTE_TMP}/.env"
+
+      - name: Deploy on VPS
+        run: |
+          REMOTE_TMP=".infra-workflows-deploy/${{ steps.cfg.outputs.app_name }}-${TARGET_ENV}"
+          ssh -p "${DEPLOY_VPS_PORT}" "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}" \
+            "chmod +x ${REMOTE_TMP}/deploy-app.sh && \
+             ${REMOTE_TMP}/deploy-app.sh \
+               --app-name '${{ steps.cfg.outputs.app_name }}' \
+               --environment '${TARGET_ENV}' \
+               --apps-dir '${APPS_DIR}' \
+               --platform-dir '${PLATFORM_DIR}' \
+               --edge-network '${{ steps.cfg.outputs.edge_network }}' \
+               --compose-src '${REMOTE_TMP}/docker-compose.yml' \
+               --caddy-src '${REMOTE_TMP}/app.caddy' \
+               --env-src '${REMOTE_TMP}/.env'"
+
+      - name: Cleanup remote deploy artifacts
+        if: ${{ always() }}
+        run: |
+          REMOTE_TMP=".infra-workflows-deploy/${{ steps.cfg.outputs.app_name }}-${TARGET_ENV}"
+          ssh -p "${DEPLOY_VPS_PORT}" "${DEPLOY_VPS_USER}@${DEPLOY_VPS_HOST}" \
+            "rm -rf '${REMOTE_TMP}'" || true
