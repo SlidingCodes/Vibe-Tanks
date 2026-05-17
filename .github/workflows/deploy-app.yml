@@ -224,6 +224,88 @@ jobs:
           chmod 600 "${SNIPPET_FILE}"
           echo "snippet_file=${SNIPPET_FILE}" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure Cloudflare direct DNS record
+        if: ${{ steps.cfg.outputs.deployment_type == 'direct' && env.DEPLOY_CF_ZONE_ID != '' }}
+        env:
+          CF_API_TOKEN: ${{ secrets.DEPLOY_CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ env.DEPLOY_CF_ZONE_ID }}
+          HOSTNAME: ${{ steps.cfg.outputs.ws_domain }}
+          DIRECT_TARGET: ${{ env.DEPLOY_VPS_HOST }}
+        run: |
+          trim_compact() {
+            printf '%s' "$1" | tr -d '\r\n[:space:]'
+          }
+
+          trim_line() {
+            printf '%s' "$1" | tr -d '\r\n'
+          }
+
+          CF_API_TOKEN="$(trim_line "${CF_API_TOKEN:-}")"
+          CF_ZONE_ID="$(trim_compact "${CF_ZONE_ID:-}")"
+          HOSTNAME="$(trim_line "${HOSTNAME:-}")"
+          DIRECT_TARGET="$(trim_line "${DIRECT_TARGET:-}")"
+
+          if [ -z "${CF_API_TOKEN:-}" ] || [ -z "${CF_ZONE_ID:-}" ] || [ -z "${HOSTNAME:-}" ] || [ -z "${DIRECT_TARGET:-}" ]; then
+            echo "Direct Cloudflare DNS requested but CF variables/secrets are missing" >&2
+            exit 1
+          fi
+
+          dns_url="https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records"
+          auth_header="Authorization: Bearer ${CF_API_TOKEN}"
+          json_header="Content-Type: application/json"
+
+          if printf '%s' "$DIRECT_TARGET" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+            record_type="A"
+          elif printf '%s' "$DIRECT_TARGET" | grep -Eq ':'; then
+            record_type="AAAA"
+          else
+            record_type="CNAME"
+          fi
+
+          record_name_query="$(python3 - <<'PY' "$HOSTNAME"
+          import sys
+          import urllib.parse
+
+          print(urllib.parse.quote(sys.argv[1], safe=''))
+          PY
+          )"
+
+          existing="$(curl -fsS -H "$auth_header" "${dns_url}?name=${record_name_query}")"
+
+          existing_id="$(python3 - <<'PY' "$existing"
+          import json, sys
+          data = json.loads(sys.argv[1])
+          result = data.get("result", [])
+          print(result[0]["id"] if result else "")
+          PY
+          )"
+
+          payload="$(python3 - <<'PY' "$record_type" "$HOSTNAME" "$DIRECT_TARGET"
+          import json, sys
+          print(json.dumps({
+            "type": sys.argv[1],
+            "name": sys.argv[2],
+            "content": sys.argv[3],
+            "ttl": 1,
+            "proxied": True
+          }))
+          PY
+          )"
+
+          if [ -n "$existing_id" ]; then
+            curl -fsS -X PUT \
+              -H "$auth_header" \
+              -H "$json_header" \
+              --data "$payload" \
+              "${dns_url}/${existing_id}" > /dev/null
+          else
+            curl -fsS -X POST \
+              -H "$auth_header" \
+              -H "$json_header" \
+              --data "$payload" \
+              "$dns_url" > /dev/null
+          fi
+
       - name: Ensure Cloudflare tunnel hostname route
         if: ${{ steps.cfg.outputs.deployment_type == 'tunnel' }}
         env:

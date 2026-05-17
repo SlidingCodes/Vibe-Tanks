@@ -326,11 +326,13 @@ Vibe-Tanks deploys through a vendored copy of the shared infra workflow in
   in-image Caddy still serves the client, proxies `/socket.io*`,
   `/healthz`, and `/leaderboard*` to the game server, proxies `/api/*`
   to the admin sidecar, and serves the admin UI at `/admin`.
-- **GitHub config**: the reusable workflow expects environment vars
+- **GitHub config**: the workflow expects environment vars
   `DEPLOY_VPS_HOST`, `DEPLOY_VPS_PORT`, and `DEPLOY_VPS_USER`, plus the
   secret `DEPLOY_VPS_SSH_KEY`. Vibe-Tanks also needs the GitHub secrets
   `APPENV_ADMIN_TOKEN` and `APPENV_INTERNAL_TOKEN`; the wrapper maps them
   to runtime `ADMIN_TOKEN` and `INTERNAL_TOKEN` in the deployed `.env`.
+  If you want automatic Cloudflare DNS updates for the app hostname, also
+  set `DEPLOY_CF_ZONE_ID` and `DEPLOY_CF_API_TOKEN` for the environment.
 
 For self-hosting variants you can still run the three containers directly
 with Docker Compose or run the Node services manually.

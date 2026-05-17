@@ -83,6 +83,7 @@ jobs:
         ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
     secrets:
       DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      DEPLOY_CF_API_TOKEN: ${{ secrets.DEPLOY_CF_API_TOKEN }}
       env_secrets_block: |
         ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
         INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}
@@ -101,6 +102,7 @@ jobs:
         ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
     secrets:
       DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      DEPLOY_CF_API_TOKEN: ${{ secrets.DEPLOY_CF_API_TOKEN }}
       env_secrets_block: |
         ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
         INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}
@@ -119,6 +121,7 @@ jobs:
         ADMIN_IMAGE=${{ needs.build-sidecars.outputs.admin_image }}
     secrets:
       DEPLOY_VPS_SSH_KEY: ${{ secrets.DEPLOY_VPS_SSH_KEY }}
+      DEPLOY_CF_API_TOKEN: ${{ secrets.DEPLOY_CF_API_TOKEN }}
       env_secrets_block: |
         ADMIN_TOKEN=${{ secrets.APPENV_ADMIN_TOKEN }}
         INTERNAL_TOKEN=${{ secrets.APPENV_INTERNAL_TOKEN }}
